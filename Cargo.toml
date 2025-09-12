@@ -1,0 +1,31 @@
+[package]
+name = "egui-subsecond"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+subsecond.workspace = true
+dioxus-devtools.workspace = true
+
+
+eframe.workspace = true
+nom = { version = "7.1" }
+
+[profile]
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"
+
+
+[workspace.dependencies]
+egui = "0.32.0"
+eframe = { version = "0.32.0", features = ["persistence"] }
+subsecond = "0.7.0-rc.0"
+dioxus-devtools = "0.7.0-rc.0"
