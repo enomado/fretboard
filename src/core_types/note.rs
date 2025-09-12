@@ -67,8 +67,8 @@ impl ANote {
         PNote::new(note as u8).unwrap()
     }
 
-    pub fn from_pitch(pitch: PNote) -> ANote {
-        let (octave, note) = pitch.to_note();
+    pub fn from_pitch(pitch: &PNote) -> ANote {
+        let (octave, note) = pitch.to_pc();
         let (note, ass) = note.to_note();
 
         ANote {
@@ -80,7 +80,7 @@ impl ANote {
 
     pub fn add_interval(&self, semitones: Interval) -> ANote {
         let pitch = self.to_pitch();
-        ANote::from_pitch(pitch.add(semitones))
+        ANote::from_pitch(&pitch.add(semitones))
     }
 
     pub fn new(n: Note, octave: Octave) -> Self {

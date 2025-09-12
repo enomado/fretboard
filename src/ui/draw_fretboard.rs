@@ -20,7 +20,7 @@ pub fn draw_fretboard(painter: egui::Painter, fretboard: Fretboard) {
 
             let open = fretboard.tuning.note(string);
 
-            let note = open.add_interval(fret.semitones());
+            let note = open.add(fret.semitones());
 
             let pos: egui::Pos2 = pos2(x, y);
 
@@ -33,7 +33,7 @@ pub fn draw_fretboard(painter: egui::Painter, fretboard: Fretboard) {
             painter.text(
                 pos,
                 egui::Align2::CENTER_CENTER,
-                note.name(),
+                note.to_anote().name(),
                 FontId::monospace(12.),
                 Color32::RED,
             );
@@ -50,7 +50,7 @@ pub fn draw_string_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboar
         painter.text(
             pos2(fretboard_rect.x_range().min - 26., y),
             egui::Align2::LEFT_CENTER,
-            format!("{}", open.name()),
+            format!("{}", open.to_anote().name()),
             FontId::monospace(12.0),
             Color32::YELLOW,
         );

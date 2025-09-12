@@ -1,6 +1,6 @@
 use std::fmt::format;
 
-use crate::core_types::note::{Accidental, Note, Octave};
+use crate::core_types::note::{ANote, Accidental, Note, Octave};
 
 /// относительная нота. без октавы
 #[derive(Debug, Clone)]
@@ -88,10 +88,14 @@ impl PNote {
         PNote(clamped)
     }
 
-    pub fn to_note(&self) -> (Octave, PCNote) {
+    pub fn to_pc(&self) -> (Octave, PCNote) {
         let octave = (self.0 / 12) as u8;
         let pc = (self.0 % 12 + 12) % 12; // нормализация
         (Octave(octave), PCNote(pc))
+    }
+
+    pub fn to_anote(&self) -> ANote {
+        ANote::from_pitch(&self)
     }
 }
 

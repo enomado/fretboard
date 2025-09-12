@@ -49,7 +49,7 @@ impl App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // let tuning = Tuning::standart();
-            let tuning = Tuning::minor_thirds(ANote::parse("D2"));
+            let tuning = Tuning::minor_thirds(ANote::parse("D2").to_pitch());
 
             let avail_width = ui.available_width();
             let (component_rect, resp) =
