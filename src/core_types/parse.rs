@@ -8,7 +8,7 @@ use nom::{
     sequence::tuple,
 };
 
-use crate::types::{ANote, Ass, Note, Octave};
+use crate::core_types::pitch::{ANote, Ass, Note, Octave};
 
 /// Парсинг одной буквы A–G
 fn parse_note(input: &str) -> IResult<&str, Note> {

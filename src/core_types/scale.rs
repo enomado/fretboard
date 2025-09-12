@@ -1,6 +1,6 @@
 use itertools::Itertools;
 
-use crate::types::{ANote, Interval, PCNote};
+use crate::core_types::pitch::{Interval, PCNote};
 
 #[derive(Debug, Clone)]
 pub struct Scale {

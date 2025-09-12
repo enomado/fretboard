@@ -1,6 +1,6 @@
-use crate::{
+use crate::core_types::{
     parse::parse_notes,
-    types::{ANote, Interval},
+    pitch::{ANote, Interval},
 };
 
 #[derive(Debug, Clone)]

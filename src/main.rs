@@ -6,10 +6,11 @@ use fretboard;
 
 use eframe::egui::{Color32, Context, FontId, Rangef, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use eframe::{CreationContext, Frame, NativeOptions, egui};
+use fretboard::core_types::pitch::{ANote, Ass, Note, PCNote};
+use fretboard::core_types::scale::Scale;
+use fretboard::core_types::tuning::{Fret, Tuning};
 use fretboard::fretboard::{FretConfig, Fretboard, fret_position_log_range};
-use fretboard::scale::Scale;
-use fretboard::tuning::{Fret, GString, Tuning};
-use fretboard::types::{ANote, Ass, Note, PCNote};
+
 use std::ops::Range;
 use std::sync::Arc;
 

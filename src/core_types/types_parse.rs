@@ -1,5 +1,6 @@
 // чтобы не было циркулярных зависимостей
-use crate::{parse::parse_anote, types::ANote};
+
+use crate::core_types::{parse::parse_anote, pitch::ANote};
 
 impl ANote {
     pub fn parse(input: &str) -> Self {

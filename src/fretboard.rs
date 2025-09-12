@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::tuning::{Fret, GString, Tuning};
+use crate::core_types::tuning::{Fret, GString, Tuning};
 
 pub enum FretConfig {
     Log,

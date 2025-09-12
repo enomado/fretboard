@@ -2,10 +2,5 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-pub mod parse;
-pub mod tuning;
-pub mod types;
-pub mod types_parse;
-
+pub mod core_types;
 pub mod fretboard;
-pub mod scale;
