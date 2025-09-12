@@ -2,13 +2,13 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use egui_subsecond;
+use fretboard;
 
 use eframe::egui::{Color32, Context, FontId, Rangef, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use eframe::{CreationContext, Frame, NativeOptions, egui};
-use egui_subsecond::fretboard::{FretConfig, Fretboard};
-use egui_subsecond::tuning::{Fret, GString, Tuning};
-use egui_subsecond::types::ANote;
+use fretboard::fretboard::{FretConfig, Fretboard, fret_position_log_range};
+use fretboard::tuning::{Fret, GString, Tuning};
+use fretboard::types::ANote;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -39,50 +39,48 @@ impl App {
     }
 
     fn subsecond_fn(&mut self, ctx: &Context) {
-        subsecond::call(|| {
-            ctx.all_styles_mut(|style| {
-                style.spacing.button_padding = egui::vec2(20.0, 10.0);
-            });
+        ctx.all_styles_mut(|style| {
+            style.spacing.button_padding = egui::vec2(20.0, 10.0);
+        });
 
-            egui::CentralPanel::default().show(ctx, |ui| {
-                // let tuning = Tuning::standart();
-                let tuning = Tuning::minor_thirds(ANote::parse("D2"));
+        egui::CentralPanel::default().show(ctx, |ui| {
+            // let tuning = Tuning::standart();
+            let tuning = Tuning::minor_thirds(ANote::parse("D2"));
 
-                let avail_width = ui.available_width();
-                let (component_rect, resp) =
-                    ui.allocate_exact_size(vec2(avail_width, 140.0), Sense::click_and_drag());
+            let avail_width = ui.available_width();
+            let (component_rect, resp) =
+                ui.allocate_exact_size(vec2(avail_width, 140.0), Sense::click_and_drag());
 
-                let painter = ui.painter_at(component_rect);
+            let painter = ui.painter_at(component_rect);
 
-                let mut fretboard_rect = component_rect.clone();
+            let mut fretboard_rect = component_rect.clone();
 
-                // margin
-                fretboard_rect.max.x -= 20.;
-                fretboard_rect.max.y -= 20.;
-                fretboard_rect.min.x += 46.;
+            // margin
+            fretboard_rect.max.x -= 20.;
+            fretboard_rect.max.y -= 20.;
+            fretboard_rect.min.x += 46.;
 
-                let fretboard = Fretboard {
-                    screen_size_x: rangef_to_range(fretboard_rect.x_range()),
-                    screen_size_y: rangef_to_range(fretboard_rect.y_range()),
-                    config: FretConfig::Log,
-                    tuning,
-                    fret_range_show: Fret(24),
-                };
+            let fretboard = Fretboard {
+                screen_size_x: rangef_to_range(fretboard_rect.x_range()),
+                screen_size_y: rangef_to_range(fretboard_rect.y_range()),
+                config: FretConfig::Linear,
+                tuning,
+                fret_range_show: Fret(5)..Fret(25),
+            };
 
-                // border
-                painter.rect_stroke(
-                    fretboard_rect,
-                    0.0,
-                    Stroke::new(1.0, Color32::RED),
-                    egui::StrokeKind::Inside,
-                );
+            // border
+            painter.rect_stroke(
+                fretboard_rect,
+                0.0,
+                Stroke::new(1.0, Color32::RED),
+                egui::StrokeKind::Inside,
+            );
 
-                draw_frets(&painter, fretboard_rect, &fretboard);
+            draw_frets(&painter, fretboard_rect, &fretboard);
 
-                draw_strings(&painter, fretboard_rect, &fretboard);
+            draw_strings(&painter, fretboard_rect, &fretboard);
 
-                draw_fretboard(painter, fretboard);
-            });
+            draw_fretboard(painter, fretboard);
         });
     }
 }
