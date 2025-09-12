@@ -51,6 +51,7 @@ impl Note {
     }
 }
 
+/// absolute
 #[derive(Debug, Clone, Copy)]
 pub struct ANote {
     pub note: Note,
@@ -58,9 +59,13 @@ pub struct ANote {
     pub octave: Octave,
 }
 
-impl ANote {
-    fn pitch_class(&self) -> u8 {
-        match (self.note, self.ass) {
+/// относительная нота. без октавы
+#[derive(Debug, Clone)]
+pub struct PCNote(pub u8);
+
+impl PCNote {
+    fn pitch_class(note: Note, ass: Ass) -> PCNote {
+        let f = match (note, ass) {
             (Note::C, Ass::Natural) => 0,
             (Note::C, Ass::Sharp) | (Note::D, Ass::Flat) => 1,
             (Note::D, Ass::Natural) => 2,
@@ -75,17 +80,13 @@ impl ANote {
             (Note::B, Ass::Natural) => 11,
             // Ass::Natural on enharmonic weird cases covered above
             _ => panic!("Unsupported accidental combination"),
-        }
+        };
+
+        PCNote(f)
     }
 
-    fn to_midi(&self) -> Midi {
-        let note = self.octave.0 as i32 * 12 + self.pitch_class() as i32;
-        Midi::new(note as u8).unwrap()
-    }
-
-    fn from_midi(midi: Midi) -> ANote {
-        let octave = (midi.0 / 12) as u8;
-        let pc = (midi.0 % 12 + 12) % 12; // нормализация
+    pub fn to_note(&self) -> (Note, Ass) {
+        let pc = self.0;
 
         let (note, ass) = match pc {
             0 => (Note::C, Ass::Natural),
@@ -103,16 +104,39 @@ impl ANote {
             _ => unreachable!(),
         };
 
+        (note, ass)
+    }
+
+    pub fn from_note(note: Note, ass: Ass) -> Self {
+        Self::pitch_class(note, ass)
+    }
+
+    pub fn add(&self, i: &Interval) -> PCNote {
+        let brr = (self.0 as i32 + i.0) % 12;
+        PCNote(brr as u8)
+    }
+}
+
+impl ANote {
+    pub fn to_midi(&self) -> PNote {
+        let note = self.octave.0 as i32 * 12 + self.simple().0 as i32;
+        PNote::new(note as u8).unwrap()
+    }
+
+    pub fn from_midi(midi: PNote) -> ANote {
+        let (octave, note) = midi.to_note();
+        let (note, ass) = note.to_note();
+
         ANote {
             note,
             ass,
-            octave: Octave(octave),
+            octave: octave,
         }
     }
 
     pub fn add_interval(&self, semitones: Interval) -> ANote {
         let midi = self.to_midi();
-        ANote::from_midi(midi.add(semitones.0))
+        ANote::from_midi(midi.add(semitones))
     }
 
     pub fn new(n: Note, octave: u8) -> Self {
@@ -130,12 +154,17 @@ impl ANote {
 
         format!("{}{}{}", n, a, o)
     }
+
+    fn simple(&self) -> PCNote {
+        PCNote::from_note(self.note, self.ass)
+    }
 }
 
+// Pitch.  абсолютная нота, с октавой
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Midi(u8);
+pub struct PNote(u8);
 
-impl Midi {
+impl PNote {
     pub const MIN: u8 = 0;
     pub const MAX: u8 = 127;
 
@@ -153,11 +182,18 @@ impl Midi {
 
     /// Прибавить n полутонов к текущей ноте.
     /// Если выходит за диапазон 0..=127, обрезаем к границе.
-    pub fn add(&self, semitones: i32) -> Midi {
-        let value = self.0 as i32 + semitones;
+    pub fn add(&self, semitones: Interval) -> PNote {
+        let value = self.0 as i32 + semitones.0;
         let clamped = value.clamp(0, 127) as u8;
-        Midi(clamped)
+        PNote(clamped)
+    }
+
+    pub fn to_note(&self) -> (Octave, PCNote) {
+        let octave = (self.0 / 12) as u8;
+        let pc = (self.0 % 12 + 12) % 12; // нормализация
+        (Octave(octave), PCNote(pc))
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Interval(pub i32);

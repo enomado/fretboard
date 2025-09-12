@@ -8,3 +8,4 @@ pub mod types;
 pub mod types_parse;
 
 pub mod fretboard;
+pub mod scale;

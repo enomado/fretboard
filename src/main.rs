@@ -7,8 +7,9 @@ use fretboard;
 use eframe::egui::{Color32, Context, FontId, Rangef, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use eframe::{CreationContext, Frame, NativeOptions, egui};
 use fretboard::fretboard::{FretConfig, Fretboard, fret_position_log_range};
+use fretboard::scale::Scale;
 use fretboard::tuning::{Fret, GString, Tuning};
-use fretboard::types::ANote;
+use fretboard::types::{ANote, Ass, Note, PCNote};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -63,9 +64,9 @@ impl App {
             let fretboard = Fretboard {
                 screen_size_x: rangef_to_range(fretboard_rect.x_range()),
                 screen_size_y: rangef_to_range(fretboard_rect.y_range()),
-                config: FretConfig::Linear,
+                config: FretConfig::Log,
                 tuning,
-                fret_range_show: Fret(5)..Fret(25),
+                fret_range_show: Fret(1)..Fret(19),
             };
 
             // border
@@ -76,9 +77,9 @@ impl App {
                 egui::StrokeKind::Inside,
             );
 
-            draw_frets(&painter, fretboard_rect, &fretboard);
+            draw_fret_lines(&painter, fretboard_rect, &fretboard);
 
-            draw_strings(&painter, fretboard_rect, &fretboard);
+            draw_string_lines(&painter, fretboard_rect, &fretboard);
 
             draw_fretboard(painter, fretboard);
         });
@@ -86,6 +87,8 @@ impl App {
 }
 
 fn draw_fretboard(painter: egui::Painter, fretboard: Fretboard) {
+    let scale = Scale::minor(PCNote::from_note(Note::C, Ass::Sharp));
+
     for string in fretboard.iter_strings() {
         for fret in fretboard.iter_frets() {
             //
@@ -115,7 +118,7 @@ fn draw_fretboard(painter: egui::Painter, fretboard: Fretboard) {
     }
 }
 
-fn draw_strings(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
+fn draw_string_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
     for stringg in fretboard.iter_strings() {
         let y = fretboard.string_pos(stringg);
         let open = fretboard.tuning.note(stringg);
@@ -142,18 +145,24 @@ fn draw_strings(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretb
     }
 }
 
-fn draw_frets(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
+fn draw_fret_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
     for fret in fretboard.iter_frets() {
         let x = fretboard.fret_pos(fret);
 
         painter.vline(x, fretboard_rect.y_range(), (1.0, Color32::GREEN));
+
+        let color = if fret.0 == 12 {
+            Color32::RED
+        } else {
+            Color32::YELLOW
+        };
 
         painter.text(
             pos2(x, fretboard_rect.y_range().max + 4.),
             egui::Align2::CENTER_TOP,
             format!("{}", fret.0),
             FontId::monospace(12.0),
-            Color32::YELLOW,
+            color,
         );
     }
 }
