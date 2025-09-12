@@ -1,7 +1,4 @@
-use crate::core_types::{
-    parse::parse_notes,
-    pitch::{ANote, Interval},
-};
+use crate::core_types::{note::ANote, parse::parse_notes, pitch::Interval};
 
 #[derive(Debug, Clone)]
 pub struct Tuning {

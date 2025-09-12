@@ -8,7 +8,7 @@ use nom::{
     sequence::tuple,
 };
 
-use crate::core_types::pitch::{ANote, Ass, Note, Octave};
+use crate::core_types::note::{ANote, Accidental, Note, Octave};
 
 /// Парсинг одной буквы A–G
 fn parse_note(input: &str) -> IResult<&str, Note> {
@@ -25,11 +25,11 @@ fn parse_note(input: &str) -> IResult<&str, Note> {
 }
 
 /// Парсинг диез/бемоль/натурал
-fn parse_ass(input: &str) -> IResult<&str, Ass> {
+fn parse_ass(input: &str) -> IResult<&str, Accidental> {
     map(opt(alt((char('#'), char('b')))), |opt_c| match opt_c {
-        Some('#') => Ass::Sharp,
-        Some('b') => Ass::Flat,
-        None => Ass::Natural,
+        Some('#') => Accidental::Sharp,
+        Some('b') => Accidental::Flat,
+        None => Accidental::Natural,
         _ => unreachable!(),
     })(input)
 }

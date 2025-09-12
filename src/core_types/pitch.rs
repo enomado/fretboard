@@ -1,83 +1,26 @@
 use std::fmt::format;
 
-#[derive(Debug, Clone, Copy)]
-pub enum Ass {
-    Flat,
-    Sharp,
-    Natural,
-}
-
-impl Ass {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Ass::Flat => "b",
-            Ass::Sharp => "#",
-            Ass::Natural => "",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Octave(pub u8);
-
-impl Octave {
-    pub fn name(&self) -> String {
-        self.0.to_string()
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Note {
-    A,
-    B,
-    C,
-    D,
-    E,
-    F,
-    G,
-}
-
-impl Note {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Note::A => "A",
-            Note::B => "B",
-            Note::C => "C",
-            Note::D => "D",
-            Note::E => "E",
-            Note::F => "F",
-            Note::G => "G",
-        }
-    }
-}
-
-/// absolute
-#[derive(Debug, Clone, Copy)]
-pub struct ANote {
-    pub note: Note,
-    pub ass: Ass,
-    pub octave: Octave,
-}
+use crate::core_types::note::{Accidental, Note, Octave};
 
 /// относительная нота. без октавы
 #[derive(Debug, Clone)]
 pub struct PCNote(pub u8);
 
 impl PCNote {
-    fn pitch_class(note: Note, ass: Ass) -> PCNote {
+    fn pitch_class(note: Note, ass: Accidental) -> PCNote {
         let f = match (note, ass) {
-            (Note::C, Ass::Natural) => 0,
-            (Note::C, Ass::Sharp) | (Note::D, Ass::Flat) => 1,
-            (Note::D, Ass::Natural) => 2,
-            (Note::D, Ass::Sharp) | (Note::E, Ass::Flat) => 3,
-            (Note::E, Ass::Natural) => 4,
-            (Note::F, Ass::Natural) => 5,
-            (Note::F, Ass::Sharp) | (Note::G, Ass::Flat) => 6,
-            (Note::G, Ass::Natural) => 7,
-            (Note::G, Ass::Sharp) | (Note::A, Ass::Flat) => 8,
-            (Note::A, Ass::Natural) => 9,
-            (Note::A, Ass::Sharp) | (Note::B, Ass::Flat) => 10,
-            (Note::B, Ass::Natural) => 11,
+            (Note::C, Accidental::Natural) => 0,
+            (Note::C, Accidental::Sharp) | (Note::D, Accidental::Flat) => 1,
+            (Note::D, Accidental::Natural) => 2,
+            (Note::D, Accidental::Sharp) | (Note::E, Accidental::Flat) => 3,
+            (Note::E, Accidental::Natural) => 4,
+            (Note::F, Accidental::Natural) => 5,
+            (Note::F, Accidental::Sharp) | (Note::G, Accidental::Flat) => 6,
+            (Note::G, Accidental::Natural) => 7,
+            (Note::G, Accidental::Sharp) | (Note::A, Accidental::Flat) => 8,
+            (Note::A, Accidental::Natural) => 9,
+            (Note::A, Accidental::Sharp) | (Note::B, Accidental::Flat) => 10,
+            (Note::B, Accidental::Natural) => 11,
             // Ass::Natural on enharmonic weird cases covered above
             _ => panic!("Unsupported accidental combination"),
         };
@@ -85,78 +28,35 @@ impl PCNote {
         PCNote(f)
     }
 
-    pub fn to_note(&self) -> (Note, Ass) {
+    pub fn to_note(&self) -> (Note, Accidental) {
         let pc = self.0;
 
         let (note, ass) = match pc {
-            0 => (Note::C, Ass::Natural),
-            1 => (Note::C, Ass::Sharp),
-            2 => (Note::D, Ass::Natural),
-            3 => (Note::D, Ass::Sharp),
-            4 => (Note::E, Ass::Natural),
-            5 => (Note::F, Ass::Natural),
-            6 => (Note::F, Ass::Sharp),
-            7 => (Note::G, Ass::Natural),
-            8 => (Note::G, Ass::Sharp),
-            9 => (Note::A, Ass::Natural),
-            10 => (Note::A, Ass::Sharp),
-            11 => (Note::B, Ass::Natural),
+            0 => (Note::C, Accidental::Natural),
+            1 => (Note::C, Accidental::Sharp),
+            2 => (Note::D, Accidental::Natural),
+            3 => (Note::D, Accidental::Sharp),
+            4 => (Note::E, Accidental::Natural),
+            5 => (Note::F, Accidental::Natural),
+            6 => (Note::F, Accidental::Sharp),
+            7 => (Note::G, Accidental::Natural),
+            8 => (Note::G, Accidental::Sharp),
+            9 => (Note::A, Accidental::Natural),
+            10 => (Note::A, Accidental::Sharp),
+            11 => (Note::B, Accidental::Natural),
             _ => unreachable!(),
         };
 
         (note, ass)
     }
 
-    pub fn from_note(note: Note, ass: Ass) -> Self {
+    pub fn from_note(note: Note, ass: Accidental) -> Self {
         Self::pitch_class(note, ass)
     }
 
     pub fn add(&self, i: &Interval) -> PCNote {
         let brr = (self.0 as i32 + i.0) % 12;
         PCNote(brr as u8)
-    }
-}
-
-impl ANote {
-    pub fn to_midi(&self) -> PNote {
-        let note = self.octave.0 as i32 * 12 + self.simple().0 as i32;
-        PNote::new(note as u8).unwrap()
-    }
-
-    pub fn from_midi(midi: PNote) -> ANote {
-        let (octave, note) = midi.to_note();
-        let (note, ass) = note.to_note();
-
-        ANote {
-            note,
-            ass,
-            octave: octave,
-        }
-    }
-
-    pub fn add_interval(&self, semitones: Interval) -> ANote {
-        let midi = self.to_midi();
-        ANote::from_midi(midi.add(semitones))
-    }
-
-    pub fn new(n: Note, octave: u8) -> Self {
-        Self {
-            note: n,
-            ass: Ass::Natural,
-            octave: Octave(octave),
-        }
-    }
-
-    pub fn name(&self) -> String {
-        let n = self.note.name();
-        let a = self.ass.name();
-        let o = self.octave.name();
-
-        format!("{}{}{}", n, a, o)
-    }
-
-    fn simple(&self) -> PCNote {
-        PCNote::from_note(self.note, self.ass)
     }
 }
 
