@@ -22,7 +22,7 @@ fn main() -> eframe::Result {
 
     subsecond::call(|| {
         eframe::run_native(
-            "subsecond example",
+            "fretboard",
             NativeOptions::default(),
             Box::new(|cc| Ok(Box::new(App::new(cc)))),
         )
