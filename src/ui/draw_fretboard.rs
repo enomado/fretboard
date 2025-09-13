@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 pub fn draw_fretboard(painter: egui::Painter, fretboard: Fretboard) {
-    let scale = Scale::minor(PCNote::from_note(Note::C, Accidental::Sharp));
+    let scale = Scale::minor(PCNote::from_note(Note::A, Accidental::Natural));
 
     for string in fretboard.iter_strings() {
         for fret in fretboard.iter_frets() {
@@ -30,12 +30,21 @@ pub fn draw_fretboard(painter: egui::Painter, fretboard: Fretboard) {
                 Color32::BLACK,
             );
 
+            let (_, pc_note) = note.to_pc();
+
+            let color = match scale.degree(pc_note).map(|s| s.0) {
+                Some(1) => Color32::RED,      // I ступень
+                Some(5) => Color32::DARK_RED, // любая другая ступень
+                Some(_) => Color32::YELLOW,   // любая другая ступень
+                None => Color32::GRAY,        // нет в гамме
+            };
+
             painter.text(
                 pos,
                 egui::Align2::CENTER_CENTER,
                 note.to_anote().name(),
                 FontId::monospace(12.),
-                Color32::RED,
+                color,
             );
         }
     }

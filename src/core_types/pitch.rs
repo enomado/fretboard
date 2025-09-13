@@ -2,8 +2,10 @@ use std::fmt::format;
 
 use crate::core_types::note::{ANote, Accidental, Note, Octave};
 
+/// pitch class
 /// относительная нота. без октавы
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+
 pub struct PCNote(pub u8);
 
 impl PCNote {
@@ -99,5 +101,5 @@ impl PNote {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Interval(pub i32);
