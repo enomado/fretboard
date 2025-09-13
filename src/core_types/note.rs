@@ -51,6 +51,10 @@ impl Note {
             Note::G => "G",
         }
     }
+
+    pub fn to_pc(self) -> PCNote {
+        PCNote::from_natural(self)
+    }
 }
 
 /// absolute

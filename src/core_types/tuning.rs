@@ -60,7 +60,7 @@ impl Tuning {
     }
 
     pub fn minor_thirds(root: PNote) -> Self {
-        Self::from_rel(root, &[3, 3, 3, 3, 3, 3])
+        Self::from_rel(root, &[3, 3, 3, 3, 3])
     }
 
     pub fn note(&self, index: GString) -> PNote {

@@ -56,6 +56,10 @@ impl PCNote {
         Self::pitch_class(note, ass)
     }
 
+    pub fn from_natural(note: Note) -> Self {
+        Self::pitch_class(note, Accidental::Natural)
+    }
+
     pub fn add(&self, i: &Interval) -> PCNote {
         let brr = (self.0 as i32 + i.0) % 12;
         PCNote(brr as u8)

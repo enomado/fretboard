@@ -1,5 +1,5 @@
 use crate::core_types::note::{ANote, Accidental, Note};
-use crate::core_types::pitch::PCNote;
+use crate::core_types::pitch::{PCNote, PNote};
 use crate::core_types::scale::Scale;
 use crate::core_types::tuning::{Fret, Tuning};
 use crate::fretboard::{FretConfig, Fretboard, fret_position_log_range};
@@ -9,9 +9,10 @@ use eframe::{CreationContext, Frame, NativeOptions, egui};
 use std::ops::Range;
 use std::sync::Arc;
 
-pub fn draw_fretboard(painter: egui::Painter, fretboard: Fretboard) {
-    let scale = Scale::minor(PCNote::from_note(Note::A, Accidental::Natural));
-
+pub fn draw_fretboard<F>(painter: egui::Painter, fretboard: Fretboard, mark: F)
+where
+    F: Fn(&PNote) -> Color32,
+{
     for string in fretboard.iter_strings() {
         for fret in fretboard.iter_frets() {
             //
@@ -30,14 +31,7 @@ pub fn draw_fretboard(painter: egui::Painter, fretboard: Fretboard) {
                 Color32::BLACK,
             );
 
-            let (_, pc_note) = note.to_pc();
-
-            let color = match scale.degree(pc_note).map(|s| s.0) {
-                Some(1) => Color32::RED,      // I ступень
-                Some(5) => Color32::DARK_RED, // любая другая ступень
-                Some(_) => Color32::YELLOW,   // любая другая ступень
-                None => Color32::GRAY,        // нет в гамме
-            };
+            let color = mark(&note);
 
             painter.text(
                 pos,

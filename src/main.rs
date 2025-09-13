@@ -6,8 +6,9 @@ use fretboard;
 
 use eframe::egui::{Color32, Context, FontId, Rangef, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
 use eframe::{CreationContext, Frame, NativeOptions, egui};
+use fretboard::core_types::chord::Chord;
 use fretboard::core_types::note::{ANote, Accidental, Note};
-use fretboard::core_types::pitch::PCNote;
+use fretboard::core_types::pitch::{PCNote, PNote};
 use fretboard::core_types::scale::Scale;
 use fretboard::core_types::tuning::{Fret, Tuning};
 use fretboard::fretboard::{FretConfig, Fretboard, fret_position_log_range};
@@ -49,10 +50,9 @@ impl App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // let tuning = Tuning::standart_e();
-            // let tuning = Tuning::standard_from(ANote::parse("E2").to_pitch());
-            let tuning = Tuning::cello();
-
+            let tuning = Tuning::standard_from(ANote::parse("E2").to_pitch());
             // let tuning = Tuning::minor_thirds(ANote::parse("D2").to_pitch());
+            // let tuning = Tuning::cello();
 
             let avail_width = ui.available_width();
             let (component_rect, resp) =
@@ -87,9 +87,40 @@ impl App {
 
             draw_string_lines(&painter, fretboard_rect, &fretboard);
 
-            draw_fretboard(painter, fretboard);
+            // draw_fretboard(painter, fretboard, mark_some_scale);
+            draw_fretboard(painter, fretboard, mark_some_chord);
         });
     }
+}
+
+fn mark_some_chord(note: &PNote) -> Color32 {
+    let scale = Chord::diminished7(Note::A.to_pc());
+
+    let (_, pc_note) = note.to_pc();
+
+    let color = match scale.degree(pc_note) {
+        Some(1) => Color32::RED, // I ступень
+        // Some(2) => Color32::DARK_RED, // любая другая ступень
+        Some(_) => Color32::YELLOW, // любая другая ступень
+        None => Color32::GRAY,      // нет в гамме
+    };
+
+    color
+}
+
+fn mark_some_scale(note: &PNote) -> Color32 {
+    let scale = Scale::minor(PCNote::from_note(Note::A, Accidental::Natural));
+
+    let (_, pc_note) = note.to_pc();
+
+    let color = match scale.degree(pc_note).map(|s| s.0) {
+        Some(1) => Color32::RED,      // I ступень
+        Some(5) => Color32::DARK_RED, // любая другая ступень
+        Some(_) => Color32::YELLOW,   // любая другая ступень
+        None => Color32::GRAY,        // нет в гамме
+    };
+
+    color
 }
 
 pub fn rangef_to_range(r: Rangef) -> Range<f32> {
