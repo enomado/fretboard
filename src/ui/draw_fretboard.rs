@@ -9,9 +9,13 @@ use eframe::{CreationContext, Frame, NativeOptions, egui};
 use std::ops::Range;
 use std::sync::Arc;
 
+pub trait Mark {
+    fn mark(&self, note: &PNote) -> Color32;
+}
+
 pub fn draw_fretboard<F>(painter: egui::Painter, fretboard: Fretboard, mark: F)
 where
-    F: Fn(&PNote) -> Color32,
+    F: Mark,
 {
     for string in fretboard.iter_strings() {
         for fret in fretboard.iter_frets() {
@@ -31,7 +35,7 @@ where
                 Color32::BLACK,
             );
 
-            let color = mark(&note);
+            let color = mark.mark(&note);
 
             painter.text(
                 pos,
@@ -44,10 +48,17 @@ where
     }
 }
 
-pub fn draw_string_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
+pub fn draw_string_lines<M: Mark>(
+    painter: &egui::Painter,
+    fretboard_rect: Rect,
+    fretboard: &Fretboard,
+    mark: M,
+) {
     for stringg in fretboard.iter_strings() {
         let y = fretboard.string_pos(stringg);
         let open = fretboard.tuning.note(stringg);
+
+        let color = mark.mark(&open);
 
         // open note
         painter.text(
@@ -55,7 +66,7 @@ pub fn draw_string_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboar
             egui::Align2::LEFT_CENTER,
             format!("{}", open.to_anote().name()),
             FontId::monospace(12.0),
-            Color32::YELLOW,
+            color,
         );
 
         // string N

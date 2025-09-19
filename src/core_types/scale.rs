@@ -1,8 +1,12 @@
 use std::collections::HashSet;
 
+use eframe::egui::Color32;
 use itertools::Itertools;
 
-use crate::core_types::pitch::{Interval, PCNote};
+use crate::{
+    core_types::pitch::{Interval, PCNote},
+    ui::draw_fretboard::Mark,
+};
 
 use super::pitch::PNote;
 
@@ -12,6 +16,28 @@ pub struct Scale {
     pub intervals: Vec<Interval>, // интервалы в полутонах от корня
 
     pcs_set: Vec<PCNote>, // для быстрого contains
+}
+
+impl Mark for &Scale {
+    fn mark(&self, note: &PNote) -> Color32 {
+        mark_some_scale(note, &self)
+    }
+}
+
+fn mark_some_scale(note: &PNote, scale: &Scale) -> Color32 {
+    // let scale = Scale::minor(PCNote::from_note(Note::A, Accidental::Natural));
+    // let scale = Scale::blues_minor_pentatonic(PCNote::from_note(Note::A, Accidental::Natural));
+
+    let (_, pc_note) = note.to_pc();
+
+    let color = match scale.degree(pc_note).map(|s| s.0) {
+        Some(1) => Color32::RED,                          // I ступень
+        Some(5) => Color32::DARK_RED.gamma_multiply(1.2), // любая другая ступень
+        Some(_) => Color32::YELLOW,                       // любая другая ступень
+        None => Color32::GRAY.gamma_multiply(0.2),        // нет в гамме
+    };
+
+    color
 }
 
 impl Scale {
@@ -37,6 +63,18 @@ impl Scale {
 
     pub fn major(root: PCNote) -> Self {
         Self::new(root, &[0, 2, 4, 5, 7, 9, 11])
+    }
+
+    pub fn blues_minor(root: PCNote) -> Self {
+        Self::new(root, &[0, 3, 5, 6, 7, 10])
+    }
+
+    pub fn blues_minor_pentatonic(root: PCNote) -> Self {
+        Self::new(root, &[0, 3, 5, 7, 10])
+    }
+
+    pub fn blues_major(root: PCNote) -> Self {
+        Self::new(root, &[0, 2, 3, 4, 7, 9])
     }
 
     pub fn minor(root: PCNote) -> Self {

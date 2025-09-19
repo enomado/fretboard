@@ -12,7 +12,7 @@ use fretboard::core_types::pitch::{PCNote, PNote};
 use fretboard::core_types::scale::Scale;
 use fretboard::core_types::tuning::{Fret, Tuning};
 use fretboard::fretboard::{FretConfig, Fretboard, fret_position_log_range};
-use fretboard::ui::draw_fretboard::{draw_fret_lines, draw_fretboard, draw_string_lines};
+use fretboard::ui::draw_fretboard::{Mark, draw_fret_lines, draw_fretboard, draw_string_lines};
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -50,9 +50,13 @@ impl App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // let tuning = Tuning::standart_e();
-            let tuning = Tuning::standard_from(ANote::parse("E2").to_pitch());
+            // let tuning = Tuning::standard_from(ANote::parse("E2").to_pitch());
             // let tuning = Tuning::minor_thirds(ANote::parse("D2").to_pitch());
-            // let tuning = Tuning::cello();
+            let tuning = Tuning::cello();
+            let scale =
+                Scale::blues_minor_pentatonic(PCNote::from_note(Note::A, Accidental::Natural));
+
+            // let scale = Scale::blues_minor(PCNote::from_note(Note::A, Accidental::Natural));
 
             let avail_width = ui.available_width();
             let (component_rect, resp) =
@@ -85,11 +89,19 @@ impl App {
 
             draw_fret_lines(&painter, fretboard_rect, &fretboard);
 
-            draw_string_lines(&painter, fretboard_rect, &fretboard);
+            draw_string_lines(&painter, fretboard_rect, &fretboard, &scale);
 
-            // draw_fretboard(painter, fretboard, mark_some_scale);
-            draw_fretboard(painter, fretboard, mark_some_chord);
+            draw_fretboard(painter, fretboard, &scale);
+            // draw_fretboard(painter, fretboard, mark_some_chord);
         });
+    }
+}
+
+pub struct MarkSomeChord;
+
+impl Mark for &MarkSomeChord {
+    fn mark(&self, note: &PNote) -> Color32 {
+        mark_some_chord(note)
     }
 }
 
@@ -103,21 +115,6 @@ fn mark_some_chord(note: &PNote) -> Color32 {
         // Some(2) => Color32::DARK_RED, // любая другая ступень
         Some(_) => Color32::YELLOW, // любая другая ступень
         None => Color32::GRAY,      // нет в гамме
-    };
-
-    color
-}
-
-fn mark_some_scale(note: &PNote) -> Color32 {
-    let scale = Scale::minor(PCNote::from_note(Note::A, Accidental::Natural));
-
-    let (_, pc_note) = note.to_pc();
-
-    let color = match scale.degree(pc_note).map(|s| s.0) {
-        Some(1) => Color32::RED,      // I ступень
-        Some(5) => Color32::DARK_RED, // любая другая ступень
-        Some(_) => Color32::YELLOW,   // любая другая ступень
-        None => Color32::GRAY,        // нет в гамме
     };
 
     color
