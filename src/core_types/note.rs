@@ -1,4 +1,8 @@
-use crate::core_types::pitch::{Interval, PCNote, PNote};
+use crate::core_types::pitch::{
+    Interval,
+    PCNote,
+    PNote,
+};
 
 /// types for convinience
 
@@ -60,8 +64,8 @@ impl Note {
 /// absolute
 #[derive(Debug, Clone, Copy)]
 pub struct ANote {
-    pub note: Note,
-    pub ass: Accidental,
+    pub note:   Note,
+    pub ass:    Accidental,
     pub octave: Octave,
 }
 
@@ -75,11 +79,7 @@ impl ANote {
         let (octave, note) = pitch.to_pc();
         let (note, ass) = note.to_note();
 
-        ANote {
-            note,
-            ass,
-            octave: octave,
-        }
+        ANote { note, ass, octave }
     }
 
     pub fn add_interval(&self, semitones: Interval) -> ANote {
@@ -91,7 +91,7 @@ impl ANote {
         Self {
             note: n,
             ass: Accidental::Natural,
-            octave: octave,
+            octave,
         }
     }
 

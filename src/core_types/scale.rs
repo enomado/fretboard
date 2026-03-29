@@ -3,16 +3,16 @@ use std::collections::HashSet;
 use eframe::egui::Color32;
 use itertools::Itertools;
 
-use crate::{
-    core_types::pitch::{Interval, PCNote},
-    ui::draw_fretboard::Mark,
-};
-
 use super::pitch::PNote;
+use crate::core_types::pitch::{
+    Interval,
+    PCNote,
+};
+use crate::ui::draw_fretboard::Mark;
 
 #[derive(Debug, Clone)]
 pub struct Scale {
-    pub root: PCNote,             // корневая нота
+    pub root:      PCNote,        // корневая нота
     pub intervals: Vec<Interval>, // интервалы в полутонах от корня
 
     pcs_set: Vec<PCNote>, // для быстрого contains
@@ -20,7 +20,7 @@ pub struct Scale {
 
 impl Mark for &Scale {
     fn mark(&self, note: &PNote) -> Color32 {
-        mark_some_scale(note, &self)
+        mark_some_scale(note, self)
     }
 }
 
@@ -30,28 +30,23 @@ fn mark_some_scale(note: &PNote, scale: &Scale) -> Color32 {
 
     let (_, pc_note) = note.to_pc();
 
-    let color = match scale.degree(pc_note).map(|s| s.0) {
+    match scale.degree(pc_note).map(|s| s.0) {
         Some(1) => Color32::RED,                          // I ступень
         Some(5) => Color32::DARK_RED.gamma_multiply(1.2), // любая другая ступень
         Some(_) => Color32::YELLOW,                       // любая другая ступень
         None => Color32::GRAY.gamma_multiply(0.2),        // нет в гамме
-    };
-
-    color
+    }
 }
 
 impl Scale {
     pub fn new(root: PCNote, intervals: &[u8]) -> Self {
         let intervals = intervals.iter().map(|s| Interval(*s as i32)).collect_vec();
 
-        let pcs_set = intervals
-            .iter()
-            .map(|interval| root.add(interval))
-            .collect();
+        let pcs_set = intervals.iter().map(|interval| root.add(interval)).collect();
 
         Self {
             root,
-            intervals: intervals,
+            intervals,
             pcs_set,
         }
     }

@@ -1,9 +1,11 @@
 use itertools::Itertools;
 
-use crate::core_types::{
-    note::ANote,
-    parse::parse_notes,
-    pitch::{Interval, PCNote, PNote},
+use crate::core_types::note::ANote;
+use crate::core_types::parse::parse_notes;
+use crate::core_types::pitch::{
+    Interval,
+    PCNote,
+    PNote,
 };
 
 #[derive(Debug, Clone)]
@@ -64,7 +66,7 @@ impl Tuning {
     }
 
     pub fn note(&self, index: GString) -> PNote {
-        self.v.get(index.0 - 1).unwrap().clone()
+        *self.v.get(index.0 - 1).unwrap()
     }
 
     pub fn string_count(&self) -> usize {

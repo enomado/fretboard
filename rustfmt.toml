@@ -1,0 +1,22 @@
+max_width = 110
+# imports_granularity="Crate"
+imports_granularity = "Module"
+
+# imports_layout = "HorizontalVertical"
+imports_layout = "Vertical"
+
+struct_field_align_threshold = 16
+force_multiline_blocks = true
+blank_lines_lower_bound = 0
+
+empty_item_single_line = false
+# format_strings= true
+
+style_edition = "2024"
+
+# ломает закомменченный код
+wrap_comments = false
+
+group_imports = "StdExternalCrate"
+
+# blank_lines_upper_bound = 1

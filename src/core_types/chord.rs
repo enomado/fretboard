@@ -1,11 +1,14 @@
-use crate::core_types::pitch::{Interval, PCNote};
+use crate::core_types::pitch::{
+    Interval,
+    PCNote,
+};
 
 #[derive(Debug, Clone)]
 pub struct Chord {
-    pub root: PCNote, // корневая нота
+    pub root:      PCNote, // корневая нота
     pub intervals: Vec<Interval>, // интервалы от корня
 
-                      // pub name: Option<String>,     // например "Cmaj7", "Dm"
+                           // pub name: Option<String>,     // например "Cmaj7", "Dm"
 }
 
 impl Chord {
@@ -41,37 +44,22 @@ impl Chord {
     }
 
     pub fn dominant7(root: PCNote) -> Self {
-        Self::new(
-            root,
-            vec![Interval(0), Interval(4), Interval(7), Interval(10)],
-        )
+        Self::new(root, vec![Interval(0), Interval(4), Interval(7), Interval(10)])
     }
 
     pub fn major7(root: PCNote) -> Self {
-        Self::new(
-            root,
-            vec![Interval(0), Interval(4), Interval(7), Interval(11)],
-        )
+        Self::new(root, vec![Interval(0), Interval(4), Interval(7), Interval(11)])
     }
 
     pub fn minor7(root: PCNote) -> Self {
-        Self::new(
-            root,
-            vec![Interval(0), Interval(3), Interval(7), Interval(10)],
-        )
+        Self::new(root, vec![Interval(0), Interval(3), Interval(7), Interval(10)])
     }
 
     pub fn half_diminished7(root: PCNote) -> Self {
-        Self::new(
-            root,
-            vec![Interval(0), Interval(3), Interval(6), Interval(10)],
-        )
+        Self::new(root, vec![Interval(0), Interval(3), Interval(6), Interval(10)])
     }
 
     pub fn diminished7(root: PCNote) -> Self {
-        Self::new(
-            root,
-            vec![Interval(0), Interval(3), Interval(6), Interval(9)],
-        )
+        Self::new(root, vec![Interval(0), Interval(3), Interval(6), Interval(9)])
     }
 }

@@ -1,36 +1,52 @@
-use nom::{
-    IResult,
-    branch::alt,
-    bytes::complete::{tag, take_while1},
-    character::complete::{char, one_of},
-    combinator::{map, opt},
-    multi::separated_list1,
-    sequence::tuple,
+use nom::IResult;
+use nom::branch::alt;
+use nom::bytes::complete::{
+    tag,
+    take_while1,
 };
+use nom::character::complete::{
+    char,
+    one_of,
+};
+use nom::combinator::{
+    map,
+    opt,
+};
+use nom::multi::separated_list1;
+use nom::sequence::tuple;
 
-use crate::core_types::note::{ANote, Accidental, Note, Octave};
+use crate::core_types::note::{
+    ANote,
+    Accidental,
+    Note,
+    Octave,
+};
 
 /// Парсинг одной буквы A–G
 fn parse_note(input: &str) -> IResult<&str, Note> {
-    map(one_of("ABCDEFG"), |c| match c {
-        'A' => Note::A,
-        'B' => Note::B,
-        'C' => Note::C,
-        'D' => Note::D,
-        'E' => Note::E,
-        'F' => Note::F,
-        'G' => Note::G,
-        _ => unreachable!(),
+    map(one_of("ABCDEFG"), |c| {
+        match c {
+            'A' => Note::A,
+            'B' => Note::B,
+            'C' => Note::C,
+            'D' => Note::D,
+            'E' => Note::E,
+            'F' => Note::F,
+            'G' => Note::G,
+            _ => unreachable!(),
+        }
     })(input)
 }
 
 /// Парсинг диез/бемоль/натурал
 fn parse_ass(input: &str) -> IResult<&str, Accidental> {
-    map(opt(alt((char('#'), char('b')))), |opt_c| match opt_c {
-        Some('#') => Accidental::Sharp,
-        Some('b') => Accidental::Flat,
-        None => Accidental::Natural,
-        _ => unreachable!(),
+    map(opt(alt((char('#'), char('b')))), |opt_c| {
+        match opt_c {
+            Some('#') => Accidental::Sharp,
+            Some('b') => Accidental::Flat,
+            None => Accidental::Natural,
+            _ => unreachable!(),
+        }
     })(input)
 }
 

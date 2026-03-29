@@ -1,13 +1,45 @@
-use crate::core_types::note::{ANote, Accidental, Note};
-use crate::core_types::pitch::{PCNote, PNote};
-use crate::core_types::scale::Scale;
-use crate::core_types::tuning::{Fret, Tuning};
-use crate::fretboard::{FretConfig, Fretboard, fret_position_log_range};
-use eframe::egui::{Color32, Context, FontId, Rangef, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
-use eframe::{CreationContext, Frame, NativeOptions, egui};
-
 use std::ops::Range;
 use std::sync::Arc;
+
+use eframe::egui::{
+    Color32,
+    Context,
+    FontId,
+    Rangef,
+    Rect,
+    Sense,
+    Stroke,
+    Ui,
+    Vec2,
+    pos2,
+    vec2,
+};
+use eframe::{
+    CreationContext,
+    Frame,
+    NativeOptions,
+    egui,
+};
+
+use crate::core_types::note::{
+    ANote,
+    Accidental,
+    Note,
+};
+use crate::core_types::pitch::{
+    PCNote,
+    PNote,
+};
+use crate::core_types::scale::Scale;
+use crate::core_types::tuning::{
+    Fret,
+    Tuning,
+};
+use crate::fretboard::{
+    FretConfig,
+    Fretboard,
+    fret_position_log_range,
+};
 
 pub trait Mark {
     fn mark(&self, note: &PNote) -> Color32;
@@ -29,11 +61,7 @@ where
 
             let pos: egui::Pos2 = pos2(x, y);
 
-            painter.rect_filled(
-                Rect::from_center_size(pos, vec2(30., 14.)),
-                8.0,
-                Color32::BLACK,
-            );
+            painter.rect_filled(Rect::from_center_size(pos, vec2(30., 14.)), 8.0, Color32::BLACK);
 
             let color = mark.mark(&note);
 
@@ -64,7 +92,7 @@ pub fn draw_string_lines<M: Mark>(
         painter.text(
             pos2(fretboard_rect.x_range().min - 26., y),
             egui::Align2::LEFT_CENTER,
-            format!("{}", open.to_anote().name()),
+            open.to_anote().name(),
             FontId::monospace(12.0),
             color,
         );
@@ -73,13 +101,27 @@ pub fn draw_string_lines<M: Mark>(
         painter.text(
             pos2(fretboard_rect.x_range().min - 46., y),
             egui::Align2::LEFT_CENTER,
-            format!("{}", stringg.name()),
+            stringg.name(),
             FontId::monospace(12.0),
             Color32::YELLOW,
         );
 
         painter.hline(fretboard_rect.x_range(), y, (1.0, Color32::GREEN));
     }
+}
+
+// не-generic обёртки для jump table hotpatch (generic fn pointer не coerce в HRTB fn ptr)
+pub fn draw_fretboard_scale(painter: egui::Painter, fretboard: Fretboard, scale: &Scale) {
+    draw_fretboard(painter, fretboard, scale);
+}
+
+pub fn draw_string_lines_scale(
+    painter: &egui::Painter,
+    fretboard_rect: Rect,
+    fretboard: &Fretboard,
+    scale: &Scale,
+) {
+    draw_string_lines(painter, fretboard_rect, fretboard, scale);
 }
 
 pub fn draw_fret_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
