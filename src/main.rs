@@ -257,28 +257,47 @@ struct Position {
     fret_to:   usize, // последний лад включительно
 }
 
-// позиции виолончели (перекрывающиеся)
+// Позиции виолончели (lower position fingering system).
+// Каждая позиция покрывает 4 полутона (1-й палец → 4-й палец).
+// Между основными позициями есть промежуточные (half/upper/lower),
+// но рисуем только основные.
+//
+// Полная таблица (лад = полутон от открытой струны):
+//   Half Position:              лады 1–4
+//   1st Position:               лады 2–5
+//   Upper 1st / Lower 2nd:     лады 3–6
+//   2nd Position:               лады 4–7
+//   Upper 2nd:                  лады 5–8
+//   3rd Position:               лады 5–8  (то же, другая аппликатура)
+//   Upper 3rd / Lower 4th:     лады 6–9
+//   4th Position:               лады 7–10
+//   Upper 4th / Lower 5th:     лады 8–11
+//   5th Position:               лады 9–12
+//   6th Position:               лады 10–13
+//   Upper 6th:                  лады 11–14
+//   7th Position:               лады 12–15
+//   Upper 7th:                  лады 13–16
 fn cello_positions() -> Vec<Position> {
     vec![
         Position {
             name:      "1st",
-            fret_from: 1,
-            fret_to:   4,
+            fret_from: 2,
+            fret_to:   5,
         },
         Position {
             name:      "2nd",
-            fret_from: 3,
-            fret_to:   6,
-        },
-        Position {
-            name:      "3rd",
             fret_from: 4,
             fret_to:   7,
         },
         Position {
+            name:      "3rd",
+            fret_from: 5,
+            fret_to:   8,
+        },
+        Position {
             name:      "4th",
-            fret_from: 6,
-            fret_to:   9,
+            fret_from: 7,
+            fret_to:   10,
         },
     ]
 }
