@@ -101,7 +101,107 @@ fn main() -> eframe::Result {
     })
 }
 
-struct App {}
+#[derive(Clone, Copy, PartialEq)]
+enum TuningKind {
+    Cello,
+    StandardE,
+    MinorThirds,
+}
+
+impl TuningKind {
+    fn label(&self) -> &'static str {
+        match self {
+            TuningKind::Cello => "Cello (C-G-D-A)",
+            TuningKind::StandardE => "Guitar (E std)",
+            TuningKind::MinorThirds => "Minor thirds",
+        }
+    }
+
+    fn to_tuning(&self) -> Tuning {
+        match self {
+            TuningKind::Cello => Tuning::cello(),
+            TuningKind::StandardE => Tuning::standart_e(),
+            TuningKind::MinorThirds => Tuning::minor_thirds(ANote::parse("D2").to_pitch()),
+        }
+    }
+}
+
+const ALL_TUNINGS: &[TuningKind] = &[TuningKind::Cello, TuningKind::StandardE, TuningKind::MinorThirds];
+
+#[derive(Clone, Copy, PartialEq)]
+enum ScaleKind {
+    Major,
+    Minor,
+    BluesMinor,
+    BluesMinorPentatonic,
+    BluesMajor,
+    Dorian,
+    Phrygian,
+    Lydian,
+    Mixolydian,
+    Locrian,
+}
+
+impl ScaleKind {
+    fn label(&self) -> &'static str {
+        match self {
+            ScaleKind::Major => "Major",
+            ScaleKind::Minor => "Minor",
+            ScaleKind::BluesMinor => "Blues minor",
+            ScaleKind::BluesMinorPentatonic => "Blues minor pent.",
+            ScaleKind::BluesMajor => "Blues major",
+            ScaleKind::Dorian => "Dorian",
+            ScaleKind::Phrygian => "Phrygian",
+            ScaleKind::Lydian => "Lydian",
+            ScaleKind::Mixolydian => "Mixolydian",
+            ScaleKind::Locrian => "Locrian",
+        }
+    }
+
+    fn to_scale(&self, root: PCNote) -> Scale {
+        match self {
+            ScaleKind::Major => Scale::major(root),
+            ScaleKind::Minor => Scale::minor(root),
+            ScaleKind::BluesMinor => Scale::blues_minor(root),
+            ScaleKind::BluesMinorPentatonic => Scale::blues_minor_pentatonic(root),
+            ScaleKind::BluesMajor => Scale::blues_major(root),
+            ScaleKind::Dorian => Scale::dorian(root),
+            ScaleKind::Phrygian => Scale::phrygian(root),
+            ScaleKind::Lydian => Scale::lydian(root),
+            ScaleKind::Mixolydian => Scale::mixolydian(root),
+            ScaleKind::Locrian => Scale::locrian(root),
+        }
+    }
+}
+
+const ALL_SCALES: &[ScaleKind] = &[
+    ScaleKind::Major,
+    ScaleKind::Minor,
+    ScaleKind::BluesMinor,
+    ScaleKind::BluesMinorPentatonic,
+    ScaleKind::BluesMajor,
+    ScaleKind::Dorian,
+    ScaleKind::Phrygian,
+    ScaleKind::Lydian,
+    ScaleKind::Mixolydian,
+    ScaleKind::Locrian,
+];
+
+const ALL_ROOTS: &[(Note, &str)] = &[
+    (Note::C, "C"),
+    (Note::D, "D"),
+    (Note::E, "E"),
+    (Note::F, "F"),
+    (Note::G, "G"),
+    (Note::A, "A"),
+    (Note::B, "B"),
+];
+
+struct App {
+    tuning_kind: TuningKind,
+    scale_kind:  ScaleKind,
+    root_note:   Note,
+}
 
 impl App {
     fn new(cc: &CreationContext) -> Self {
@@ -112,17 +212,65 @@ impl App {
 
             subsecond::register_handler(Arc::new(move || ctx.request_repaint()));
         }
-        Self {}
+        Self {
+            tuning_kind: TuningKind::Cello,
+            scale_kind:  ScaleKind::BluesMinor,
+            root_note:   Note::A,
+        }
     }
 
     fn subsecond_fn(&mut self, ui: &mut Ui) {
         ui.ctx().all_styles_mut(|style| {
-            style.spacing.button_padding = egui::vec2(20.0, 10.0);
+            style.spacing.button_padding = egui::vec2(8.0, 4.0);
         });
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            let tuning = Tuning::cello();
-            let scale = Scale::blues_minor(PCNote::from_note(Note::A, Accidental::Natural));
+            // ── контролы ──
+            ui.horizontal(|ui| {
+                // tuning
+                ui.label("Tuning:");
+                egui::ComboBox::from_id_salt("tuning")
+                    .selected_text(self.tuning_kind.label())
+                    .show_ui(ui, |ui| {
+                        for t in ALL_TUNINGS {
+                            ui.selectable_value(&mut self.tuning_kind, *t, t.label());
+                        }
+                    });
+
+                ui.separator();
+
+                // root note
+                ui.label("Root:");
+                for &(note, name) in ALL_ROOTS {
+                    if ui
+                        .selectable_label(
+                            std::mem::discriminant(&self.root_note) == std::mem::discriminant(&note),
+                            name,
+                        )
+                        .clicked()
+                    {
+                        self.root_note = note;
+                    }
+                }
+
+                ui.separator();
+
+                // scale
+                ui.label("Scale:");
+                egui::ComboBox::from_id_salt("scale")
+                    .selected_text(self.scale_kind.label())
+                    .show_ui(ui, |ui| {
+                        for s in ALL_SCALES {
+                            ui.selectable_value(&mut self.scale_kind, *s, s.label());
+                        }
+                    });
+            });
+
+            ui.add_space(4.0);
+
+            let tuning = self.tuning_kind.to_tuning();
+            let root_pc = PCNote::from_note(self.root_note, Accidental::Natural);
+            let scale = self.scale_kind.to_scale(root_pc);
 
             let avail_width = ui.available_width();
             let (component_rect, _resp) =
