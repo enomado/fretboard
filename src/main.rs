@@ -4,7 +4,6 @@
 
 use std::ops::Range;
 use std::sync::Arc;
-use std::sync::OnceLock;
 
 use eframe::egui::{
     Color32,
@@ -43,15 +42,6 @@ use fretboard::core_types::tuning::{
 use fretboard::fretboard::{
     FretConfig,
     Fretboard,
-    fret_position_log_range,
-};
-use fretboard::ui::draw_fretboard::{
-    Mark,
-    draw_fret_lines,
-    draw_fretboard,
-    draw_fretboard_scale,
-    draw_string_lines,
-    draw_string_lines_scale,
 };
 
 #[derive(serde::Deserialize)]
@@ -102,11 +92,6 @@ fn connect_subsecond() {
 fn main() -> eframe::Result {
     connect_subsecond();
 
-    // инициализируем OnceLock до первого патча — запоминаем оригинальные адреса из бинарника
-    DRAW_FRET_LINES_PTR.get_or_init(|| draw_fret_lines as *const () as u64);
-    DRAW_STRING_LINES_PTR.get_or_init(|| draw_string_lines_scale as *const () as u64);
-    DRAW_FRETBOARD_PTR.get_or_init(|| draw_fretboard_scale as *const () as u64);
-
     subsecond::call(|| {
         eframe::run_native(
             "fretboard",
@@ -136,26 +121,21 @@ impl App {
         });
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
-            // let tuning = Tuning::standart_e();
-            // let tuning = Tuning::standard_from(ANote::parse("E2").to_pitch());
-            // let tuning = Tuning::minor_thirds(ANote::parse("D2").to_pitch());
             let tuning = Tuning::cello();
-            // let scale =
-            // Scale::blues_minor_pentatonic(PCNote::from_note(Note::E, Accidental::Natural));
-
             let scale = Scale::blues_minor(PCNote::from_note(Note::A, Accidental::Natural));
 
             let avail_width = ui.available_width();
-            let (component_rect, resp) =
-                ui.allocate_exact_size(vec2(avail_width, 140.0), Sense::click_and_drag());
+            let (component_rect, _resp) =
+                ui.allocate_exact_size(vec2(avail_width, 260.0), Sense::click_and_drag());
 
             let painter = ui.painter_at(component_rect);
 
             let mut fretboard_rect = component_rect;
 
-            // margin
+            // margin — оставляем место для скобок позиций сверху и снизу
+            fretboard_rect.min.y += 60.;
+            fretboard_rect.max.y -= 60.;
             fretboard_rect.max.x -= 20.;
-            fretboard_rect.max.y -= 20.;
             fretboard_rect.min.x += 46.;
 
             let fretboard = Fretboard {
@@ -174,108 +154,192 @@ impl App {
                 egui::StrokeKind::Inside,
             );
 
-            call_draw_fret_lines(&painter, fretboard_rect, &fretboard);
-
-            call_draw_string_lines(&painter, fretboard_rect, &fretboard, &scale);
-
-            call_draw_fretboard(painter, fretboard, &scale);
-            // draw_fretboard(painter, fretboard, mark_some_chord);
+            draw_fret_lines(&painter, fretboard_rect, &fretboard);
+            draw_string_lines(&painter, fretboard_rect, &fretboard, &scale);
+            draw_fretboard(&painter, &fretboard, &scale);
+            draw_positions(&painter, fretboard_rect, &fretboard);
         });
     }
 }
 
-pub struct MarkSomeChord;
+// ── рисование (всё в tip crate для горячей подмены) ──
 
-impl Mark for &MarkSomeChord {
-    fn mark(&self, note: &PNote) -> Color32 {
-        mark_some_chord(note)
+fn mark_scale_note(note: &PNote, scale: &Scale) -> Color32 {
+    let (_, pc_note) = note.to_pc();
+
+    match scale.degree(pc_note).map(|s| s.0) {
+        Some(1) => Color32::RED,
+        Some(5) => Color32::DARK_RED.gamma_multiply(1.2),
+        Some(_) => Color32::YELLOW,
+        None => Color32::GRAY,
     }
 }
 
-fn mark_some_chord(note: &PNote) -> Color32 {
-    let scale = Chord::diminished7(Note::A.to_pc());
+fn draw_fretboard(painter: &egui::Painter, fretboard: &Fretboard, scale: &Scale) {
+    for string in fretboard.iter_strings() {
+        for fret in fretboard.iter_frets() {
+            let y = fretboard.string_pos(string);
+            let x = fretboard.fret_pos(fret);
 
-    let (_, pc_note) = note.to_pc();
+            let open = fretboard.tuning.note(string);
+            let note = open.add(fret.semitones());
+            let pos = pos2(x, y);
 
-    match scale.degree(pc_note) {
-        Some(1) => Color32::RED, // I ступень
-        // Some(2) => Color32::DARK_RED, // любая другая ступень
-        Some(_) => Color32::YELLOW, // любая другая ступень
-        None => Color32::GRAY,      // нет в гамме
+            painter.rect_filled(Rect::from_center_size(pos, vec2(30., 14.)), 8.0, Color32::BLACK);
+
+            let color = mark_scale_note(&note, scale);
+
+            painter.text(
+                pos,
+                egui::Align2::CENTER_CENTER,
+                note.to_anote().name(),
+                FontId::monospace(12.),
+                color,
+            );
+        }
+    }
+}
+
+fn draw_string_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard, scale: &Scale) {
+    for stringg in fretboard.iter_strings() {
+        let y = fretboard.string_pos(stringg);
+        let open = fretboard.tuning.note(stringg);
+
+        let color = mark_scale_note(&open, scale);
+
+        // open note
+        painter.text(
+            pos2(fretboard_rect.x_range().min - 26., y),
+            egui::Align2::LEFT_CENTER,
+            open.to_anote().name(),
+            FontId::monospace(12.0),
+            color,
+        );
+
+        // string N
+        painter.text(
+            pos2(fretboard_rect.x_range().min - 46., y),
+            egui::Align2::LEFT_CENTER,
+            stringg.name(),
+            FontId::monospace(12.0),
+            Color32::YELLOW,
+        );
+
+        painter.hline(fretboard_rect.x_range(), y, (1.0, Color32::GREEN));
+    }
+}
+
+fn draw_fret_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
+    for fret in fretboard.iter_frets() {
+        let x = fretboard.fret_pos(fret);
+
+        painter.vline(x, fretboard_rect.y_range(), (1.0, Color32::GREEN));
+
+        let color = if fret.0 == 12 {
+            Color32::RED
+        } else {
+            Color32::YELLOW
+        };
+
+        painter.text(
+            pos2(x, fretboard_rect.y_range().max + 4.),
+            egui::Align2::CENTER_TOP,
+            format!("{}", fret.0),
+            FontId::monospace(12.0),
+            color,
+        );
+    }
+}
+
+struct Position {
+    name:      &'static str,
+    fret_from: usize, // первый лад включительно
+    fret_to:   usize, // последний лад включительно
+}
+
+// позиции виолончели (перекрывающиеся)
+fn cello_positions() -> Vec<Position> {
+    vec![
+        Position {
+            name:      "1st",
+            fret_from: 1,
+            fret_to:   4,
+        },
+        Position {
+            name:      "2nd",
+            fret_from: 3,
+            fret_to:   6,
+        },
+        Position {
+            name:      "3rd",
+            fret_from: 4,
+            fret_to:   7,
+        },
+        Position {
+            name:      "4th",
+            fret_from: 6,
+            fret_to:   9,
+        },
+    ]
+}
+
+fn draw_positions(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
+    let positions = cello_positions();
+
+    for (i, pos) in positions.iter().enumerate() {
+        let x_from = fretboard.fret_pos(Fret(pos.fret_from));
+        let x_to = fretboard.fret_pos(Fret(pos.fret_to));
+
+        // 1-я и 4-я позиции — выделяем
+        let (color, thickness) = match pos.name {
+            "1st" | "4th" => (Color32::from_rgba_unmultiplied(255, 100, 50, 200), 2.5),
+            _ => (Color32::from_rgba_unmultiplied(150, 200, 255, 150), 1.5),
+        };
+
+        // все скобки сверху, каждая следующая дальше от грифа
+        let bracket_offset = 28.0 + i as f32 * 14.0;
+        let y = fretboard_rect.min.y - bracket_offset;
+
+        // вертикальные линии от грифа до скобки
+        let grip_edge = fretboard_rect.min.y;
+        painter.line_segment(
+            [pos2(x_from, grip_edge), pos2(x_from, y)],
+            Stroke::new(thickness * 0.5, color.gamma_multiply(0.4)),
+        );
+        painter.line_segment(
+            [pos2(x_to, grip_edge), pos2(x_to, y)],
+            Stroke::new(thickness * 0.5, color.gamma_multiply(0.4)),
+        );
+
+        // горизонтальная линия
+        painter.line_segment([pos2(x_from, y), pos2(x_to, y)], Stroke::new(thickness, color));
+        // тики вниз (к грифу)
+        let tick_len = 4.0;
+        painter.line_segment(
+            [pos2(x_from, y), pos2(x_from, y + tick_len)],
+            Stroke::new(thickness, color),
+        );
+        painter.line_segment(
+            [pos2(x_to, y), pos2(x_to, y + tick_len)],
+            Stroke::new(thickness, color),
+        );
+
+        // название позиции
+        let text_x = (x_from + x_to) / 2.0;
+        let text_y = y - 2.0;
+        let align = egui::Align2::CENTER_BOTTOM;
+        painter.text(
+            pos2(text_x, text_y),
+            align,
+            pos.name,
+            FontId::monospace(10.0),
+            color,
+        );
     }
 }
 
 pub fn rangef_to_range(r: Rangef) -> Range<f32> {
     r.min..r.max
-}
-
-// OnceLock для оригинальных адресов lib-функций (до первого патча).
-// После патча GOT-указатели из .so невалидны для jump table,
-// поэтому запоминаем адреса из оригинального бинарника.
-static DRAW_FRET_LINES_PTR: OnceLock<u64> = OnceLock::new();
-static DRAW_STRING_LINES_PTR: OnceLock<u64> = OnceLock::new();
-static DRAW_FRETBOARD_PTR: OnceLock<u64> = OnceLock::new();
-
-/// Вызов lib-функции через jump table lookup.
-/// Если есть патч — берём новый адрес из таблицы, иначе вызываем оригинал.
-/// catch_unwind: паника в lib крейте не убивает приложение.
-fn call_draw_fret_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {
-    let orig = *DRAW_FRET_LINES_PTR.get_or_init(|| draw_fret_lines as *const () as u64);
-    let f: fn(&egui::Painter, Rect, &Fretboard) = unsafe {
-        if let Some(jt) = subsecond::get_jump_table() {
-            if let Some(&new_addr) = jt.map.get(&orig) {
-                std::mem::transmute(new_addr)
-            } else {
-                draw_fret_lines
-            }
-        } else {
-            draw_fret_lines
-        }
-    };
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f(painter, fretboard_rect, fretboard);
-    }));
-}
-
-fn call_draw_string_lines(
-    painter: &egui::Painter,
-    fretboard_rect: Rect,
-    fretboard: &Fretboard,
-    scale: &Scale,
-) {
-    let orig = *DRAW_STRING_LINES_PTR.get_or_init(|| draw_string_lines_scale as *const () as u64);
-    let f: fn(&egui::Painter, Rect, &Fretboard, &Scale) = unsafe {
-        if let Some(jt) = subsecond::get_jump_table() {
-            if let Some(&new_addr) = jt.map.get(&orig) {
-                std::mem::transmute(new_addr)
-            } else {
-                draw_string_lines_scale
-            }
-        } else {
-            draw_string_lines_scale
-        }
-    };
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f(painter, fretboard_rect, fretboard, scale);
-    }));
-}
-
-fn call_draw_fretboard(painter: egui::Painter, fretboard: Fretboard, scale: &Scale) {
-    let orig = *DRAW_FRETBOARD_PTR.get_or_init(|| draw_fretboard_scale as *const () as u64);
-    let f: fn(egui::Painter, Fretboard, &Scale) = unsafe {
-        if let Some(jt) = subsecond::get_jump_table() {
-            if let Some(&new_addr) = jt.map.get(&orig) {
-                std::mem::transmute(new_addr)
-            } else {
-                draw_fretboard_scale
-            }
-        } else {
-            draw_fretboard_scale
-        }
-    };
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        f(painter, fretboard, scale);
-    }));
 }
 
 impl eframe::App for App {

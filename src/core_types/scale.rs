@@ -34,7 +34,7 @@ fn mark_some_scale(note: &PNote, scale: &Scale) -> Color32 {
         Some(1) => Color32::RED,                          // I ступень
         Some(5) => Color32::DARK_RED.gamma_multiply(1.2), // любая другая ступень
         Some(_) => Color32::YELLOW,                       // любая другая ступень
-        None => Color32::GRAY.gamma_multiply(0.2),        // нет в гамме
+        None => Color32::GRAY.gamma_multiply(0.5),        // нет в гамме
     }
 }
 
