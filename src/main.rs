@@ -126,15 +126,15 @@ impl App {
 
             let avail_width = ui.available_width();
             let (component_rect, _resp) =
-                ui.allocate_exact_size(vec2(avail_width, 260.0), Sense::click_and_drag());
+                ui.allocate_exact_size(vec2(avail_width, 300.0), Sense::click_and_drag());
 
             let painter = ui.painter_at(component_rect);
 
             let mut fretboard_rect = component_rect;
 
             // margin — оставляем место для скобок позиций сверху и снизу
-            fretboard_rect.min.y += 60.;
-            fretboard_rect.max.y -= 60.;
+            fretboard_rect.min.y += 110.;
+            fretboard_rect.max.y -= 40.;
             fretboard_rect.max.x -= 20.;
             fretboard_rect.min.x += 46.;
 
@@ -297,7 +297,7 @@ fn draw_positions(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fre
         };
 
         // все скобки сверху, каждая следующая дальше от грифа
-        let bracket_offset = 28.0 + i as f32 * 14.0;
+        let bracket_offset = 16.0 + i as f32 * 20.0;
         let y = fretboard_rect.min.y - bracket_offset;
 
         // вертикальные линии от грифа до скобки
