@@ -3,6 +3,7 @@
 #![allow(unused_variables)]
 
 use std::ops::Range;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 use eframe::egui::{
@@ -21,9 +22,10 @@ use eframe::egui::{
 use eframe::{
     CreationContext,
     Frame,
-    NativeOptions,
     egui,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use eframe::NativeOptions;
 use fretboard::core_types::chord::Chord;
 use fretboard::core_types::note::{
     ANote,
@@ -44,12 +46,14 @@ use fretboard::fretboard::{
     Fretboard,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(serde::Deserialize)]
 struct HotReloadMsg {
     jump_table: Option<subsecond::JumpTable>,
     for_pid:    Option<u32>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(serde::Deserialize)]
 enum DevserverMsg {
     HotReload(HotReloadMsg),
@@ -57,6 +61,7 @@ enum DevserverMsg {
     Other,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn connect_subsecond() {
     let Some(endpoint) = dioxus_cli_config::devserver_ws_endpoint() else {
         return;
@@ -89,6 +94,7 @@ fn connect_subsecond() {
     });
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     connect_subsecond();
 
@@ -99,6 +105,30 @@ fn main() -> eframe::Result {
             Box::new(|cc| Ok(Box::new(App::new(cc)))),
         )
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use wasm_bindgen::JsCast;
+
+    let web_options = eframe::WebOptions::default();
+    wasm_bindgen_futures::spawn_local(async {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas = document
+            .get_element_by_id("fretboard_canvas")
+            .unwrap()
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .unwrap();
+
+        eframe::WebRunner::new()
+            .start(
+                canvas,
+                web_options,
+                Box::new(|cc| Ok(Box::new(App::new(cc)))),
+            )
+            .await
+            .unwrap();
+    });
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -208,9 +238,11 @@ impl App {
         {
             let ctx = cc.egui_ctx.clone();
 
-            ctx.set_pixels_per_point(1.75);
-
-            subsecond::register_handler(Arc::new(move || ctx.request_repaint()));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ctx.set_pixels_per_point(1.75);
+                subsecond::register_handler(Arc::new(move || ctx.request_repaint()));
+            }
         }
         Self {
             tuning_kind: TuningKind::Cello,
@@ -511,8 +543,12 @@ pub fn rangef_to_range(r: Rangef) -> Range<f32> {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
+        #[cfg(not(target_arch = "wasm32"))]
         subsecond::call(|| {
             self.subsecond_fn(ui);
         });
+
+        #[cfg(target_arch = "wasm32")]
+        self.subsecond_fn(ui);
     }
 }

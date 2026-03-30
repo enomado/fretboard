@@ -845,6 +845,7 @@ dependencies = [
  "egui-wgpu",
  "egui-winit",
  "egui_glow",
+ "glow",
  "glutin",
  "glutin-winit",
  "home",
@@ -1231,6 +1232,9 @@ dependencies = [
  "serde_json",
  "subsecond",
  "tungstenite",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

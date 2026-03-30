@@ -4,15 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+itertools = { version = "*" }
+serde_json.workspace = true
+serde.workspace = true
+nom = { version = "7.1" }
+
+eframe.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 subsecond.workspace = true
 dioxus-cli-config.workspace = true
 tungstenite.workspace = true
-serde_json.workspace = true
-serde.workspace = true
-itertools = { version = "*" }
 
-eframe.workspace = true
-nom = { version = "7.1" }
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+eframe = { workspace = true, features = ["glow", "persistence"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "Window", "HtmlCanvasElement", "Element"] }
 
 [profile]
 

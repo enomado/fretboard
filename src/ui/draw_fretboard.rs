@@ -1,25 +1,13 @@
 use std::ops::Range;
-use std::sync::Arc;
 
 use eframe::egui::{
     Color32,
-    Context,
     FontId,
-    Rangef,
     Rect,
-    Sense,
-    Stroke,
-    Ui,
-    Vec2,
     pos2,
     vec2,
 };
-use eframe::{
-    CreationContext,
-    Frame,
-    NativeOptions,
-    egui,
-};
+use eframe::egui;
 
 use crate::core_types::note::{
     ANote,
