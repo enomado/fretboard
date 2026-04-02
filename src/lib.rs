@@ -5,3 +5,6 @@
 pub mod core_types;
 pub mod fretboard;
 pub mod ui;
+
+#[cfg(test)]
+mod tests;

@@ -131,7 +131,7 @@ fn main() {
     });
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
 enum TuningKind {
     Cello,
     StandardE,
@@ -158,7 +158,7 @@ impl TuningKind {
 
 const ALL_TUNINGS: &[TuningKind] = &[TuningKind::Cello, TuningKind::StandardE, TuningKind::MinorThirds];
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
 enum ScaleKind {
     Major,
     Minor,
@@ -217,6 +217,73 @@ const ALL_SCALES: &[ScaleKind] = &[
     ScaleKind::Locrian,
 ];
 
+#[derive(Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
+enum ChordKind {
+    Major,
+    Minor,
+    Dominant7,
+    Major7,
+    Minor7,
+    HalfDiminished7,
+    Diminished7,
+}
+
+impl ChordKind {
+    fn label(&self) -> &'static str {
+        match self {
+            ChordKind::Major => "Major",
+            ChordKind::Minor => "Minor",
+            ChordKind::Dominant7 => "7",
+            ChordKind::Major7 => "Maj7",
+            ChordKind::Minor7 => "m7",
+            ChordKind::HalfDiminished7 => "m7b5",
+            ChordKind::Diminished7 => "dim7",
+        }
+    }
+
+    fn to_chord(&self, root: PCNote) -> Chord {
+        match self {
+            ChordKind::Major => Chord::major(root),
+            ChordKind::Minor => Chord::minor(root),
+            ChordKind::Dominant7 => Chord::dominant7(root),
+            ChordKind::Major7 => Chord::major7(root),
+            ChordKind::Minor7 => Chord::minor7(root),
+            ChordKind::HalfDiminished7 => Chord::half_diminished7(root),
+            ChordKind::Diminished7 => Chord::diminished7(root),
+        }
+    }
+}
+
+const ALL_CHORDS: &[ChordKind] = &[
+    ChordKind::Major,
+    ChordKind::Minor,
+    ChordKind::Dominant7,
+    ChordKind::Major7,
+    ChordKind::Minor7,
+    ChordKind::HalfDiminished7,
+    ChordKind::Diminished7,
+];
+
+#[derive(Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
+enum Mode {
+    Scale,
+    Chord,
+}
+
+impl Mode {
+    fn label(&self) -> &'static str {
+        match self {
+            Mode::Scale => "Scale",
+            Mode::Chord => "Chord",
+        }
+    }
+}
+
+enum MusicElement {
+    Scale(Scale),
+    Chord(Chord),
+}
+
 const ALL_ROOTS: &[(Note, &str)] = &[
     (Note::C, "C"),
     (Note::D, "D"),
@@ -227,9 +294,12 @@ const ALL_ROOTS: &[(Note, &str)] = &[
     (Note::B, "B"),
 ];
 
+#[derive(serde::Deserialize, serde::Serialize)]
 struct App {
     tuning_kind: TuningKind,
+    mode:        Mode,
     scale_kind:  ScaleKind,
+    chord_kind:  ChordKind,
     root_note:   Note,
 }
 
@@ -244,12 +314,24 @@ impl App {
                 subsecond::register_handler(Arc::new(move || ctx.request_repaint()));
             }
         }
+
+        if let Some(storage) = &cc.storage {
+            eframe::get_value::<App>(storage, eframe::APP_KEY).unwrap_or_else(|| Self::default())
+        } else {
+            Self::default()
+        }
+    }
+
+    fn default() -> Self {
         Self {
             tuning_kind: TuningKind::Cello,
+            mode:        Mode::Scale,
             scale_kind:  ScaleKind::BluesMinor,
+            chord_kind:  ChordKind::Major,
             root_note:   Note::A,
         }
     }
+}
 
     fn subsecond_fn(&mut self, ui: &mut Ui) {
         ui.ctx().all_styles_mut(|style| {
@@ -271,6 +353,17 @@ impl App {
 
                 ui.separator();
 
+                // mode
+                ui.label("Mode:");
+                egui::ComboBox::from_id_salt("mode")
+                    .selected_text(self.mode.label())
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.mode, Mode::Scale, Mode::Scale.label());
+                        ui.selectable_value(&mut self.mode, Mode::Chord, Mode::Chord.label());
+                    });
+
+                ui.separator();
+
                 // root note
                 ui.label("Root:");
                 for &(note, name) in ALL_ROOTS {
@@ -287,22 +380,39 @@ impl App {
 
                 ui.separator();
 
-                // scale
-                ui.label("Scale:");
-                egui::ComboBox::from_id_salt("scale")
-                    .selected_text(self.scale_kind.label())
-                    .show_ui(ui, |ui| {
-                        for s in ALL_SCALES {
-                            ui.selectable_value(&mut self.scale_kind, *s, s.label());
-                        }
-                    });
+                // scale or chord
+                match self.mode {
+                    Mode::Scale => {
+                        ui.label("Scale:");
+                        egui::ComboBox::from_id_salt("scale")
+                            .selected_text(self.scale_kind.label())
+                            .show_ui(ui, |ui| {
+                                for s in ALL_SCALES {
+                                    ui.selectable_value(&mut self.scale_kind, *s, s.label());
+                                }
+                            });
+                    }
+                    Mode::Chord => {
+                        ui.label("Chord:");
+                        egui::ComboBox::from_id_salt("chord")
+                            .selected_text(self.chord_kind.label())
+                            .show_ui(ui, |ui| {
+                                for c in ALL_CHORDS {
+                                    ui.selectable_value(&mut self.chord_kind, *c, c.label());
+                                }
+                            });
+                    }
+                }
             });
 
             ui.add_space(4.0);
 
             let tuning = self.tuning_kind.to_tuning();
             let root_pc = PCNote::from_note(self.root_note, Accidental::Natural);
-            let scale = self.scale_kind.to_scale(root_pc);
+            let music_element = match self.mode {
+                Mode::Scale => MusicElement::Scale(self.scale_kind.to_scale(root_pc)),
+                Mode::Chord => MusicElement::Chord(self.chord_kind.to_chord(root_pc)),
+            };
 
             let avail_width = ui.available_width();
             let (component_rect, _resp) =
@@ -330,13 +440,13 @@ impl App {
             painter.rect_stroke(
                 fretboard_rect,
                 0.0,
-                Stroke::new(1.0, Color32::RED),
+                Stroke::new(1.0, Color32::LIGHT_GRAY),
                 egui::StrokeKind::Inside,
             );
 
             draw_fret_lines(&painter, fretboard_rect, &fretboard);
-            draw_string_lines(&painter, fretboard_rect, &fretboard, &scale);
-            draw_fretboard(&painter, &fretboard, &scale);
+            draw_string_lines(ui, &painter, fretboard_rect, &fretboard, &music_element);
+            draw_fretboard(ui, &painter, &fretboard, &music_element);
             draw_positions(&painter, fretboard_rect, &fretboard);
         });
     }
@@ -344,18 +454,28 @@ impl App {
 
 // ── рисование (всё в tip crate для горячей подмены) ──
 
-fn mark_scale_note(note: &PNote, scale: &Scale) -> Color32 {
+fn mark_note(note: &PNote, element: &MusicElement) -> Color32 {
     let (_, pc_note) = note.to_pc();
 
-    match scale.degree(pc_note).map(|s| s.0) {
-        Some(1) => Color32::RED,
-        Some(5) => Color32::DARK_RED.gamma_multiply(1.2),
-        Some(_) => Color32::YELLOW,
-        None => Color32::GRAY,
+    match element {
+        MusicElement::Scale(scale) => match scale.degree(pc_note).map(|s| s.0) {
+            Some(1) => Color32::from_rgb(220, 100, 100), // soft red
+            Some(5) => Color32::from_rgb(180, 80, 80),   // soft dark red
+            Some(_) => Color32::from_rgb(220, 200, 100), // soft yellow
+            None => Color32::LIGHT_GRAY,
+        },
+        MusicElement::Chord(chord) => match chord.degree(pc_note) {
+            Some(1) => Color32::from_rgb(220, 100, 100), // root soft red
+            Some(3) => Color32::from_rgb(100, 150, 220), // third soft blue
+            Some(5) => Color32::from_rgb(100, 180, 100), // fifth soft green
+            Some(7) => Color32::from_rgb(220, 200, 100), // seventh soft yellow
+            Some(_) => Color32::from_rgb(220, 150, 80),  // other soft orange
+            None => Color32::LIGHT_GRAY,
+        },
     }
 }
 
-fn draw_fretboard(painter: &egui::Painter, fretboard: &Fretboard, scale: &Scale) {
+fn draw_fretboard(ui: &mut Ui, painter: &egui::Painter, fretboard: &Fretboard, element: &MusicElement) {
     for string in fretboard.iter_strings() {
         for fret in fretboard.iter_frets() {
             let y = fretboard.string_pos(string);
@@ -365,9 +485,18 @@ fn draw_fretboard(painter: &egui::Painter, fretboard: &Fretboard, scale: &Scale)
             let note = open.add(fret.semitones());
             let pos = pos2(x, y);
 
-            painter.rect_filled(Rect::from_center_size(pos, vec2(30., 14.)), 8.0, Color32::BLACK);
+            let radius = 12.0;
+            let rect = Rect::from_center_size(pos, vec2(radius * 2., radius * 2.));
+            let response = ui.allocate_rect(rect, Sense::hover());
 
-            let color = mark_scale_note(&note, scale);
+            painter.circle_filled(pos, radius, Color32::from_rgb(245, 245, 245));
+
+            if response.hovered() {
+                painter.circle_stroke(pos, radius + 4.0, Stroke::new(2.0, Color32::from_rgb(200, 200, 200)));
+                response.on_hover_text(format!("Note: {}", note.to_anote().name()));
+            }
+
+            let color = mark_note(&note, element);
 
             painter.text(
                 pos,
@@ -380,12 +509,12 @@ fn draw_fretboard(painter: &egui::Painter, fretboard: &Fretboard, scale: &Scale)
     }
 }
 
-fn draw_string_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard, scale: &Scale) {
+fn draw_string_lines(ui: &mut Ui, painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard, element: &MusicElement) {
     for stringg in fretboard.iter_strings() {
         let y = fretboard.string_pos(stringg);
         let open = fretboard.tuning.note(stringg);
 
-        let color = mark_scale_note(&open, scale);
+        let color = mark_note(&open, element);
 
         // open note
         painter.text(
@@ -402,10 +531,10 @@ fn draw_string_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &
             egui::Align2::LEFT_CENTER,
             stringg.name(),
             FontId::monospace(12.0),
-            Color32::YELLOW,
+            Color32::DARK_GRAY,
         );
 
-        painter.hline(fretboard_rect.x_range(), y, (1.0, Color32::GREEN));
+        painter.hline(fretboard_rect.x_range(), y, (1.0, Color32::LIGHT_GRAY));
     }
 }
 
@@ -413,12 +542,12 @@ fn draw_fret_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fr
     for fret in fretboard.iter_frets() {
         let x = fretboard.fret_pos(fret);
 
-        painter.vline(x, fretboard_rect.y_range(), (1.0, Color32::GREEN));
+        painter.vline(x, fretboard_rect.y_range(), (1.0, Color32::LIGHT_GRAY));
 
         let color = if fret.0 == 12 {
-            Color32::RED
+            Color32::from_rgb(100, 100, 100)
         } else {
-            Color32::YELLOW
+            Color32::DARK_GRAY
         };
 
         painter.text(
@@ -491,8 +620,8 @@ fn draw_positions(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fre
 
         // 1-я и 4-я позиции — выделяем
         let (color, thickness) = match pos.name {
-            "1st" | "4th" => (Color32::from_rgba_unmultiplied(255, 100, 50, 200), 2.5),
-            _ => (Color32::from_rgba_unmultiplied(150, 200, 255, 150), 1.5),
+            "1st" | "4th" => (Color32::from_rgba_unmultiplied(220, 150, 100, 180), 2.5),
+            _ => (Color32::from_rgba_unmultiplied(180, 200, 220, 120), 1.5),
         };
 
         // все скобки сверху, каждая следующая дальше от грифа
@@ -542,11 +671,16 @@ pub fn rangef_to_range(r: Rangef) -> Range<f32> {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut Frame) {
         #[cfg(not(target_arch = "wasm32"))]
         subsecond::call(|| {
             self.subsecond_fn(ui);
         });
+
+        // save state
+        if let Some(storage) = frame.storage_mut() {
+            eframe::set_value(storage, eframe::APP_KEY, self);
+        }
 
         #[cfg(target_arch = "wasm32")]
         self.subsecond_fn(ui);
