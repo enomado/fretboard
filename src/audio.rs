@@ -21,7 +21,9 @@ mod native {
 
     const WINDOW_SIZE: usize = 4096;
     const SPECTRUM_BINS: usize = 48;
+    const WATERFALL_HISTORY: usize = 36;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(70);
+    const YIN_THRESHOLD: f32 = 0.12;
 
     #[derive(Clone, Debug)]
     pub struct TunerReading {
@@ -30,6 +32,7 @@ mod native {
         pub cents:        f32,
         pub clarity:      f32,
         pub spectrum:     Vec<f32>,
+        pub waterfall:    Vec<Vec<f32>>,
     }
 
     #[derive(Clone, Debug)]
@@ -40,8 +43,10 @@ mod native {
     }
 
     struct SharedState {
-        status:  AudioStatus,
-        reading: Option<TunerReading>,
+        status:             AudioStatus,
+        reading:            Option<TunerReading>,
+        waterfall:          VecDeque<Vec<f32>>,
+        smoothed_frequency: Option<f32>,
     }
 
     pub struct AudioEngine {
@@ -52,8 +57,10 @@ mod native {
     impl AudioEngine {
         pub fn new() -> Self {
             let shared = Arc::new(Mutex::new(SharedState {
-                status:  AudioStatus::Idle,
-                reading: None,
+                status:             AudioStatus::Idle,
+                reading:            None,
+                waterfall:          VecDeque::with_capacity(WATERFALL_HISTORY),
+                smoothed_frequency: None,
             }));
 
             let stream = start_stream(shared.clone());
@@ -189,7 +196,24 @@ mod native {
 
                 if let Some(reading) = analyze_window(&window, sample_rate, &mut planner) {
                     if let Ok(mut state) = shared.lock() {
-                        state.reading = Some(reading);
+                        let smoothed_frequency =
+                            smooth_frequency(state.smoothed_frequency, reading.frequency_hz);
+                        state.smoothed_frequency = Some(smoothed_frequency);
+
+                        let (note_name, cents) = frequency_to_note(smoothed_frequency);
+                        state.waterfall.push_back(reading.spectrum.clone());
+                        while state.waterfall.len() > WATERFALL_HISTORY {
+                            state.waterfall.pop_front();
+                        }
+
+                        state.reading = Some(TunerReading {
+                            frequency_hz: smoothed_frequency,
+                            note_name,
+                            cents,
+                            clarity: reading.clarity,
+                            spectrum: reading.spectrum,
+                            waterfall: state.waterfall.iter().cloned().collect(),
+                        });
                         state.status = AudioStatus::Listening;
                     }
                 }
@@ -212,7 +236,7 @@ mod native {
         let mut normalized = window.to_vec();
         normalized = apply_hann_window(&normalized);
 
-        let (frequency_hz, clarity) = detect_pitch_autocorrelation(&normalized, sample_rate)?;
+        let (frequency_hz, clarity) = detect_pitch_yin(&normalized, sample_rate)?;
         if !(45.0..=1200.0).contains(&frequency_hz) {
             return None;
         }
@@ -226,6 +250,7 @@ mod native {
             cents,
             clarity,
             spectrum,
+            waterfall: Vec::new(),
         })
     }
 
@@ -242,7 +267,7 @@ mod native {
             .collect()
     }
 
-    fn detect_pitch_autocorrelation(window: &[f32], sample_rate: f32) -> Option<(f32, f32)> {
+    fn detect_pitch_yin(window: &[f32], sample_rate: f32) -> Option<(f32, f32)> {
         let min_lag = (sample_rate / 1000.0).max(1.0) as usize;
         let max_lag = (sample_rate / 45.0) as usize;
         let search_end = max_lag.min(window.len().saturating_sub(1));
@@ -250,27 +275,55 @@ mod native {
             return None;
         }
 
-        let mut best_lag = 0usize;
-        let mut best_score = 0.0f32;
+        let mut difference = vec![0.0f32; search_end + 1];
+        let mut cumulative = vec![0.0f32; search_end + 1];
 
-        for lag in min_lag..=search_end {
+        for tau in 1..=search_end {
+            let limit = window.len().saturating_sub(tau);
             let mut sum = 0.0;
-            let limit = window.len().saturating_sub(lag);
             for index in 0..limit {
-                sum += window[index] * window[index + lag];
+                let delta = window[index] - window[index + tau];
+                sum += delta * delta;
             }
+            difference[tau] = sum;
+        }
 
-            if sum > best_score {
-                best_score = sum;
-                best_lag = lag;
+        cumulative[0] = 1.0;
+        let mut running_sum = 0.0;
+        for tau in 1..=search_end {
+            running_sum += difference[tau];
+            cumulative[tau] = if running_sum > 0.0 {
+                difference[tau] * tau as f32 / running_sum
+            } else {
+                1.0
+            };
+        }
+
+        let mut best_tau = None;
+        for tau in min_lag..search_end {
+            if cumulative[tau] < YIN_THRESHOLD && cumulative[tau] <= cumulative[tau + 1] {
+                best_tau = Some(tau);
+                break;
             }
         }
 
-        if best_lag == 0 || best_score <= 0.0 {
+        let tau = best_tau.unwrap_or_else(|| {
+            (min_lag..=search_end)
+                .min_by(|left, right| cumulative[*left].total_cmp(&cumulative[*right]))
+                .unwrap_or(min_lag)
+        });
+
+        let tau = parabolic_tau(&cumulative, tau);
+        if tau <= 0.0 {
             return None;
         }
 
-        Some((sample_rate / best_lag as f32, best_score / window.len() as f32))
+        let clarity = (1.0 - cumulative[tau.round() as usize].clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        if clarity < 0.35 {
+            return None;
+        }
+
+        Some((sample_rate / tau, clarity))
     }
 
     fn spectrum_bars(window: &[f32], sample_rate: f32, planner: &mut FftPlanner<f32>) -> Vec<f32> {
@@ -321,6 +374,33 @@ mod native {
         (format!("{}{}", NOTE_NAMES[note_index], octave), cents)
     }
 
+    fn parabolic_tau(values: &[f32], tau: usize) -> f32 {
+        if tau == 0 || tau + 1 >= values.len() {
+            return tau as f32;
+        }
+
+        let left = values[tau - 1];
+        let center = values[tau];
+        let right = values[tau + 1];
+        let denominator = left - 2.0 * center + right;
+        if denominator.abs() < f32::EPSILON {
+            tau as f32
+        } else {
+            tau as f32 + 0.5 * (left - right) / denominator
+        }
+    }
+
+    fn smooth_frequency(previous: Option<f32>, next: f32) -> f32 {
+        match previous {
+            Some(previous) => {
+                let ratio = (next / previous).max(previous / next);
+                let alpha = if ratio > 1.08 { 0.45 } else { 0.22 };
+                previous + (next - previous) * alpha
+            }
+            None => next,
+        }
+    }
+
     fn update_error(shared: &Arc<Mutex<SharedState>>, message: &str) {
         if let Ok(mut state) = shared.lock() {
             state.status = AudioStatus::Error(message.to_owned());
@@ -337,6 +417,7 @@ mod native {
         pub cents:        f32,
         pub clarity:      f32,
         pub spectrum:     Vec<f32>,
+        pub waterfall:    Vec<Vec<f32>>,
     }
 
     #[derive(Clone, Debug)]
