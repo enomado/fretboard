@@ -296,11 +296,13 @@ const ALL_ROOTS: &[(Note, &str)] = &[
 
 #[derive(serde::Deserialize, serde::Serialize)]
 struct App {
-    tuning_kind: TuningKind,
-    mode:        Mode,
-    scale_kind:  ScaleKind,
-    chord_kind:  ChordKind,
-    root_note:   Note,
+    tuning_kind:   TuningKind,
+    mode:          Mode,
+    scale_kind:    ScaleKind,
+    chord_kind:    ChordKind,
+    root_note:     Note,
+    hovered_note:  Option<PNote>,
+    selected_note: Option<PNote>,
 }
 
 impl App {
@@ -324,14 +326,15 @@ impl App {
 
     fn default() -> Self {
         Self {
-            tuning_kind: TuningKind::Cello,
-            mode:        Mode::Scale,
-            scale_kind:  ScaleKind::BluesMinor,
-            chord_kind:  ChordKind::Major,
-            root_note:   Note::A,
+            tuning_kind:   TuningKind::Cello,
+            mode:          Mode::Scale,
+            scale_kind:    ScaleKind::BluesMinor,
+            chord_kind:    ChordKind::Major,
+            root_note:     Note::A,
+            hovered_note:  None,
+            selected_note: None,
         }
     }
-}
 
     fn subsecond_fn(&mut self, ui: &mut Ui) {
         ui.ctx().all_styles_mut(|style| {
@@ -446,8 +449,23 @@ impl App {
 
             draw_fret_lines(&painter, fretboard_rect, &fretboard);
             draw_string_lines(ui, &painter, fretboard_rect, &fretboard, &music_element);
-            draw_fretboard(ui, &painter, &fretboard, &music_element);
+            let hovered = draw_fretboard(ui, &painter, &fretboard, &music_element, self);
+            self.hovered_note = hovered;
             draw_positions(&painter, fretboard_rect, &fretboard);
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if let Some(hovered) = self.hovered_note {
+                    ui.label(format!("Hovered: {}", hovered.to_anote().name()));
+                } else {
+                    ui.label("Hovered: -");
+                }
+                if let Some(selected) = self.selected_note {
+                    ui.label(format!("Selected: {}", selected.to_anote().name()));
+                } else {
+                    ui.label("Selected: -");
+                }
+            });
         });
     }
 }
@@ -475,7 +493,15 @@ fn mark_note(note: &PNote, element: &MusicElement) -> Color32 {
     }
 }
 
-fn draw_fretboard(ui: &mut Ui, painter: &egui::Painter, fretboard: &Fretboard, element: &MusicElement) {
+fn draw_fretboard(
+    ui: &mut Ui,
+    painter: &egui::Painter,
+    fretboard: &Fretboard,
+    element: &MusicElement,
+    app: &mut App,
+) -> Option<PNote> {
+    let mut hovered_note: Option<PNote> = None;
+
     for string in fretboard.iter_strings() {
         for fret in fretboard.iter_frets() {
             let y = fretboard.string_pos(string);
@@ -487,13 +513,26 @@ fn draw_fretboard(ui: &mut Ui, painter: &egui::Painter, fretboard: &Fretboard, e
 
             let radius = 12.0;
             let rect = Rect::from_center_size(pos, vec2(radius * 2., radius * 2.));
-            let response = ui.allocate_rect(rect, Sense::hover());
+            let response = ui.allocate_rect(rect, Sense::click());
 
-            painter.circle_filled(pos, radius, Color32::from_rgb(245, 245, 245));
+            // Base circle background
+            painter.circle_filled(pos, radius, Color32::from_rgb(245, 246, 247));
+
+            // highlight selected
+            if let Some(selected) = app.selected_note {
+                if selected == note {
+                    painter.circle_stroke(pos, radius + 2.0, Stroke::new(3.0, Color32::from_rgb(120, 180, 220)));
+                }
+            }
 
             if response.hovered() {
-                painter.circle_stroke(pos, radius + 4.0, Stroke::new(2.0, Color32::from_rgb(200, 200, 200)));
+                hovered_note = Some(note);
+                painter.circle_stroke(pos, radius + 4.0, Stroke::new(2.0, Color32::from_rgb(160, 180, 200)));
                 response.on_hover_text(format!("Note: {}", note.to_anote().name()));
+            }
+
+            if response.clicked() {
+                app.selected_note = Some(note);
             }
 
             let color = mark_note(&note, element);
@@ -507,6 +546,8 @@ fn draw_fretboard(ui: &mut Ui, painter: &egui::Painter, fretboard: &Fretboard, e
             );
         }
     }
+
+    hovered_note
 }
 
 fn draw_string_lines(ui: &mut Ui, painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard, element: &MusicElement) {
