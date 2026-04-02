@@ -6,7 +6,7 @@ use crate::core_types::pitch::{
 
 /// types for convinience
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Accidental {
     Natural,
     Flat,
@@ -23,7 +23,7 @@ impl Accidental {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Octave(pub u8);
 
 impl Octave {
@@ -32,7 +32,7 @@ impl Octave {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Note {
     A,
     B,

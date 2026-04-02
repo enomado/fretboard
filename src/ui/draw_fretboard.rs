@@ -1,5 +1,4 @@
-use std::ops::Range;
-
+use eframe::egui;
 use eframe::egui::{
     Color32,
     FontId,
@@ -7,33 +6,16 @@ use eframe::egui::{
     pos2,
     vec2,
 };
-use eframe::egui;
 
-use crate::core_types::note::{
-    ANote,
-    Accidental,
-    Note,
-};
-use crate::core_types::pitch::{
-    PCNote,
-    PNote,
-};
+use crate::core_types::pitch::PNote;
 use crate::core_types::scale::Scale;
-use crate::core_types::tuning::{
-    Fret,
-    Tuning,
-};
-use crate::fretboard::{
-    FretConfig,
-    Fretboard,
-    fret_position_log_range,
-};
+use crate::fretboard::Fretboard;
 
 pub trait Mark {
     fn mark(&self, note: &PNote) -> Color32;
 }
 
-pub fn draw_fretboard<F>(painter: egui::Painter, fretboard: Fretboard, mark: F)
+pub fn draw_fretboard<F>(painter: egui::Painter, fretboard: &Fretboard, mark: F)
 where
     F: Mark,
 {
@@ -99,7 +81,7 @@ pub fn draw_string_lines<M: Mark>(
 }
 
 // не-generic обёртки для jump table hotpatch (generic fn pointer не coerce в HRTB fn ptr)
-pub fn draw_fretboard_scale(painter: egui::Painter, fretboard: Fretboard, scale: &Scale) {
+pub fn draw_fretboard_scale(painter: egui::Painter, fretboard: &Fretboard, scale: &Scale) {
     draw_fretboard(painter, fretboard, scale);
 }
 

@@ -43,16 +43,6 @@ impl Fretboard {
     }
 }
 
-fn fret_position_log(range: &std::ops::Range<f32>, n: Fret, max_fret: Fret) -> f32 {
-    // let scale_length = range.end - range.start + 300.;
-
-    // / (1.0 - 2f32.powf(-(max_fret as f32 / 12.0)));
-
-    let scale_length = (range.end - range.start) / (1.0 - 2f32.powf(-(max_fret.0 as f32 / 12.0)));
-
-    range.start + scale_length - scale_length / 2f32.powf(n.0 as f32 / 12.0)
-}
-
 pub fn fret_position_log_range(
     ui_range: &Range<f32>,    // координаты грифа
     fret_range: &Range<Fret>, // диапазон видимых ладов
@@ -82,11 +72,6 @@ pub fn fret_position_linear_range(ui_range: &Range<f32>, fret_range: &Range<Fret
     let n_eff = (n.0 - fret_range.start.0 + 1) as f32;
 
     ui_range.start + (ui_range.end - ui_range.start) * (n_eff / visible)
-}
-
-fn fret_position_linear(range: &std::ops::Range<f32>, n: Fret, max_fret: Fret) -> f32 {
-    let span = range.end - range.start;
-    range.start + span * (n.0 as f32 / max_fret.0 as f32)
 }
 
 fn string_position(range: &std::ops::Range<f32>, string_index: GString, string_count: u32) -> f32 {

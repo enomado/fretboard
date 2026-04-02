@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use eframe::egui::Color32;
 use itertools::Itertools;
 

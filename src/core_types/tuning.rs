@@ -4,7 +4,6 @@ use crate::core_types::note::ANote;
 use crate::core_types::parse::parse_notes;
 use crate::core_types::pitch::{
     Interval,
-    PCNote,
     PNote,
 };
 
