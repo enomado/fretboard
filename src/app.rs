@@ -164,6 +164,15 @@ pub struct App {
     root_note:   Note,
 }
 
+struct HoveredNote {
+    string:    usize,
+    fret:      usize,
+    note_name: String,
+    degree:    Option<u8>,
+    center:    egui::Pos2,
+    rect:      Rect,
+}
+
 impl App {
     pub fn new(cc: &CreationContext) -> Self {
         apply_theme(&cc.egui_ctx);
@@ -179,7 +188,7 @@ impl App {
         egui::CentralPanel::default()
             .frame(
                 Frame::new()
-                    .fill(Color32::from_rgb(12, 17, 24))
+                    .fill(Color32::from_rgb(16, 20, 25))
                     .inner_margin(Margin::same(18)),
             )
             .show_inside(ui, |ui| {
@@ -197,7 +206,7 @@ impl App {
                 ui.label(
                     RichText::new("Fretboard Explorer")
                         .size(28.0)
-                        .color(Color32::from_rgb(239, 225, 196))
+                        .color(Color32::from_rgb(230, 223, 210))
                         .family(egui::FontFamily::Proportional),
                 );
                 ui.label(
@@ -207,7 +216,7 @@ impl App {
                         self.scale_kind.label(),
                         self.root_label()
                     ))
-                    .color(Color32::from_rgb(155, 168, 186)),
+                    .color(Color32::from_rgb(154, 160, 168)),
                 );
             });
 
@@ -215,20 +224,20 @@ impl App {
                 pill(
                     ui,
                     "Muted",
-                    Color32::from_rgb(117, 126, 145),
-                    Color32::from_rgb(69, 76, 92),
+                    Color32::from_rgb(152, 159, 168),
+                    Color32::from_rgb(61, 67, 75),
                 );
                 pill(
                     ui,
                     "5th",
-                    Color32::from_rgb(255, 186, 119),
-                    Color32::from_rgb(84, 54, 28),
+                    Color32::from_rgb(203, 182, 147),
+                    Color32::from_rgb(72, 58, 47),
                 );
                 pill(
                     ui,
                     "Root",
-                    Color32::from_rgb(255, 208, 160),
-                    Color32::from_rgb(140, 58, 48),
+                    Color32::from_rgb(214, 190, 168),
+                    Color32::from_rgb(89, 64, 56),
                 );
             });
         });
@@ -238,13 +247,13 @@ impl App {
         Frame::new()
             .fill(PANEL_FILL)
             .corner_radius(CornerRadius::same(18))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(56, 67, 84)))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(61, 66, 74)))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new("Tuning")
-                            .color(Color32::from_rgb(214, 200, 171))
+                            .color(Color32::from_rgb(205, 194, 176))
                             .strong(),
                     );
                     egui::ComboBox::from_id_salt("tuning")
@@ -259,7 +268,7 @@ impl App {
 
                     ui.label(
                         RichText::new("Root")
-                            .color(Color32::from_rgb(214, 200, 171))
+                            .color(Color32::from_rgb(205, 194, 176))
                             .strong(),
                     );
                     for (note, label) in ALL_ROOTS {
@@ -267,16 +276,16 @@ impl App {
                         let button = egui::Button::new(label)
                             .min_size(vec2(30.0, 28.0))
                             .fill(if selected {
-                                Color32::from_rgb(173, 75, 54)
+                                Color32::from_rgb(112, 86, 72)
                             } else {
-                                Color32::from_rgb(42, 49, 61)
+                                Color32::from_rgb(42, 46, 52)
                             })
                             .stroke(Stroke::new(
                                 1.0,
                                 if selected {
-                                    Color32::from_rgb(255, 210, 159)
+                                    Color32::from_rgb(207, 187, 166)
                                 } else {
-                                    Color32::from_rgb(79, 92, 109)
+                                    Color32::from_rgb(84, 89, 97)
                                 },
                             ))
                             .corner_radius(CornerRadius::same(14));
@@ -290,7 +299,7 @@ impl App {
 
                     ui.label(
                         RichText::new("Scale")
-                            .color(Color32::from_rgb(214, 200, 171))
+                            .color(Color32::from_rgb(205, 194, 176))
                             .strong(),
                     );
                     egui::ComboBox::from_id_salt("scale")
@@ -312,25 +321,25 @@ impl App {
         Frame::new()
             .fill(PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(56, 67, 84)))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(61, 66, 74)))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(format!("Scale tones: {}", scale.notes().len()))
-                            .color(Color32::from_rgb(148, 165, 184)),
+                            .color(Color32::from_rgb(143, 150, 160)),
                     );
                     ui.separator();
                     ui.label(
                         RichText::new(format!("Visible frets: {}-{}", 1, 18))
-                            .color(Color32::from_rgb(148, 165, 184)),
+                            .color(Color32::from_rgb(143, 150, 160)),
                     );
                 });
 
                 ui.add_space(10.0);
 
                 let avail_width = ui.available_width();
-                let (component_rect, _) =
+                let (component_rect, response) =
                     ui.allocate_exact_size(vec2(avail_width, FRETBOARD_HEIGHT), Sense::hover());
 
                 let painter = ui.painter_at(component_rect);
@@ -345,7 +354,7 @@ impl App {
                 painter.rect_stroke(
                     fretboard_rect,
                     18.0,
-                    Stroke::new(1.0, Color32::from_rgb(135, 93, 52)),
+                    Stroke::new(1.0, Color32::from_rgb(112, 88, 66)),
                     egui::StrokeKind::Inside,
                 );
 
@@ -361,6 +370,11 @@ impl App {
                 draw_string_lines_scale(&painter, fretboard_rect, &fretboard, &scale);
                 draw_fretboard_scale(painter.clone(), &fretboard, &scale);
                 draw_positions(&painter, fretboard_rect, &fretboard);
+                if let Some(pointer_pos) = response.hover_pos() {
+                    if let Some(hovered) = self.hovered_note(pointer_pos, &fretboard, &scale) {
+                        self.draw_hovered_note(&painter, component_rect, &hovered);
+                    }
+                }
 
                 self.draw_footer_note(ui, component_rect);
             });
@@ -377,7 +391,86 @@ impl App {
                 self.scale_kind.label()
             ),
             FontId::proportional(12.0),
-            Color32::from_rgb(121, 136, 157),
+            Color32::from_rgb(128, 134, 143),
+        );
+    }
+
+    fn hovered_note(
+        &self,
+        pointer_pos: egui::Pos2,
+        fretboard: &Fretboard,
+        scale: &Scale,
+    ) -> Option<HoveredNote> {
+        for string in fretboard.iter_strings() {
+            for fret in fretboard.iter_frets() {
+                let center = pos2(fretboard.fret_pos(fret), fretboard.string_pos(string));
+                let rect = Rect::from_center_size(center, vec2(34.0, 22.0));
+
+                if rect.contains(pointer_pos) {
+                    let note = fretboard.tuning.note(string).add(fret.semitones());
+                    let degree = scale.degree(note.to_pc().1).map(|value| value.0);
+
+                    return Some(HoveredNote {
+                        string: string.0,
+                        fret: fret.0,
+                        note_name: note.to_anote().name(),
+                        degree,
+                        center,
+                        rect,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    fn draw_hovered_note(&self, painter: &egui::Painter, component_rect: Rect, hovered: &HoveredNote) {
+        painter.rect_stroke(
+            hovered.rect.expand2(vec2(4.0, 4.0)),
+            10.0,
+            Stroke::new(2.0, Color32::from_rgb(214, 200, 182)),
+            egui::StrokeKind::Outside,
+        );
+        painter.circle_filled(hovered.center, 3.0, Color32::from_rgb(224, 213, 196));
+
+        let degree_label = hovered
+            .degree
+            .map(|degree| format!("degree {}", degree))
+            .unwrap_or_else(|| "outside scale".to_owned());
+
+        let tooltip_rect = Rect::from_min_size(
+            pos2(component_rect.left() + 14.0, component_rect.top() + 14.0),
+            vec2(200.0, 58.0),
+        );
+
+        painter.rect_filled(
+            tooltip_rect,
+            14.0,
+            Color32::from_rgba_unmultiplied(24, 26, 30, 236),
+        );
+        painter.rect_stroke(
+            tooltip_rect,
+            14.0,
+            Stroke::new(1.0, Color32::from_rgb(88, 92, 98)),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            pos2(tooltip_rect.left() + 12.0, tooltip_rect.top() + 11.0),
+            egui::Align2::LEFT_TOP,
+            hovered.note_name.as_str(),
+            FontId::proportional(17.0),
+            Color32::from_rgb(228, 220, 208),
+        );
+        painter.text(
+            pos2(tooltip_rect.left() + 12.0, tooltip_rect.top() + 34.0),
+            egui::Align2::LEFT_TOP,
+            format!(
+                "string {}  •  fret {}  •  {}",
+                hovered.string, hovered.fret, degree_label
+            ),
+            FontId::proportional(12.0),
+            Color32::from_rgb(160, 165, 171),
         );
     }
 

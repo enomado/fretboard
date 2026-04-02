@@ -29,10 +29,10 @@ fn mark_some_scale(note: &PNote, scale: &Scale) -> Color32 {
     let (_, pc_note) = note.to_pc();
 
     match scale.degree(pc_note).map(|s| s.0) {
-        Some(1) => Color32::RED,                          // I ступень
-        Some(5) => Color32::DARK_RED.gamma_multiply(1.2), // любая другая ступень
-        Some(_) => Color32::YELLOW,                       // любая другая ступень
-        None => Color32::GRAY.gamma_multiply(0.5),        // нет в гамме
+        Some(1) => Color32::from_rgb(210, 166, 136), // I ступень
+        Some(5) => Color32::from_rgb(184, 146, 115), // квинта
+        Some(_) => Color32::from_rgb(198, 188, 145), // прочие ступени
+        None => Color32::from_rgb(117, 120, 122),    // нет в гамме
     }
 }
 
