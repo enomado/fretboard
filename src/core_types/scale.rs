@@ -6,7 +6,7 @@ use crate::core_types::pitch::{
     Interval,
     PCNote,
 };
-use crate::ui::draw_fretboard::Mark;
+use crate::ui::Mark;
 
 #[derive(Debug, Clone)]
 pub struct Scale {

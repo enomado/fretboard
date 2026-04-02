@@ -36,16 +36,16 @@ use crate::fretboard::{
     FretConfig,
     Fretboard,
 };
-use crate::ui::draw_fretboard::{
-    draw_fret_lines,
-    draw_fretboard_scale,
-    draw_string_lines_scale,
-};
-use crate::ui::positions::draw_positions;
 use crate::ui::theme::{
     PANEL_FILL,
     apply_theme,
     fretboard_fill,
+};
+use crate::ui::{
+    draw_fret_lines,
+    draw_fretboard_scale,
+    draw_positions,
+    draw_string_lines_scale,
 };
 
 const FRETBOARD_HEIGHT: f32 = 340.0;
