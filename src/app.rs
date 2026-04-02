@@ -551,7 +551,7 @@ impl App {
     }
 
     fn draw_spectrum(&self, ui: &mut Ui, target: Option<&TunerTarget>, reading: Option<&TunerReading>) {
-        let desired_size = vec2((ui.available_width()).max(220.0), 120.0);
+        let desired_size = vec2((ui.available_width()).max(280.0), 220.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
@@ -566,7 +566,7 @@ impl App {
         painter.text(
             pos2(rect.left() + 14.0, rect.top() + 12.0),
             egui::Align2::LEFT_TOP,
-            "Spectrum",
+            "Spectrum + note waterfall",
             FontId::proportional(15.0),
             Color32::from_rgb(201, 195, 184),
         );
@@ -587,14 +587,34 @@ impl App {
         }
 
         if let Some(reading) = reading {
-            let waterfall_rect = Rect::from_min_max(
+            let freq_rect = Rect::from_min_max(
                 pos2(rect.left() + 14.0, rect.top() + 34.0),
-                pos2(rect.right() - 14.0, rect.top() + 82.0),
+                pos2(rect.right() - 14.0, rect.top() + 84.0),
             );
-            self.draw_waterfall(&painter, waterfall_rect, &reading.waterfall);
+            painter.text(
+                pos2(freq_rect.left(), freq_rect.top() - 2.0),
+                egui::Align2::LEFT_BOTTOM,
+                "Frequency waterfall",
+                FontId::proportional(11.0),
+                Color32::from_rgb(152, 158, 165),
+            );
+            self.draw_waterfall(&painter, freq_rect, &reading.waterfall);
+
+            let note_rect = Rect::from_min_max(
+                pos2(rect.left() + 14.0, rect.top() + 104.0),
+                pos2(rect.right() - 56.0, rect.top() + 154.0),
+            );
+            painter.text(
+                pos2(note_rect.left(), note_rect.top() - 2.0),
+                egui::Align2::LEFT_BOTTOM,
+                "Note waterfall",
+                FontId::proportional(11.0),
+                Color32::from_rgb(152, 158, 165),
+            );
+            self.draw_note_waterfall(&painter, note_rect, &reading.note_waterfall, &reading.note_labels);
 
             let bars_rect = Rect::from_min_max(
-                pos2(rect.left() + 14.0, rect.top() + 88.0),
+                pos2(rect.left() + 14.0, rect.top() + 172.0),
                 pos2(rect.right() - 14.0, rect.bottom() - 14.0),
             );
             let bar_width = bars_rect.width() / reading.spectrum.len().max(1) as f32;
@@ -609,11 +629,13 @@ impl App {
                 );
                 painter.rect_filled(bar_rect, 3.0, spectrum_color(*value));
             }
+
+            self.draw_note_bar_overlay(&painter, bars_rect, &reading.note_spectrum);
         } else {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "Spectrum will appear when the tuner locks onto a note",
+                "Waterfalls will appear when the tuner locks onto a note",
                 FontId::proportional(13.0),
                 Color32::from_rgb(139, 143, 149),
             );
@@ -650,6 +672,51 @@ impl App {
                     waterfall_color(*value, row_index as f32 / rows as f32),
                 );
             }
+        }
+    }
+
+    fn draw_note_waterfall(
+        &self,
+        painter: &egui::Painter,
+        rect: Rect,
+        waterfall: &[Vec<f32>],
+        labels: &[String],
+    ) {
+        self.draw_waterfall(painter, rect, waterfall);
+
+        if labels.is_empty() {
+            return;
+        }
+
+        let label_stride = 6usize;
+        let cell_w = rect.width() / labels.len() as f32;
+        for index in (0..labels.len()).step_by(label_stride) {
+            let x = rect.left() + index as f32 * cell_w;
+            painter.text(
+                pos2(x, rect.bottom() + 4.0),
+                egui::Align2::LEFT_TOP,
+                labels[index].as_str(),
+                FontId::proportional(10.0),
+                Color32::from_rgb(128, 133, 139),
+            );
+        }
+    }
+
+    fn draw_note_bar_overlay(&self, painter: &egui::Painter, rect: Rect, note_spectrum: &[f32]) {
+        if note_spectrum.is_empty() {
+            return;
+        }
+
+        let width = rect.width() / note_spectrum.len() as f32;
+        for (index, value) in note_spectrum.iter().enumerate() {
+            if *value < 0.18 {
+                continue;
+            }
+            let x = rect.left() + index as f32 * width;
+            painter.line_segment(
+                [pos2(x, rect.top()), pos2(x, rect.bottom())],
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(214, 200, 182, 36)),
+            );
         }
     }
 
