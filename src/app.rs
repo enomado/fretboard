@@ -21,6 +21,11 @@ use eframe::{
     Frame as AppFrame,
 };
 
+use crate::audio::{
+    AudioEngine,
+    AudioStatus,
+    TunerReading,
+};
 use crate::core_types::note::{
     ANote,
     Accidental,
@@ -159,6 +164,7 @@ const ALL_ROOTS: [(Note, &str); 7] = [
 ];
 
 pub struct App {
+    audio:       AudioEngine,
     tuning_kind: TuningKind,
     scale_kind:  ScaleKind,
     root_note:   Note,
@@ -178,6 +184,7 @@ impl App {
         apply_theme(&cc.egui_ctx);
 
         Self {
+            audio:       AudioEngine::new(),
             tuning_kind: TuningKind::Cello,
             scale_kind:  ScaleKind::BluesMinor,
             root_note:   Note::A,
@@ -192,9 +199,13 @@ impl App {
                     .inner_margin(Margin::same(18)),
             )
             .show_inside(ui, |ui| {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(33));
                 self.draw_header(ui);
                 ui.add_space(14.0);
                 self.draw_controls(ui);
+                ui.add_space(14.0);
+                self.draw_tuner_card(ui);
                 ui.add_space(14.0);
                 self.draw_fretboard_card(ui);
             });
@@ -380,6 +391,186 @@ impl App {
             });
     }
 
+    fn draw_tuner_card(&self, ui: &mut Ui) {
+        let status = self.audio.status();
+        let reading = self.audio.reading();
+
+        Frame::new()
+            .fill(PANEL_FILL)
+            .corner_radius(CornerRadius::same(22))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(61, 66, 74)))
+            .inner_margin(Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Live tuner")
+                                .size(20.0)
+                                .color(Color32::from_rgb(228, 220, 208)),
+                        );
+                        ui.label(
+                            RichText::new(audio_status_label(&status)).color(audio_status_color(&status)),
+                        );
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(reading) = &reading {
+                            pill(
+                                ui,
+                                &format!("clarity {:.2}", reading.clarity),
+                                Color32::from_rgb(206, 198, 183),
+                                Color32::from_rgb(64, 68, 73),
+                            );
+                        }
+                    });
+                });
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    self.draw_tuner_meter(ui, reading.as_ref());
+                    ui.add_space(16.0);
+                    self.draw_spectrum(ui, reading.as_ref());
+                });
+            });
+    }
+
+    fn draw_tuner_meter(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
+        let desired_size = vec2(250.0, 120.0);
+        let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
+        let painter = ui.painter_at(rect);
+
+        painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_stroke(
+            rect,
+            18.0,
+            Stroke::new(1.0, Color32::from_rgb(72, 76, 82)),
+            egui::StrokeKind::Inside,
+        );
+
+        let center_x = rect.center().x;
+        let meter_y = rect.bottom() - 30.0;
+        painter.line_segment(
+            [
+                pos2(rect.left() + 18.0, meter_y),
+                pos2(rect.right() - 18.0, meter_y),
+            ],
+            Stroke::new(2.0, Color32::from_rgb(89, 92, 98)),
+        );
+
+        for cents in [-50.0_f32, -25.0, 0.0, 25.0, 50.0] {
+            let x = egui::remap(cents, -50.0..=50.0, (rect.left() + 22.0)..=(rect.right() - 22.0));
+            let height = if cents == 0.0 { 18.0 } else { 10.0 };
+            painter.line_segment(
+                [pos2(x, meter_y - height), pos2(x, meter_y + 2.0)],
+                Stroke::new(1.0, Color32::from_rgb(117, 122, 128)),
+            );
+        }
+
+        match reading {
+            Some(reading) => {
+                painter.text(
+                    pos2(rect.left() + 18.0, rect.top() + 18.0),
+                    egui::Align2::LEFT_TOP,
+                    reading.note_name.as_str(),
+                    FontId::proportional(30.0),
+                    Color32::from_rgb(230, 223, 210),
+                );
+                painter.text(
+                    pos2(rect.left() + 18.0, rect.top() + 54.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("{:.1} Hz", reading.frequency_hz),
+                    FontId::proportional(15.0),
+                    Color32::from_rgb(162, 166, 172),
+                );
+
+                let cents = reading.cents.clamp(-50.0, 50.0);
+                let needle_x = egui::remap(cents, -50.0..=50.0, (rect.left() + 22.0)..=(rect.right() - 22.0));
+                painter.line_segment(
+                    [pos2(needle_x, meter_y - 22.0), pos2(needle_x, meter_y + 4.0)],
+                    Stroke::new(3.0, cents_color(cents)),
+                );
+                painter.circle_filled(pos2(needle_x, meter_y), 5.0, cents_color(cents));
+                painter.text(
+                    pos2(rect.right() - 18.0, rect.top() + 18.0),
+                    egui::Align2::RIGHT_TOP,
+                    format!("{:+.1} cents", reading.cents),
+                    FontId::proportional(15.0),
+                    cents_color(cents),
+                );
+            }
+            None => {
+                painter.text(
+                    rect.center_top() + vec2(0.0, 20.0),
+                    egui::Align2::CENTER_TOP,
+                    "Waiting for pitch",
+                    FontId::proportional(20.0),
+                    Color32::from_rgb(188, 182, 171),
+                );
+                painter.text(
+                    rect.center_top() + vec2(0.0, 50.0),
+                    egui::Align2::CENTER_TOP,
+                    "Play a single sustained note near the microphone",
+                    FontId::proportional(13.0),
+                    Color32::from_rgb(139, 143, 149),
+                );
+            }
+        }
+
+        painter.line_segment(
+            [pos2(center_x, meter_y - 24.0), pos2(center_x, meter_y + 6.0)],
+            Stroke::new(1.0, Color32::from_rgb(177, 167, 150)),
+        );
+    }
+
+    fn draw_spectrum(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
+        let desired_size = vec2((ui.available_width()).max(220.0), 120.0);
+        let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
+        let painter = ui.painter_at(rect);
+
+        painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_stroke(
+            rect,
+            18.0,
+            Stroke::new(1.0, Color32::from_rgb(72, 76, 82)),
+            egui::StrokeKind::Inside,
+        );
+
+        painter.text(
+            pos2(rect.left() + 14.0, rect.top() + 12.0),
+            egui::Align2::LEFT_TOP,
+            "Spectrum",
+            FontId::proportional(15.0),
+            Color32::from_rgb(201, 195, 184),
+        );
+
+        if let Some(reading) = reading {
+            let bars_rect = Rect::from_min_max(
+                pos2(rect.left() + 14.0, rect.top() + 34.0),
+                pos2(rect.right() - 14.0, rect.bottom() - 14.0),
+            );
+            let bar_width = bars_rect.width() / reading.spectrum.len().max(1) as f32;
+
+            for (index, value) in reading.spectrum.iter().enumerate() {
+                let x0 = bars_rect.left() + index as f32 * bar_width;
+                let x1 = x0 + bar_width - 2.0;
+                let height = bars_rect.height() * value.clamp(0.0, 1.0);
+                let bar_rect = Rect::from_min_max(
+                    pos2(x0, bars_rect.bottom() - height),
+                    pos2(x1.max(x0 + 1.0), bars_rect.bottom()),
+                );
+                painter.rect_filled(bar_rect, 3.0, spectrum_color(*value));
+            }
+        } else {
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Spectrum will appear when the tuner locks onto a note",
+                FontId::proportional(13.0),
+                Color32::from_rgb(139, 143, 149),
+            );
+        }
+    }
+
     fn draw_footer_note(&self, ui: &mut Ui, component_rect: Rect) {
         let painter = ui.painter_at(component_rect);
         painter.text(
@@ -490,6 +681,40 @@ fn pill(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
         .show(ui, |ui| {
             ui.label(RichText::new(label).size(12.0).color(fg));
         });
+}
+
+fn audio_status_label(status: &AudioStatus) -> String {
+    match status {
+        AudioStatus::Idle => "Microphone idle".to_owned(),
+        AudioStatus::Listening => "Listening to microphone".to_owned(),
+        AudioStatus::Error(message) => format!("Audio error: {message}"),
+    }
+}
+
+fn audio_status_color(status: &AudioStatus) -> Color32 {
+    match status {
+        AudioStatus::Idle => Color32::from_rgb(154, 160, 168),
+        AudioStatus::Listening => Color32::from_rgb(185, 194, 176),
+        AudioStatus::Error(_) => Color32::from_rgb(210, 166, 136),
+    }
+}
+
+fn cents_color(cents: f32) -> Color32 {
+    if cents.abs() < 6.0 {
+        Color32::from_rgb(182, 197, 164)
+    } else if cents.abs() < 18.0 {
+        Color32::from_rgb(206, 188, 151)
+    } else {
+        Color32::from_rgb(198, 146, 126)
+    }
+}
+
+fn spectrum_color(value: f32) -> Color32 {
+    let value = value.clamp(0.0, 1.0);
+    let r = (96.0 + value * 70.0).round() as u8;
+    let g = (88.0 + value * 82.0).round() as u8;
+    let b = (82.0 + value * 56.0).round() as u8;
+    Color32::from_rgb(r, g, b)
 }
 
 pub fn rangef_to_range(range: Rangef) -> Range<f32> {
