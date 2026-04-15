@@ -1,7 +1,12 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::collections::VecDeque;
+    use std::mem::ManuallyDrop;
     use std::sync::{
+        atomic::{
+            AtomicU32,
+            Ordering,
+        },
         Arc,
         Mutex,
     };
@@ -19,12 +24,14 @@ mod native {
     use rustfft::FftPlanner;
     use rustfft::num_complex::Complex32;
 
-    const WINDOW_SIZE: usize = 4096;
-    const SPECTRUM_BINS: usize = 48;
-    const WATERFALL_HISTORY: usize = 36;
+    const WINDOW_SIZE: usize = 6144;
+    const SPECTRUM_BINS: usize = 72;
+    const WATERFALL_HISTORY: usize = 52;
     const NOTE_BUCKET_MIN_MIDI: usize = 36;
     const NOTE_BUCKET_MAX_MIDI: usize = 84;
-    const ANALYSIS_INTERVAL: Duration = Duration::from_millis(70);
+    const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
+    const DEFAULT_INPUT_GAIN: f32 = 4.0;
+    const SILENCE_RMS_THRESHOLD: f32 = 0.003;
     const YIN_THRESHOLD: f32 = 0.12;
 
     #[derive(Clone, Debug)]
@@ -56,8 +63,10 @@ mod native {
     }
 
     pub struct AudioEngine {
-        shared:  Arc<Mutex<SharedState>>,
-        _stream: Option<cpal::Stream>,
+        shared:      Arc<Mutex<SharedState>>,
+        input_gain:  Arc<AtomicU32>,
+        input_level: Arc<AtomicU32>,
+        _stream:     ManuallyDrop<Option<cpal::Stream>>,
     }
 
     impl AudioEngine {
@@ -69,12 +78,19 @@ mod native {
                 note_waterfall:     VecDeque::with_capacity(WATERFALL_HISTORY),
                 smoothed_frequency: None,
             }));
+            let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
+            let input_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
 
-            let stream = start_stream(shared.clone());
+            let stream = start_stream(shared.clone(), input_gain.clone(), input_level.clone());
 
             Self {
                 shared,
-                _stream: stream.ok(),
+                input_gain,
+                input_level,
+                // CPAL 0.15's ALSA backend can panic while dropping an input stream on shutdown.
+                // Keep the stream alive for the process lifetime instead of tearing it down through
+                // the buggy drop path.
+                _stream: ManuallyDrop::new(stream.ok()),
             }
         }
 
@@ -88,9 +104,26 @@ mod native {
         pub fn reading(&self) -> Option<TunerReading> {
             self.shared.lock().ok().and_then(|guard| guard.reading.clone())
         }
+
+        pub fn input_gain(&self) -> f32 {
+            f32::from_bits(self.input_gain.load(Ordering::Relaxed))
+        }
+
+        pub fn set_input_gain(&self, gain: f32) {
+            self.input_gain
+                .store(gain.clamp(1.0, 12.0).to_bits(), Ordering::Relaxed);
+        }
+
+        pub fn input_level(&self) -> f32 {
+            f32::from_bits(self.input_level.load(Ordering::Relaxed))
+        }
     }
 
-    fn start_stream(shared: Arc<Mutex<SharedState>>) -> Result<cpal::Stream, ()> {
+    fn start_stream(
+        shared: Arc<Mutex<SharedState>>,
+        input_gain: Arc<AtomicU32>,
+        input_level: Arc<AtomicU32>,
+    ) -> Result<cpal::Stream, ()> {
         let host = cpal::default_host();
         let Some(device) = host.default_input_device() else {
             update_error(&shared, "No input device found");
@@ -124,6 +157,8 @@ mod native {
                     channels,
                     sample_rate,
                     shared.clone(),
+                    input_gain.clone(),
+                    input_level.clone(),
                     err_fn,
                 )
             }
@@ -134,6 +169,8 @@ mod native {
                     channels,
                     sample_rate,
                     shared.clone(),
+                    input_gain.clone(),
+                    input_level.clone(),
                     err_fn,
                 )
             }
@@ -144,6 +181,8 @@ mod native {
                     channels,
                     sample_rate,
                     shared.clone(),
+                    input_gain.clone(),
+                    input_level.clone(),
                     err_fn,
                 )
             }
@@ -171,6 +210,8 @@ mod native {
         channels: usize,
         sample_rate: f32,
         shared: Arc<Mutex<SharedState>>,
+        input_gain: Arc<AtomicU32>,
+        input_level: Arc<AtomicU32>,
         err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
@@ -184,8 +225,9 @@ mod native {
         device.build_input_stream(
             config,
             move |data: &[T], _| {
+                let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
                 for frame in data.chunks(channels) {
-                    let sample: f32 = f32::from_sample(frame[0]);
+                    let sample = (f32::from_sample(frame[0]) * gain).clamp(-1.0, 1.0);
                     buffer.push_back(sample);
                 }
 
@@ -200,6 +242,8 @@ mod native {
 
                 let start = buffer.len().saturating_sub(WINDOW_SIZE);
                 let window: Vec<f32> = buffer.iter().skip(start).copied().collect();
+                let level = normalized_level(&window);
+                input_level.store(level.to_bits(), Ordering::Relaxed);
 
                 if let Some(reading) = analyze_window(&window, sample_rate, &mut planner) {
                     if let Ok(mut state) = shared.lock() {
@@ -237,13 +281,18 @@ mod native {
         )
     }
 
+    fn normalized_level(window: &[f32]) -> f32 {
+        let rms = (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt();
+        (rms / 0.1).clamp(0.0, 1.0)
+    }
+
     fn analyze_window(
         window: &[f32],
         sample_rate: f32,
         planner: &mut FftPlanner<f32>,
     ) -> Option<TunerReading> {
         let rms = (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt();
-        if rms < 0.01 {
+        if rms < SILENCE_RMS_THRESHOLD {
             return None;
         }
 
@@ -331,11 +380,13 @@ mod native {
         });
 
         let tau = parabolic_tau(&cumulative, tau);
-        if tau <= 0.0 {
+        if !tau.is_finite() || tau <= 0.0 {
             return None;
         }
 
-        let clarity = (1.0 - cumulative[tau.round() as usize].clamp(0.0, 1.0)).clamp(0.0, 1.0);
+        let tau = tau.clamp(min_lag as f32, search_end as f32);
+        let tau_index = tau.round().clamp(min_lag as f32, search_end as f32) as usize;
+        let clarity = (1.0 - cumulative[tau_index].clamp(0.0, 1.0)).clamp(0.0, 1.0);
         if clarity < 0.35 {
             return None;
         }
@@ -415,11 +466,23 @@ mod native {
     fn smooth_frequency(previous: Option<f32>, next: f32) -> f32 {
         match previous {
             Some(previous) => {
-                let ratio = (next / previous).max(previous / next);
-                let alpha = if ratio > 1.08 { 0.45 } else { 0.22 };
-                previous + (next - previous) * alpha
+                let corrected = correct_octave_jump(previous, next);
+                let ratio = (corrected / previous).max(previous / corrected);
+                let alpha = if ratio > 1.04 { 0.18 } else { 0.10 };
+                previous + (corrected - previous) * alpha
             }
             None => next,
+        }
+    }
+
+    fn correct_octave_jump(previous: f32, next: f32) -> f32 {
+        let ratio = next / previous;
+        if (1.85..=2.15).contains(&ratio) {
+            next * 0.5
+        } else if (0.46..=0.54).contains(&ratio) {
+            next * 2.0
+        } else {
+            next
         }
     }
 
@@ -463,6 +526,25 @@ mod native {
             state.status = AudioStatus::Error(message.to_owned());
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            detect_pitch_yin,
+            parabolic_tau,
+        };
+
+        #[test]
+        fn parabolic_tau_can_overshoot_without_producing_invalid_index() {
+            let values = vec![0.0, 0.5, 0.0, -0.499];
+            let refined = parabolic_tau(&values, 2);
+            assert!(refined > values.len() as f32);
+
+            let window = vec![1.0; 981];
+            let result = std::panic::catch_unwind(|| detect_pitch_yin(&window, 44_100.0));
+            assert!(result.is_ok());
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -500,6 +582,16 @@ mod native {
 
         pub fn reading(&self) -> Option<TunerReading> {
             None
+        }
+
+        pub fn input_gain(&self) -> f32 {
+            1.0
+        }
+
+        pub fn set_input_gain(&self, _gain: f32) {}
+
+        pub fn input_level(&self) -> f32 {
+            0.0
         }
     }
 }

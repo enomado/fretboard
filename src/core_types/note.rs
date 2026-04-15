@@ -71,7 +71,7 @@ pub struct ANote {
 
 impl ANote {
     pub fn to_pitch(&self) -> PNote {
-        let note = self.octave.0 as i32 * 12 + self.simple().0 as i32;
+        let note = (self.octave.0 as i32 + 1) * 12 + self.simple().0 as i32;
         PNote::new(note as u8).unwrap()
     }
 

@@ -48,6 +48,13 @@ pub fn fret_position_log_range(
     fret_range: &Range<Fret>, // диапазон видимых ладов
     n: Fret,                  // какой лад рисуем
 ) -> f32 {
+    if n.0 < fret_range.start.0 {
+        return ui_range.start;
+    }
+    if n.0 >= fret_range.end.0 {
+        return ui_range.end;
+    }
+
     let effective_end = fret_range.end.0 - fret_range.start.0 + 1;
 
     let scale_length = (ui_range.end - ui_range.start) / (1.0 - 2f32.powf(-(effective_end as f32 / 12.0)));
@@ -68,6 +75,13 @@ pub fn fret_position_log_range(
 // }
 
 pub fn fret_position_linear_range(ui_range: &Range<f32>, fret_range: &Range<Fret>, n: Fret) -> f32 {
+    if n.0 < fret_range.start.0 {
+        return ui_range.start;
+    }
+    if n.0 >= fret_range.end.0 {
+        return ui_range.end;
+    }
+
     let visible = (fret_range.end.0 - fret_range.start.0 + 1) as f32;
     let n_eff = (n.0 - fret_range.start.0 + 1) as f32;
 

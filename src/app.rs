@@ -264,6 +264,8 @@ impl App {
     }
 
     fn draw_controls(&mut self, ui: &mut Ui) {
+        let mut input_gain = self.audio.input_gain();
+
         Frame::new()
             .fill(PANEL_FILL)
             .corner_radius(CornerRadius::same(18))
@@ -330,6 +332,30 @@ impl App {
                             }
                         });
                 });
+
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Mic gain")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+
+                    let slider = egui::Slider::new(&mut input_gain, 1.0..=12.0)
+                        .logarithmic(true)
+                        .clamping(egui::SliderClamping::Always)
+                        .trailing_fill(true)
+                        .show_value(false);
+                    if ui.add_sized([220.0, 18.0], slider).changed() {
+                        self.audio.set_input_gain(input_gain);
+                    }
+
+                    ui.label(
+                        RichText::new(format!("{input_gain:.1}x"))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+                });
             });
     }
 
@@ -337,7 +363,7 @@ impl App {
         let tuning = self.tuning_kind.to_tuning();
         let root_pc = PCNote::from_note(self.root_note, Accidental::Natural);
         let scale = self.scale_kind.to_scale(root_pc);
-        let tuner_target = self.filtered_tuner_target(&tuning, &scale);
+        let tuner_targets = self.filtered_tuner_targets(&tuning, &scale);
 
         Frame::new()
             .fill(PANEL_FILL)
@@ -391,8 +417,8 @@ impl App {
                 draw_string_lines_scale(&painter, fretboard_rect, &fretboard, &scale);
                 draw_fretboard_scale(painter.clone(), &fretboard, &scale);
                 draw_positions(&painter, fretboard_rect, &fretboard);
-                if let Some(target) = tuner_target.as_ref() {
-                    self.draw_tuner_target(&painter, &fretboard, target);
+                if !tuner_targets.is_empty() {
+                    self.draw_tuner_targets(&painter, &fretboard, &tuner_targets);
                 }
                 if let Some(pointer_pos) = response.hover_pos() {
                     if let Some(hovered) = self.hovered_note(pointer_pos, &fretboard, &scale) {
@@ -407,10 +433,12 @@ impl App {
     fn draw_tuner_card(&self, ui: &mut Ui) {
         let status = self.audio.status();
         let reading = self.audio.reading();
+        let input_level = self.audio.input_level();
         let tuning = self.tuning_kind.to_tuning();
         let root_pc = PCNote::from_note(self.root_note, Accidental::Natural);
         let scale = self.scale_kind.to_scale(root_pc);
-        let target = self.filtered_tuner_target(&tuning, &scale);
+        let tuner_targets = self.filtered_tuner_targets(&tuning, &scale);
+        let target = tuner_targets.first();
 
         Frame::new()
             .fill(PANEL_FILL)
@@ -443,16 +471,61 @@ impl App {
                 });
 
                 ui.add_space(12.0);
+                self.draw_input_level(ui, input_level);
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    self.draw_tuner_meter(ui, target.as_ref());
+                    self.draw_tuner_meter(ui, target);
                     ui.add_space(16.0);
                     self.draw_spectrum(
                         ui,
-                        target.as_ref().map(|value| value as &TunerTarget),
+                        target,
                         reading.as_ref(),
                     );
                 });
             });
+    }
+
+    fn draw_input_level(&self, ui: &mut Ui, input_level: f32) {
+        let desired_size = vec2(ui.available_width(), 28.0);
+        let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
+        let painter = ui.painter_at(rect);
+
+        painter.rect_filled(rect, 14.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_stroke(
+            rect,
+            14.0,
+            Stroke::new(1.0, Color32::from_rgb(72, 76, 82)),
+            egui::StrokeKind::Inside,
+        );
+
+        let inner = rect.shrink2(vec2(6.0, 6.0));
+        let fill_width = inner.width() * input_level.clamp(0.0, 1.0);
+        let fill_rect = Rect::from_min_max(inner.min, pos2(inner.min.x + fill_width, inner.max.y));
+        let fill_color = if input_level < 0.15 {
+            Color32::from_rgb(106, 116, 128)
+        } else if input_level < 0.85 {
+            Color32::from_rgb(192, 150, 97)
+        } else {
+            Color32::from_rgb(214, 108, 86)
+        };
+        if fill_width > 0.0 {
+            painter.rect_filled(fill_rect, 10.0, fill_color);
+        }
+
+        painter.text(
+            inner.left_center(),
+            egui::Align2::LEFT_CENTER,
+            "Mic level",
+            FontId::proportional(13.0),
+            Color32::from_rgb(196, 189, 177),
+        );
+        painter.text(
+            inner.right_center(),
+            egui::Align2::RIGHT_CENTER,
+            format!("{:>3.0}%", input_level.clamp(0.0, 1.0) * 100.0),
+            FontId::monospace(12.0),
+            Color32::from_rgb(230, 223, 210),
+        );
     }
 
     fn draw_tuner_meter(&self, ui: &mut Ui, reading: Option<&TunerTarget>) {
@@ -551,7 +624,7 @@ impl App {
     }
 
     fn draw_spectrum(&self, ui: &mut Ui, target: Option<&TunerTarget>, reading: Option<&TunerReading>) {
-        let desired_size = vec2((ui.available_width()).max(280.0), 220.0);
+        let desired_size = vec2((ui.available_width()).max(280.0), 244.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
@@ -587,13 +660,14 @@ impl App {
         }
 
         if let Some(reading) = reading {
+            let section_label_gap = 16.0;
             let freq_rect = Rect::from_min_max(
-                pos2(rect.left() + 14.0, rect.top() + 34.0),
-                pos2(rect.right() - 14.0, rect.top() + 84.0),
+                pos2(rect.left() + 14.0, rect.top() + 50.0),
+                pos2(rect.right() - 14.0, rect.top() + 94.0),
             );
             painter.text(
-                pos2(freq_rect.left(), freq_rect.top() - 2.0),
-                egui::Align2::LEFT_BOTTOM,
+                pos2(freq_rect.left(), freq_rect.top() - section_label_gap),
+                egui::Align2::LEFT_TOP,
                 "Frequency waterfall",
                 FontId::proportional(11.0),
                 Color32::from_rgb(152, 158, 165),
@@ -601,25 +675,31 @@ impl App {
             self.draw_waterfall(&painter, freq_rect, &reading.waterfall);
 
             let note_rect = Rect::from_min_max(
-                pos2(rect.left() + 14.0, rect.top() + 104.0),
-                pos2(rect.right() - 56.0, rect.top() + 154.0),
+                pos2(rect.left() + 14.0, rect.top() + 124.0),
+                pos2(rect.right() - 14.0, rect.top() + 174.0),
             );
             painter.text(
-                pos2(note_rect.left(), note_rect.top() - 2.0),
-                egui::Align2::LEFT_BOTTOM,
+                pos2(note_rect.left(), note_rect.top() - section_label_gap),
+                egui::Align2::LEFT_TOP,
                 "Note waterfall",
                 FontId::proportional(11.0),
                 Color32::from_rgb(152, 158, 165),
             );
-            self.draw_note_waterfall(&painter, note_rect, &reading.note_waterfall, &reading.note_labels);
+            self.draw_note_waterfall(
+                &painter,
+                note_rect,
+                &reading.note_waterfall,
+                &reading.note_labels,
+                Some(reading.note_name.as_str()),
+            );
 
             let bars_rect = Rect::from_min_max(
-                pos2(rect.left() + 14.0, rect.top() + 172.0),
+                pos2(rect.left() + 14.0, rect.top() + 192.0),
                 pos2(rect.right() - 14.0, rect.bottom() - 14.0),
             );
-            let bar_width = bars_rect.width() / reading.spectrum.len().max(1) as f32;
+            let bar_width = bars_rect.width() / reading.note_spectrum.len().max(1) as f32;
 
-            for (index, value) in reading.spectrum.iter().enumerate() {
+            for (index, value) in reading.note_spectrum.iter().enumerate() {
                 let x0 = bars_rect.left() + index as f32 * bar_width;
                 let x1 = x0 + bar_width - 2.0;
                 let height = bars_rect.height() * value.clamp(0.0, 1.0);
@@ -629,8 +709,6 @@ impl App {
                 );
                 painter.rect_filled(bar_rect, 3.0, spectrum_color(*value));
             }
-
-            self.draw_note_bar_overlay(&painter, bars_rect, &reading.note_spectrum);
         } else {
             painter.text(
                 rect.center(),
@@ -681,6 +759,7 @@ impl App {
         rect: Rect,
         waterfall: &[Vec<f32>],
         labels: &[String],
+        active_note: Option<&str>,
     ) {
         self.draw_waterfall(painter, rect, waterfall);
 
@@ -690,32 +769,46 @@ impl App {
 
         let label_stride = 6usize;
         let cell_w = rect.width() / labels.len() as f32;
+        let active_index = active_note.and_then(|note| labels.iter().position(|label| label == note));
+
+        if let Some(index) = active_index {
+            let x0 = rect.left() + index as f32 * cell_w;
+            let x1 = x0 + cell_w;
+            let center_x = (x0 + x1) * 0.5;
+            painter.rect_filled(
+                Rect::from_min_max(pos2(x0, rect.top()), pos2(x1, rect.bottom())),
+                0.0,
+                Color32::from_rgba_unmultiplied(214, 200, 182, 24),
+            );
+            painter.line_segment(
+                [pos2(center_x, rect.top()), pos2(center_x, rect.bottom())],
+                Stroke::new(2.0, Color32::from_rgb(214, 200, 182)),
+            );
+        }
+
         for index in (0..labels.len()).step_by(label_stride) {
-            let x = rect.left() + index as f32 * cell_w;
+            if Some(index) == active_index {
+                continue;
+            }
+
+            let x = rect.left() + (index as f32 + 0.5) * cell_w;
             painter.text(
                 pos2(x, rect.bottom() + 4.0),
-                egui::Align2::LEFT_TOP,
+                egui::Align2::CENTER_TOP,
                 labels[index].as_str(),
                 FontId::proportional(10.0),
                 Color32::from_rgb(128, 133, 139),
             );
         }
-    }
 
-    fn draw_note_bar_overlay(&self, painter: &egui::Painter, rect: Rect, note_spectrum: &[f32]) {
-        if note_spectrum.is_empty() {
-            return;
-        }
-
-        let width = rect.width() / note_spectrum.len() as f32;
-        for (index, value) in note_spectrum.iter().enumerate() {
-            if *value < 0.18 {
-                continue;
-            }
-            let x = rect.left() + index as f32 * width;
-            painter.line_segment(
-                [pos2(x, rect.top()), pos2(x, rect.bottom())],
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(214, 200, 182, 36)),
+        if let Some(index) = active_index {
+            let x = rect.left() + (index as f32 + 0.5) * cell_w;
+            painter.text(
+                pos2(x, rect.bottom() + 4.0),
+                egui::Align2::CENTER_TOP,
+                labels[index].as_str(),
+                FontId::proportional(10.0),
+                Color32::from_rgb(228, 220, 208),
             );
         }
     }
@@ -821,55 +914,52 @@ impl App {
             .unwrap_or("?")
     }
 
-    fn filtered_tuner_target(&self, tuning: &Tuning, scale: &Scale) -> Option<TunerTarget> {
-        let reading = self.audio.reading()?;
-        let mut best: Option<TunerTarget> = None;
+    fn filtered_tuner_targets(&self, tuning: &Tuning, scale: &Scale) -> Vec<TunerTarget> {
+        let Some(reading) = self.audio.reading() else {
+            return Vec::new();
+        };
+        let detected_midi = frequency_to_midi(reading.frequency_hz).round() as u8;
+        let detected_frequency = midi_to_frequency(detected_midi as f32);
+        let cents = 1200.0 * (reading.frequency_hz / detected_frequency).log2();
+        let mut matches = Vec::new();
 
         for string in 1..=tuning.string_count() {
             let open = tuning.note(crate::core_types::tuning::GString(string));
             for fret in 0..=18 {
                 let note = open.add(crate::core_types::pitch::Interval(fret as i32));
-                let target_frequency = midi_to_frequency(note.as_u8() as f32);
-                let cents = 1200.0 * (reading.frequency_hz / target_frequency).log2();
-                let distance = cents.abs();
-
-                if distance > 65.0 {
+                if note.as_u8() != detected_midi {
                     continue;
                 }
 
-                let replace = best
-                    .as_ref()
-                    .map(|current| distance < current.cents.abs())
-                    .unwrap_or(true);
-
-                if replace {
-                    let degree = scale.degree(note.to_pc().1).map(|value| value.0);
-                    best = Some(TunerTarget {
-                        string,
-                        fret,
-                        note_name: note.to_anote().name(),
-                        frequency_hz: reading.frequency_hz,
-                        cents,
-                        degree,
-                    });
-                }
+                let degree = scale.degree(note.to_pc().1).map(|value| value.0);
+                matches.push(TunerTarget {
+                    string,
+                    fret,
+                    note_name: note.to_anote().name(),
+                    frequency_hz: reading.frequency_hz,
+                    cents,
+                    degree,
+                });
             }
         }
 
-        best
+        matches.sort_by_key(|target| (target.fret, target.string));
+        matches
     }
 
-    fn draw_tuner_target(&self, painter: &egui::Painter, fretboard: &Fretboard, target: &TunerTarget) {
-        let center = pos2(
-            fretboard.fret_pos(Fret(target.fret)),
-            fretboard.string_pos(crate::core_types::tuning::GString(target.string)),
-        );
-        painter.circle_stroke(center, 18.0, Stroke::new(2.0, Color32::from_rgb(216, 205, 187)));
-        painter.circle_stroke(
-            center,
-            24.0,
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(216, 205, 187, 96)),
-        );
+    fn draw_tuner_targets(&self, painter: &egui::Painter, fretboard: &Fretboard, targets: &[TunerTarget]) {
+        for target in targets {
+            let center = pos2(
+                fretboard.fret_pos(Fret(target.fret)),
+                fretboard.string_pos(crate::core_types::tuning::GString(target.string)),
+            );
+            painter.circle_stroke(center, 18.0, Stroke::new(2.0, Color32::from_rgb(216, 205, 187)));
+            painter.circle_stroke(
+                center,
+                24.0,
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(216, 205, 187, 96)),
+            );
+        }
     }
 }
 
@@ -928,6 +1018,10 @@ fn waterfall_color(value: f32, age: f32) -> Color32 {
 
 fn midi_to_frequency(midi: f32) -> f32 {
     440.0 * 2.0_f32.powf((midi - 69.0) / 12.0)
+}
+
+fn frequency_to_midi(frequency_hz: f32) -> f32 {
+    69.0 + 12.0 * (frequency_hz / 440.0).log2()
 }
 
 fn degree_suffix(degree: Option<u8>) -> String {

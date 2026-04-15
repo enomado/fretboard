@@ -98,7 +98,7 @@ impl PNote {
     }
 
     pub fn to_pc(&self) -> (Octave, PCNote) {
-        let octave = self.0 / 12;
+        let octave = (self.0 / 12).saturating_sub(1);
         let pc = (self.0 % 12 + 12) % 12; // нормализация
         (Octave(octave), PCNote(pc))
     }
