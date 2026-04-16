@@ -16,6 +16,13 @@ use super::{
     pill,
 };
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkspaceTabState {
+    Hidden,
+    Open,
+    Active,
+}
+
 pub(super) struct WorkspaceBehavior<'a> {
     app: &'a mut App,
 }
@@ -212,6 +219,7 @@ impl App {
 
     fn draw_workspace_toolbar(&mut self, ui: &mut Ui, workspace_tree: &mut egui_tiles::Tree<WorkspaceTab>) {
         let mut reset_workspace = false;
+        let active_tiles = workspace_tree.active_tiles();
 
         Frame::new()
             .fill(Color32::from_rgb(22, 26, 31))
@@ -221,28 +229,28 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        RichText::new("Add tab")
+                        RichText::new("Tabs")
                             .color(Color32::from_rgb(226, 216, 201))
                             .strong(),
                     );
 
                     for tab in WorkspaceTab::ALL {
-                        let is_open = is_workspace_tab_visible(workspace_tree, tab);
+                        let state = workspace_tab_state(workspace_tree, &active_tiles, tab);
+                        let (fill, stroke) = match state {
+                            WorkspaceTabState::Active => {
+                                (Color32::from_rgb(112, 86, 72), Color32::from_rgb(207, 187, 166))
+                            }
+                            WorkspaceTabState::Open => {
+                                (Color32::from_rgb(62, 67, 74), Color32::from_rgb(124, 131, 141))
+                            }
+                            WorkspaceTabState::Hidden => {
+                                (Color32::from_rgb(38, 43, 49), Color32::from_rgb(80, 86, 94))
+                            }
+                        };
                         let button = egui::Button::new(tab.label())
                             .min_size(vec2(102.0, 28.0))
-                            .fill(if is_open {
-                                Color32::from_rgb(112, 86, 72)
-                            } else {
-                                Color32::from_rgb(38, 43, 49)
-                            })
-                            .stroke(Stroke::new(
-                                1.0,
-                                if is_open {
-                                    Color32::from_rgb(207, 187, 166)
-                                } else {
-                                    Color32::from_rgb(80, 86, 94)
-                                },
-                            ))
+                            .fill(fill)
+                            .stroke(Stroke::new(1.0, stroke))
                             .corner_radius(CornerRadius::same(14));
 
                         if ui.add(button).clicked() {
@@ -252,11 +260,9 @@ impl App {
 
                     ui.separator();
                     ui.label(
-                        RichText::new(
-                            "Click to open or focus a tab, drag tabs where you want, close them with x",
-                        )
-                        .color(Color32::from_rgb(145, 151, 160))
-                        .size(12.0),
+                        RichText::new("Active tab is highlighted, open tabs are muted, hidden tabs are dark")
+                            .color(Color32::from_rgb(145, 151, 160))
+                            .size(12.0),
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -295,12 +301,26 @@ pub(super) fn default_workspace_tree() -> egui_tiles::Tree<WorkspaceTab> {
 fn visible_workspace_tabs(tree: &egui_tiles::Tree<WorkspaceTab>) -> usize {
     WorkspaceTab::ALL
         .into_iter()
-        .filter(|tab| is_workspace_tab_visible(tree, *tab))
+        .filter(|tab| workspace_tile_id(tree, *tab).is_some_and(|tile_id| tree.is_visible(tile_id)))
         .count()
 }
 
-fn is_workspace_tab_visible(tree: &egui_tiles::Tree<WorkspaceTab>, tab: WorkspaceTab) -> bool {
-    workspace_tile_id(tree, tab).is_some_and(|tile_id| tree.is_visible(tile_id))
+fn workspace_tab_state(
+    tree: &egui_tiles::Tree<WorkspaceTab>,
+    active_tiles: &[egui_tiles::TileId],
+    tab: WorkspaceTab,
+) -> WorkspaceTabState {
+    let Some(tile_id) = workspace_tile_id(tree, tab) else {
+        return WorkspaceTabState::Hidden;
+    };
+
+    if !tree.is_visible(tile_id) {
+        WorkspaceTabState::Hidden
+    } else if active_tiles.contains(&tile_id) {
+        WorkspaceTabState::Active
+    } else {
+        WorkspaceTabState::Open
+    }
 }
 
 fn workspace_tile_id(tree: &egui_tiles::Tree<WorkspaceTab>, tab: WorkspaceTab) -> Option<egui_tiles::TileId> {
