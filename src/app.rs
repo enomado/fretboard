@@ -1028,7 +1028,7 @@ impl App {
 
         if let Some(reading) = reading {
             let settings = self.audio.analysis_settings();
-            if reading.note_spectrum.is_empty() {
+            if reading.spiral_spectrum.is_empty() {
                 painter.text(
                     viz_rect.center(),
                     egui::Align2::CENTER_CENTER,
@@ -1044,9 +1044,15 @@ impl App {
             let center = chart_rect.center();
             let inner_radius = square * 0.12;
             let outer_radius = square * 0.47;
-            let note_count = reading.note_spectrum.len().max(1);
-            let radius_step = if note_count > 1 {
-                (outer_radius - inner_radius) / (note_count - 1) as f32
+            let semitone_count = reading.note_labels.len().max(1);
+            let spiral_bin_count = reading.spiral_spectrum.len().max(1);
+            let bins_per_semitone = if semitone_count > 1 {
+                (spiral_bin_count.saturating_sub(1) as f32 / (semitone_count - 1) as f32).max(1.0)
+            } else {
+                1.0
+            };
+            let radius_step = if semitone_count > 1 {
+                (outer_radius - inner_radius) / (semitone_count - 1) as f32
             } else {
                 0.0
             };
@@ -1061,7 +1067,7 @@ impl App {
                 Color32::from_rgba_unmultiplied(70, 106, 148, 26),
             );
 
-            for ring in 0..=note_count.saturating_sub(1) / 12 {
+            for ring in 0..=semitone_count.saturating_sub(1) / 12 {
                 let radius = inner_radius + ring as f32 * radius_step * 12.0;
                 painter.circle_stroke(
                     center,
@@ -1097,33 +1103,46 @@ impl App {
                 );
             }
 
-            let spiral_points: Vec<_> = (0..note_count)
-                .map(|index| spiral_point(center, inner_radius, radius_step, index))
+            let spiral_points: Vec<_> = (0..spiral_bin_count)
+                .map(|index| {
+                    spiral_point_fractional(
+                        center,
+                        inner_radius,
+                        radius_step,
+                        index as f32 / bins_per_semitone,
+                    )
+                })
                 .collect();
             painter.add(egui::Shape::line(
                 spiral_points,
                 Stroke::new(1.1, Color32::from_rgb(76, 82, 90)),
             ));
 
-            for (history_index, row) in reading.note_waterfall.iter().enumerate() {
-                let age = history_index as f32 / reading.note_waterfall.len().max(1) as f32;
+            for (history_index, row) in reading.spiral_waterfall.iter().enumerate() {
+                let age = history_index as f32 / reading.spiral_waterfall.len().max(1) as f32;
                 let strengths = spiral_contrast_strengths(row, &settings);
                 for (note_index, intensity) in strengths.iter().copied().enumerate() {
                     if intensity <= 0.0 {
                         continue;
                     }
 
-                    let position = spiral_point(center, inner_radius, radius_step, note_index);
+                    let semitone_position = note_index as f32 / bins_per_semitone;
+                    let position =
+                        spiral_point_fractional(center, inner_radius, radius_step, semitone_position);
                     let glow = 1.8 + intensity * 6.0 * (0.45 + age * 0.40);
                     painter.circle_filled(
                         position,
                         glow,
-                        spiral_note_color(note_index % 12, intensity, 10 + (age * 28.0) as u8),
+                        spiral_note_color(
+                            semitone_position.floor() as usize % 12,
+                            intensity,
+                            10 + (age * 28.0) as u8,
+                        ),
                     );
                 }
             }
 
-            for (note_index, intensity) in spiral_contrast_strengths(&reading.note_spectrum, &settings)
+            for (note_index, intensity) in spiral_contrast_strengths(&reading.spiral_spectrum, &settings)
                 .into_iter()
                 .enumerate()
             {
@@ -1131,21 +1150,27 @@ impl App {
                     continue;
                 }
 
-                let position = spiral_point(center, inner_radius, radius_step, note_index);
+                let semitone_position = note_index as f32 / bins_per_semitone;
+                let position = spiral_point_fractional(center, inner_radius, radius_step, semitone_position);
                 let glow_radius = 3.0 + intensity * 8.0;
                 let core_radius = 1.4 + intensity * 3.2;
-                let color = pitch_class_color(note_index % 12);
+                let color = pitch_class_color(semitone_position.floor() as usize % 12);
 
                 painter.circle_filled(
                     position,
                     glow_radius,
-                    spiral_note_color(note_index % 12, intensity, 28 + (intensity * 96.0) as u8),
+                    spiral_note_color(
+                        semitone_position.floor() as usize % 12,
+                        intensity,
+                        28 + (intensity * 96.0) as u8,
+                    ),
                 );
                 painter.circle_filled(position, core_radius, color);
             }
 
             if let Some(active_index) = active_index {
-                let active_position = spiral_point(center, inner_radius, radius_step, active_index);
+                let active_position =
+                    spiral_point_fractional(center, inner_radius, radius_step, active_index as f32);
                 let active_color = pitch_class_color(active_index % 12);
                 painter.circle_stroke(active_position, 11.0, Stroke::new(2.0, active_color));
                 painter.circle_stroke(
@@ -1471,9 +1496,14 @@ fn pitch_class_angle(pitch_class: usize) -> f32 {
     -std::f32::consts::FRAC_PI_2 + pitch_class as f32 * std::f32::consts::TAU / 12.0
 }
 
-fn spiral_point(center: egui::Pos2, inner_radius: f32, radius_step: f32, note_index: usize) -> egui::Pos2 {
-    let angle = pitch_class_angle(note_index % 12);
-    let radius = inner_radius + note_index as f32 * radius_step;
+fn spiral_point_fractional(
+    center: egui::Pos2,
+    inner_radius: f32,
+    radius_step: f32,
+    semitone_position: f32,
+) -> egui::Pos2 {
+    let angle = -std::f32::consts::FRAC_PI_2 + semitone_position * std::f32::consts::TAU / 12.0;
+    let radius = inner_radius + semitone_position * radius_step;
     center + vec2(angle.cos(), angle.sin()) * radius
 }
 

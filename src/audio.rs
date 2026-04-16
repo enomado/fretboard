@@ -47,17 +47,17 @@ mod native {
 
     #[derive(Clone, Debug)]
     pub struct TunerReading {
-        pub frequency_hz:   f32,
-        pub note_name:      String,
-        pub cents:          f32,
-        pub clarity:        f32,
-        pub spectrum:       Vec<f32>,
-        pub waterfall:      Vec<Vec<f32>>,
-        pub note_spectrum:  Vec<f32>,
-        pub note_waterfall: Vec<Vec<f32>>,
-        pub spiral_spectrum: Vec<f32>,
+        pub frequency_hz:     f32,
+        pub note_name:        String,
+        pub cents:            f32,
+        pub clarity:          f32,
+        pub spectrum:         Vec<f32>,
+        pub waterfall:        Vec<Vec<f32>>,
+        pub note_spectrum:    Vec<f32>,
+        pub note_waterfall:   Vec<Vec<f32>>,
+        pub spiral_spectrum:  Vec<f32>,
         pub spiral_waterfall: Vec<Vec<f32>>,
-        pub note_labels:    Vec<String>,
+        pub note_labels:      Vec<String>,
     }
 
     #[derive(Clone, Debug)]
@@ -813,17 +813,17 @@ mod native {
 
     #[derive(Clone, Debug)]
     pub struct TunerReading {
-        pub frequency_hz:   f32,
-        pub note_name:      String,
-        pub cents:          f32,
-        pub clarity:        f32,
-        pub spectrum:       Vec<f32>,
-        pub waterfall:      Vec<Vec<f32>>,
-        pub note_spectrum:  Vec<f32>,
-        pub note_waterfall: Vec<Vec<f32>>,
-        pub spiral_spectrum: Vec<f32>,
+        pub frequency_hz:     f32,
+        pub note_name:        String,
+        pub cents:            f32,
+        pub clarity:          f32,
+        pub spectrum:         Vec<f32>,
+        pub waterfall:        Vec<Vec<f32>>,
+        pub note_spectrum:    Vec<f32>,
+        pub note_waterfall:   Vec<Vec<f32>>,
+        pub spiral_spectrum:  Vec<f32>,
         pub spiral_waterfall: Vec<Vec<f32>>,
-        pub note_labels:    Vec<String>,
+        pub note_labels:      Vec<String>,
     }
 
     #[derive(Clone, Debug)]
