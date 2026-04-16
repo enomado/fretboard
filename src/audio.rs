@@ -24,7 +24,12 @@ mod native {
     use rustfft::FftPlanner;
     use rustfft::num_complex::Complex32;
 
-    const WINDOW_SIZE: usize = 6144;
+    const DEFAULT_WINDOW_SIZE: usize = 6144;
+    const MIN_WINDOW_SIZE: usize = 2048;
+    const MAX_WINDOW_SIZE: usize = 16384;
+    const DEFAULT_FFT_SIZE: usize = 16384;
+    const MIN_FFT_SIZE: usize = 4096;
+    const MAX_FFT_SIZE: usize = 32768;
     const SPECTRUM_BINS: usize = 72;
     const WATERFALL_HISTORY: usize = 52;
     const NOTE_BUCKET_MIN_MIDI: usize = 36;
@@ -33,6 +38,9 @@ mod native {
     const DEFAULT_INPUT_GAIN: f32 = 4.0;
     const SILENCE_RMS_THRESHOLD: f32 = 0.003;
     const YIN_THRESHOLD: f32 = 0.12;
+    const SPECTRUM_MIN_FREQUENCY: f32 = 20.0;
+    const SPECTRUM_MAX_FREQUENCY: f32 = 2_000.0;
+    const NOTE_BUCKET_SPREAD: f32 = 0.35;
 
     #[derive(Clone, Debug)]
     pub struct TunerReading {
@@ -54,6 +62,58 @@ mod native {
         Error(String),
     }
 
+    #[derive(Clone, Debug)]
+    pub struct AnalysisSettings {
+        pub window_size:        usize,
+        pub fft_size:           usize,
+        pub min_frequency:      f32,
+        pub max_frequency:      f32,
+        pub spectrum_smoothing: usize,
+        pub note_spread:        f32,
+        pub spectrum_gamma:     f32,
+        pub note_gamma:         f32,
+    }
+
+    impl Default for AnalysisSettings {
+        fn default() -> Self {
+            Self {
+                window_size:        DEFAULT_WINDOW_SIZE,
+                fft_size:           DEFAULT_FFT_SIZE,
+                min_frequency:      SPECTRUM_MIN_FREQUENCY,
+                max_frequency:      SPECTRUM_MAX_FREQUENCY,
+                spectrum_smoothing: 1,
+                note_spread:        NOTE_BUCKET_SPREAD,
+                spectrum_gamma:     0.58,
+                note_gamma:         0.72,
+            }
+        }
+    }
+
+    impl AnalysisSettings {
+        fn sanitized(mut self) -> Self {
+            self.window_size = self.window_size.clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE);
+            let min_fft_for_window = self
+                .window_size
+                .next_power_of_two()
+                .clamp(MIN_FFT_SIZE, MAX_FFT_SIZE);
+            self.fft_size = self
+                .fft_size
+                .max(MIN_FFT_SIZE)
+                .next_power_of_two()
+                .clamp(min_fft_for_window, MAX_FFT_SIZE);
+            self.min_frequency = self.min_frequency.clamp(20.0, 1_200.0);
+            self.max_frequency = self.max_frequency.clamp(120.0, 4_000.0);
+            if self.max_frequency <= self.min_frequency + 40.0 {
+                self.max_frequency = (self.min_frequency + 40.0).clamp(120.0, 4_000.0);
+            }
+            self.spectrum_smoothing = self.spectrum_smoothing.min(4);
+            self.note_spread = self.note_spread.clamp(0.15, 0.8);
+            self.spectrum_gamma = self.spectrum_gamma.clamp(0.35, 1.2);
+            self.note_gamma = self.note_gamma.clamp(0.35, 1.2);
+            self
+        }
+    }
+
     struct SharedState {
         status:             AudioStatus,
         reading:            Option<TunerReading>,
@@ -64,6 +124,7 @@ mod native {
 
     pub struct AudioEngine {
         shared:      Arc<Mutex<SharedState>>,
+        settings:    Arc<Mutex<AnalysisSettings>>,
         input_gain:  Arc<AtomicU32>,
         input_level: Arc<AtomicU32>,
         _stream:     ManuallyDrop<Option<cpal::Stream>>,
@@ -78,13 +139,20 @@ mod native {
                 note_waterfall:     VecDeque::with_capacity(WATERFALL_HISTORY),
                 smoothed_frequency: None,
             }));
+            let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
             let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
             let input_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
 
-            let stream = start_stream(shared.clone(), input_gain.clone(), input_level.clone());
+            let stream = start_stream(
+                shared.clone(),
+                settings.clone(),
+                input_gain.clone(),
+                input_level.clone(),
+            );
 
             Self {
                 shared,
+                settings,
                 input_gain,
                 input_level,
                 // CPAL 0.15's ALSA backend can panic while dropping an input stream on shutdown.
@@ -105,6 +173,19 @@ mod native {
             self.shared.lock().ok().and_then(|guard| guard.reading.clone())
         }
 
+        pub fn analysis_settings(&self) -> AnalysisSettings {
+            self.settings
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default()
+        }
+
+        pub fn set_analysis_settings(&self, settings: AnalysisSettings) {
+            if let Ok(mut guard) = self.settings.lock() {
+                *guard = settings.sanitized();
+            }
+        }
+
         pub fn input_gain(&self) -> f32 {
             f32::from_bits(self.input_gain.load(Ordering::Relaxed))
         }
@@ -121,6 +202,7 @@ mod native {
 
     fn start_stream(
         shared: Arc<Mutex<SharedState>>,
+        settings: Arc<Mutex<AnalysisSettings>>,
         input_gain: Arc<AtomicU32>,
         input_level: Arc<AtomicU32>,
     ) -> Result<cpal::Stream, ()> {
@@ -157,6 +239,7 @@ mod native {
                     channels,
                     sample_rate,
                     shared.clone(),
+                    settings.clone(),
                     input_gain.clone(),
                     input_level.clone(),
                     err_fn,
@@ -169,6 +252,7 @@ mod native {
                     channels,
                     sample_rate,
                     shared.clone(),
+                    settings.clone(),
                     input_gain.clone(),
                     input_level.clone(),
                     err_fn,
@@ -181,6 +265,7 @@ mod native {
                     channels,
                     sample_rate,
                     shared.clone(),
+                    settings.clone(),
                     input_gain.clone(),
                     input_level.clone(),
                     err_fn,
@@ -210,6 +295,7 @@ mod native {
         channels: usize,
         sample_rate: f32,
         shared: Arc<Mutex<SharedState>>,
+        settings: Arc<Mutex<AnalysisSettings>>,
         input_gain: Arc<AtomicU32>,
         input_level: Arc<AtomicU32>,
         err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
@@ -218,34 +304,41 @@ mod native {
         T: cpal::Sample + cpal::SizedSample,
         f32: cpal::FromSample<T>,
     {
-        let mut buffer: VecDeque<f32> = VecDeque::with_capacity(WINDOW_SIZE * 2);
+        let mut buffer: VecDeque<f32> = VecDeque::with_capacity(MAX_WINDOW_SIZE * 2);
         let mut last_analysis = Instant::now() - ANALYSIS_INTERVAL;
         let mut planner = FftPlanner::new();
 
         device.build_input_stream(
             config,
             move |data: &[T], _| {
+                let analysis_settings = settings
+                    .lock()
+                    .map(|guard| guard.clone())
+                    .unwrap_or_default()
+                    .sanitized();
                 let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
                 for frame in data.chunks(channels) {
                     let sample = (f32::from_sample(frame[0]) * gain).clamp(-1.0, 1.0);
                     buffer.push_back(sample);
                 }
 
-                while buffer.len() > WINDOW_SIZE * 2 {
+                while buffer.len() > MAX_WINDOW_SIZE * 2 {
                     buffer.pop_front();
                 }
 
-                if buffer.len() < WINDOW_SIZE || last_analysis.elapsed() < ANALYSIS_INTERVAL {
+                if buffer.len() < analysis_settings.window_size || last_analysis.elapsed() < ANALYSIS_INTERVAL
+                {
                     return;
                 }
                 last_analysis = Instant::now();
 
-                let start = buffer.len().saturating_sub(WINDOW_SIZE);
+                let start = buffer.len().saturating_sub(analysis_settings.window_size);
                 let window: Vec<f32> = buffer.iter().skip(start).copied().collect();
                 let level = normalized_level(&window);
                 input_level.store(level.to_bits(), Ordering::Relaxed);
 
-                if let Some(reading) = analyze_window(&window, sample_rate, &mut planner) {
+                if let Some(reading) = analyze_window(&window, sample_rate, &analysis_settings, &mut planner)
+                {
                     if let Ok(mut state) = shared.lock() {
                         let smoothed_frequency =
                             smooth_frequency(state.smoothed_frequency, reading.frequency_hz);
@@ -289,6 +382,7 @@ mod native {
     fn analyze_window(
         window: &[f32],
         sample_rate: f32,
+        settings: &AnalysisSettings,
         planner: &mut FftPlanner<f32>,
     ) -> Option<TunerReading> {
         let rms = (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt();
@@ -305,7 +399,7 @@ mod native {
         }
 
         let (note_name, cents) = frequency_to_note(frequency_hz);
-        let (spectrum, note_spectrum) = spectrum_bars(&normalized, sample_rate, planner);
+        let (spectrum, note_spectrum) = spectrum_bars(&normalized, sample_rate, settings, planner);
 
         Some(TunerReading {
             frequency_hz,
@@ -397,40 +491,45 @@ mod native {
     fn spectrum_bars(
         window: &[f32],
         sample_rate: f32,
+        settings: &AnalysisSettings,
         planner: &mut FftPlanner<f32>,
     ) -> (Vec<f32>, Vec<f32>) {
-        let mut input: Vec<Complex32> = window.iter().map(|sample| Complex32::new(*sample, 0.0)).collect();
+        let fft_size = settings.fft_size.max(window.len().next_power_of_two());
+        let mut input = vec![Complex32::new(0.0, 0.0); fft_size];
+        for (slot, sample) in input.iter_mut().zip(window.iter().copied()) {
+            slot.re = sample;
+        }
         let fft = planner.plan_fft_forward(input.len());
         fft.process(&mut input);
 
         let magnitudes: Vec<f32> = input
             .iter()
             .take(input.len() / 2)
-            .map(|value| value.norm())
+            .map(|value| value.norm_sqr())
             .collect();
 
-        let max_frequency = 2000.0f32;
-        let hz_per_bin = sample_rate / window.len() as f32;
+        let hz_per_bin = sample_rate / input.len() as f32;
         let mut bars: Vec<f32> = vec![0.0; SPECTRUM_BINS];
         let mut note_bars: Vec<f32> = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
 
         for (index, magnitude) in magnitudes.iter().enumerate() {
             let frequency = index as f32 * hz_per_bin;
-            if !(20.0..=max_frequency).contains(&frequency) {
+            if !(settings.min_frequency..=settings.max_frequency).contains(&frequency) {
                 continue;
             }
 
-            let normalized = ((frequency / max_frequency) * SPECTRUM_BINS as f32).floor() as usize;
-            let bucket = normalized.min(SPECTRUM_BINS - 1);
-            bars[bucket] = bars[bucket].max(*magnitude);
-
-            if let Some(note_index) = note_bucket_index(frequency) {
-                note_bars[note_index] = note_bars[note_index].max(*magnitude);
+            if let Some(bucket) =
+                spectrum_bucket_index(frequency, settings.min_frequency, settings.max_frequency)
+            {
+                bars[bucket] += *magnitude;
             }
+
+            accumulate_note_energy(&mut note_bars, frequency, *magnitude, settings.note_spread);
         }
 
-        normalize_bars(&mut bars);
-        normalize_bars(&mut note_bars);
+        normalize_bars(&mut bars, settings.spectrum_gamma);
+        normalize_bars(&mut note_bars, settings.note_gamma);
+        smooth_bars(&mut bars, settings.spectrum_smoothing);
 
         (bars, note_bars)
     }
@@ -486,26 +585,65 @@ mod native {
         }
     }
 
-    fn normalize_bars(values: &mut [f32]) {
+    fn normalize_bars(values: &mut [f32], gamma: f32) {
         let max_value = values.iter().copied().fold(0.0, f32::max);
         if max_value > 0.0 {
             for value in values {
-                *value = (*value / max_value).clamp(0.0, 1.0);
+                *value = (*value / max_value).clamp(0.0, 1.0).powf(gamma);
             }
         }
     }
 
-    fn note_bucket_index(frequency: f32) -> Option<usize> {
-        if frequency <= 0.0 {
+    fn smooth_bars(values: &mut [f32], passes: usize) {
+        if values.len() < 3 || passes == 0 {
+            return;
+        }
+
+        let mut scratch = values.to_vec();
+        for _ in 0..passes {
+            scratch.copy_from_slice(values);
+            for index in 0..values.len() {
+                let left = scratch[index.saturating_sub(1)];
+                let center = scratch[index];
+                let right = scratch[(index + 1).min(scratch.len() - 1)];
+                values[index] = left * 0.2 + center * 0.6 + right * 0.2;
+            }
+        }
+    }
+
+    fn spectrum_bucket_index(frequency: f32, min_frequency: f32, max_frequency: f32) -> Option<usize> {
+        if !(min_frequency..=max_frequency).contains(&frequency) {
             return None;
         }
 
-        let midi = (69.0 + 12.0 * (frequency / 440.0).log2()).round() as isize;
-        if midi < NOTE_BUCKET_MIN_MIDI as isize || midi > NOTE_BUCKET_MAX_MIDI as isize {
-            return None;
+        let min_log = min_frequency.log2();
+        let max_log = max_frequency.log2();
+        let normalized = ((frequency.log2() - min_log) / (max_log - min_log)).clamp(0.0, 1.0);
+        Some((normalized * (SPECTRUM_BINS - 1) as f32).round() as usize)
+    }
+
+    fn accumulate_note_energy(note_bars: &mut [f32], frequency: f32, energy: f32, note_spread: f32) {
+        if frequency <= 0.0 || note_bars.is_empty() {
+            return;
         }
 
-        Some((midi as usize) - NOTE_BUCKET_MIN_MIDI)
+        let midi = 69.0 + 12.0 * (frequency / 440.0).log2();
+        let note_position = midi - NOTE_BUCKET_MIN_MIDI as f32;
+        let center = note_position.round() as isize;
+
+        for index in (center - 2)..=(center + 2) {
+            if !(0..note_bars.len() as isize).contains(&index) {
+                continue;
+            }
+
+            let distance = (index as f32 - note_position).abs();
+            if distance > 1.25 {
+                continue;
+            }
+
+            let weight = (-0.5 * (distance / note_spread).powi(2)).exp();
+            note_bars[index as usize] += energy * weight;
+        }
     }
 
     fn note_bucket_labels() -> Vec<String> {
@@ -530,8 +668,15 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::{
+            AnalysisSettings,
+            MIN_WINDOW_SIZE,
+            NOTE_BUCKET_MAX_MIDI,
+            NOTE_BUCKET_MIN_MIDI,
+            NOTE_BUCKET_SPREAD,
+            accumulate_note_energy,
             detect_pitch_yin,
             parabolic_tau,
+            spectrum_bucket_index,
         };
 
         #[test]
@@ -544,11 +689,87 @@ mod native {
             let result = std::panic::catch_unwind(|| detect_pitch_yin(&window, 44_100.0));
             assert!(result.is_ok());
         }
+
+        #[test]
+        fn spectrum_bucket_index_is_monotonic_in_log_space() {
+            let low = spectrum_bucket_index(40.0, 20.0, 2_000.0).unwrap();
+            let mid = spectrum_bucket_index(160.0, 20.0, 2_000.0).unwrap();
+            let high = spectrum_bucket_index(640.0, 20.0, 2_000.0).unwrap();
+
+            assert!(low < mid);
+            assert!(mid < high);
+        }
+
+        #[test]
+        fn note_energy_prefers_the_closest_semitone() {
+            let mut bars = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
+            accumulate_note_energy(&mut bars, 440.0, 1.0, NOTE_BUCKET_SPREAD);
+            let a4_index = 69 - NOTE_BUCKET_MIN_MIDI;
+
+            let strongest = bars
+                .iter()
+                .enumerate()
+                .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                .map(|(index, _)| index)
+                .unwrap();
+
+            assert_eq!(strongest, a4_index);
+            assert!(bars[a4_index] > bars[a4_index - 1]);
+            assert!(bars[a4_index] > bars[a4_index + 1]);
+        }
+
+        #[test]
+        fn analysis_settings_are_sanitized() {
+            let settings = AnalysisSettings {
+                window_size:        500,
+                fft_size:           1_000,
+                min_frequency:      900.0,
+                max_frequency:      920.0,
+                spectrum_smoothing: 12,
+                note_spread:        0.01,
+                spectrum_gamma:     0.01,
+                note_gamma:         9.0,
+            }
+            .sanitized();
+
+            assert!(settings.window_size >= MIN_WINDOW_SIZE);
+            assert!(settings.fft_size >= settings.window_size.next_power_of_two());
+            assert!(settings.max_frequency > settings.min_frequency);
+            assert!(settings.spectrum_smoothing <= 4);
+            assert!((0.15..=0.8).contains(&settings.note_spread));
+        }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 mod native {
+    #[derive(Clone, Debug)]
+    pub struct AnalysisSettings {
+        pub window_size:        usize,
+        pub fft_size:           usize,
+        pub min_frequency:      f32,
+        pub max_frequency:      f32,
+        pub spectrum_smoothing: usize,
+        pub note_spread:        f32,
+        pub spectrum_gamma:     f32,
+        pub note_gamma:         f32,
+    }
+
+    impl Default for AnalysisSettings {
+        fn default() -> Self {
+            Self {
+                window_size:        6144,
+                fft_size:           16384,
+                min_frequency:      20.0,
+                max_frequency:      2_000.0,
+                spectrum_smoothing: 1,
+                note_spread:        0.35,
+                spectrum_gamma:     0.58,
+                note_gamma:         0.72,
+            }
+        }
+    }
+
     #[derive(Clone, Debug)]
     pub struct TunerReading {
         pub frequency_hz:   f32,
@@ -584,6 +805,13 @@ mod native {
             None
         }
 
+        pub fn analysis_settings(&self) -> AnalysisSettings {
+            AnalysisSettings::default()
+        }
+
+        pub fn set_analysis_settings(&self, _settings: AnalysisSettings) {
+        }
+
         pub fn input_gain(&self) -> f32 {
             1.0
         }
@@ -598,6 +826,7 @@ mod native {
 }
 
 pub use native::{
+    AnalysisSettings,
     AudioEngine,
     AudioStatus,
     TunerReading,

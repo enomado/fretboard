@@ -22,6 +22,7 @@ use eframe::{
 };
 
 use crate::audio::{
+    AnalysisSettings,
     AudioEngine,
     AudioStatus,
     TunerReading,
@@ -59,6 +60,8 @@ const FRETBOARD_MARGIN_RIGHT: f32 = 24.0;
 const FRETBOARD_MARGIN_TOP: f32 = 110.0;
 const FRETBOARD_MARGIN_BOTTOM: f32 = 52.0;
 const SPIRAL_PITCH_LABELS: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+const WINDOW_SIZE_PRESETS: [usize; 6] = [2048, 4096, 6144, 8192, 12288, 16384];
+const FFT_SIZE_PRESETS: [usize; 4] = [4096, 8192, 16384, 32768];
 
 #[derive(Clone, Copy, PartialEq)]
 enum TuningKind {
@@ -376,7 +379,236 @@ impl App {
                             .monospace(),
                     );
                 });
+
+                ui.add_space(14.0);
+                self.draw_analysis_controls(ui);
             });
+    }
+
+    fn draw_analysis_controls(&mut self, ui: &mut Ui) {
+        let defaults = AnalysisSettings::default();
+        let mut settings = self.audio.analysis_settings();
+        let mut changed = false;
+
+        Frame::new()
+            .fill(Color32::from_rgb(25, 29, 34))
+            .corner_radius(CornerRadius::same(16))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(52, 58, 66)))
+            .inner_margin(Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("FFT tweak panel")
+                                .color(Color32::from_rgb(226, 216, 201))
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new("Adjust the live spectrum and spiral response in real time")
+                                .color(Color32::from_rgb(145, 151, 160))
+                                .size(12.0),
+                        );
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Reset").clicked() {
+                            settings = defaults.clone();
+                            changed = true;
+                        }
+                    });
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Window")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    egui::ComboBox::from_id_salt("analysis_window_size")
+                        .selected_text(format_sample_count(settings.window_size))
+                        .show_ui(ui, |ui| {
+                            for preset in WINDOW_SIZE_PRESETS {
+                                if ui
+                                    .selectable_value(
+                                        &mut settings.window_size,
+                                        preset,
+                                        format_sample_count(preset),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
+                            }
+                        });
+
+                    ui.separator();
+
+                    ui.label(
+                        RichText::new("FFT")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    egui::ComboBox::from_id_salt("analysis_fft_size")
+                        .selected_text(format_sample_count(settings.fft_size))
+                        .show_ui(ui, |ui| {
+                            for preset in FFT_SIZE_PRESETS {
+                                if ui
+                                    .selectable_value(
+                                        &mut settings.fft_size,
+                                        preset,
+                                        format_sample_count(preset),
+                                    )
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
+                            }
+                        });
+
+                    ui.separator();
+
+                    ui.label(
+                        RichText::new("Smooth")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    if ui
+                        .add_sized(
+                            [120.0, 18.0],
+                            egui::Slider::new(&mut settings.spectrum_smoothing, 0..=4).show_value(false),
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    ui.label(
+                        RichText::new(settings.spectrum_smoothing.to_string())
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Min Hz")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    if ui
+                        .add_sized(
+                            [180.0, 18.0],
+                            egui::Slider::new(&mut settings.min_frequency, 20.0..=600.0)
+                                .logarithmic(true)
+                                .show_value(false),
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    ui.label(
+                        RichText::new(format!("{:.0}", settings.min_frequency))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+
+                    ui.add_space(10.0);
+
+                    ui.label(
+                        RichText::new("Max Hz")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    if ui
+                        .add_sized(
+                            [180.0, 18.0],
+                            egui::Slider::new(&mut settings.max_frequency, 300.0..=4_000.0)
+                                .logarithmic(true)
+                                .show_value(false),
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    ui.label(
+                        RichText::new(format!("{:.0}", settings.max_frequency))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+                });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Note spread")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    if ui
+                        .add_sized(
+                            [150.0, 18.0],
+                            egui::Slider::new(&mut settings.note_spread, 0.15..=0.8).show_value(false),
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    ui.label(
+                        RichText::new(format!("{:.2}", settings.note_spread))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+
+                    ui.add_space(10.0);
+
+                    ui.label(
+                        RichText::new("FFT gamma")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    if ui
+                        .add_sized(
+                            [140.0, 18.0],
+                            egui::Slider::new(&mut settings.spectrum_gamma, 0.35..=1.2).show_value(false),
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    ui.label(
+                        RichText::new(format!("{:.2}", settings.spectrum_gamma))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+
+                    ui.add_space(10.0);
+
+                    ui.label(
+                        RichText::new("Note gamma")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    if ui
+                        .add_sized(
+                            [140.0, 18.0],
+                            egui::Slider::new(&mut settings.note_gamma, 0.35..=1.2).show_value(false),
+                        )
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    ui.label(
+                        RichText::new(format!("{:.2}", settings.note_gamma))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+                });
+            });
+
+        if changed {
+            self.audio.set_analysis_settings(settings);
+        }
     }
 
     fn draw_fretboard_card(&self, ui: &mut Ui) {
@@ -1291,6 +1523,14 @@ fn degree_suffix(degree: Option<u8>) -> String {
     degree
         .map(|value| format!(" • degree {}", value))
         .unwrap_or_default()
+}
+
+fn format_sample_count(value: usize) -> String {
+    if value >= 1000 {
+        format!("{:.1}k", value as f32 / 1000.0)
+    } else {
+        value.to_string()
+    }
 }
 
 pub fn rangef_to_range(range: Rangef) -> Range<f32> {
