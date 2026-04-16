@@ -1027,6 +1027,7 @@ impl App {
         );
 
         if let Some(reading) = reading {
+            let settings = self.audio.analysis_settings();
             if reading.note_spectrum.is_empty() {
                 painter.text(
                     viz_rect.center(),
@@ -1106,37 +1107,39 @@ impl App {
 
             for (history_index, row) in reading.note_waterfall.iter().enumerate() {
                 let age = history_index as f32 / reading.note_waterfall.len().max(1) as f32;
-                for (note_index, value) in row.iter().enumerate() {
-                    let intensity = value.clamp(0.0, 1.0);
-                    if intensity < 0.06 {
+                let strengths = spiral_contrast_strengths(row, &settings);
+                for (note_index, intensity) in strengths.iter().copied().enumerate() {
+                    if intensity <= 0.0 {
                         continue;
                     }
 
                     let position = spiral_point(center, inner_radius, radius_step, note_index);
-                    let glow = 2.5 + intensity * 8.0 * (0.55 + age * 0.45);
+                    let glow = 1.8 + intensity * 6.0 * (0.45 + age * 0.40);
                     painter.circle_filled(
                         position,
                         glow,
-                        spiral_note_color(note_index % 12, intensity, 18 + (age * 40.0) as u8),
+                        spiral_note_color(note_index % 12, intensity, 10 + (age * 28.0) as u8),
                     );
                 }
             }
 
-            for (note_index, value) in reading.note_spectrum.iter().enumerate() {
-                let intensity = value.clamp(0.0, 1.0);
-                if intensity < 0.04 {
+            for (note_index, intensity) in spiral_contrast_strengths(&reading.note_spectrum, &settings)
+                .into_iter()
+                .enumerate()
+            {
+                if intensity <= 0.0 {
                     continue;
                 }
 
                 let position = spiral_point(center, inner_radius, radius_step, note_index);
-                let glow_radius = 5.0 + intensity * 11.0;
-                let core_radius = 1.6 + intensity * 4.2;
+                let glow_radius = 3.0 + intensity * 8.0;
+                let core_radius = 1.4 + intensity * 3.2;
                 let color = pitch_class_color(note_index % 12);
 
                 painter.circle_filled(
                     position,
                     glow_radius,
-                    spiral_note_color(note_index % 12, intensity, 42 + (intensity * 90.0) as u8),
+                    spiral_note_color(note_index % 12, intensity, 28 + (intensity * 96.0) as u8),
                 );
                 painter.circle_filled(position, core_radius, color);
             }
@@ -1500,6 +1503,63 @@ fn spiral_note_color(pitch_class: usize, intensity: f32, alpha: u8) -> Color32 {
         base.b().saturating_add(glow / 5),
         alpha,
     )
+}
+
+fn spiral_contrast_strengths(values: &[f32], settings: &AnalysisSettings) -> Vec<f32> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+
+    let peak = values.iter().copied().fold(0.0, f32::max);
+    if peak <= 0.0 {
+        return vec![0.0; values.len()];
+    }
+
+    let mean = values.iter().copied().sum::<f32>() / values.len() as f32;
+    let gamma_norm = normalize_setting(settings.note_gamma, 0.35, 1.2);
+    let spread_norm = normalize_setting(settings.note_spread, 0.15, 0.8);
+    let threshold_floor = lerp(0.025, 0.11, gamma_norm);
+    let threshold_ceiling = lerp(0.22, 0.36, gamma_norm);
+    let threshold =
+        (mean * lerp(1.15, 1.95, spread_norm) + threshold_floor).clamp(threshold_floor, threshold_ceiling);
+    let scale = (1.0 - threshold).max(0.001);
+    let mut strengths = vec![0.0; values.len()];
+
+    for index in 0..values.len() {
+        let intensity = values[index].clamp(0.0, 1.0);
+        let normalized = ((intensity - threshold) / scale).clamp(0.0, 1.0);
+        if normalized <= 0.0 {
+            continue;
+        }
+
+        let left = values[index.saturating_sub(1)].clamp(0.0, 1.0);
+        let right = values[(index + 1).min(values.len() - 1)].clamp(0.0, 1.0);
+        let neighbor = left.max(right);
+        let is_local_peak = intensity >= left && intensity >= right;
+        let neighbor_guard = lerp(0.96, 0.84, spread_norm);
+        let ridge = ((intensity - neighbor * neighbor_guard) / scale).clamp(0.0, 1.0);
+        let focus = if is_local_peak {
+            lerp(0.48, 0.78, 1.0 - spread_norm) + ridge * lerp(0.28, 0.62, 1.0 - spread_norm)
+        } else {
+            ridge * lerp(0.04, 0.18, spread_norm)
+        };
+        let emphasis = lerp(1.55, 2.65, gamma_norm);
+        let emphasized = normalized.powf(emphasis) * focus;
+
+        if emphasized > lerp(0.012, 0.05, gamma_norm) {
+            strengths[index] = emphasized;
+        }
+    }
+
+    strengths
+}
+
+fn normalize_setting(value: f32, min: f32, max: f32) -> f32 {
+    ((value - min) / (max - min)).clamp(0.0, 1.0)
+}
+
+fn lerp(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t.clamp(0.0, 1.0)
 }
 
 fn waterfall_color(value: f32, age: f32) -> Color32 {

@@ -34,6 +34,9 @@ mod native {
     const WATERFALL_HISTORY: usize = 52;
     const NOTE_BUCKET_MIN_MIDI: usize = 36;
     const NOTE_BUCKET_MAX_MIDI: usize = 84;
+    const SPIRAL_BINS_PER_SEMITONE: usize = 8;
+    const SPIRAL_BIN_COUNT: usize =
+        (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
     const DEFAULT_INPUT_GAIN: f32 = 4.0;
     const SILENCE_RMS_THRESHOLD: f32 = 0.003;
@@ -52,6 +55,8 @@ mod native {
         pub waterfall:      Vec<Vec<f32>>,
         pub note_spectrum:  Vec<f32>,
         pub note_waterfall: Vec<Vec<f32>>,
+        pub spiral_spectrum: Vec<f32>,
+        pub spiral_waterfall: Vec<Vec<f32>>,
         pub note_labels:    Vec<String>,
     }
 
@@ -119,6 +124,7 @@ mod native {
         reading:            Option<TunerReading>,
         waterfall:          VecDeque<Vec<f32>>,
         note_waterfall:     VecDeque<Vec<f32>>,
+        spiral_waterfall:   VecDeque<Vec<f32>>,
         smoothed_frequency: Option<f32>,
     }
 
@@ -137,6 +143,7 @@ mod native {
                 reading:            None,
                 waterfall:          VecDeque::with_capacity(WATERFALL_HISTORY),
                 note_waterfall:     VecDeque::with_capacity(WATERFALL_HISTORY),
+                spiral_waterfall:   VecDeque::with_capacity(WATERFALL_HISTORY),
                 smoothed_frequency: None,
             }));
             let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
@@ -347,11 +354,15 @@ mod native {
                         let (note_name, cents) = frequency_to_note(smoothed_frequency);
                         state.waterfall.push_back(reading.spectrum.clone());
                         state.note_waterfall.push_back(reading.note_spectrum.clone());
+                        state.spiral_waterfall.push_back(reading.spiral_spectrum.clone());
                         while state.waterfall.len() > WATERFALL_HISTORY {
                             state.waterfall.pop_front();
                         }
                         while state.note_waterfall.len() > WATERFALL_HISTORY {
                             state.note_waterfall.pop_front();
+                        }
+                        while state.spiral_waterfall.len() > WATERFALL_HISTORY {
+                            state.spiral_waterfall.pop_front();
                         }
 
                         state.reading = Some(TunerReading {
@@ -363,6 +374,8 @@ mod native {
                             waterfall: state.waterfall.iter().cloned().collect(),
                             note_spectrum: reading.note_spectrum,
                             note_waterfall: state.note_waterfall.iter().cloned().collect(),
+                            spiral_spectrum: reading.spiral_spectrum,
+                            spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
                             note_labels: note_bucket_labels(),
                         });
                         state.status = AudioStatus::Listening;
@@ -399,7 +412,8 @@ mod native {
         }
 
         let (note_name, cents) = frequency_to_note(frequency_hz);
-        let (spectrum, note_spectrum) = spectrum_bars(&normalized, sample_rate, settings, planner);
+        let (spectrum, note_spectrum, spiral_spectrum) =
+            spectrum_bars(&normalized, sample_rate, settings, planner);
 
         Some(TunerReading {
             frequency_hz,
@@ -410,6 +424,8 @@ mod native {
             waterfall: Vec::new(),
             note_spectrum,
             note_waterfall: Vec::new(),
+            spiral_spectrum,
+            spiral_waterfall: Vec::new(),
             note_labels: note_bucket_labels(),
         })
     }
@@ -493,7 +509,7 @@ mod native {
         sample_rate: f32,
         settings: &AnalysisSettings,
         planner: &mut FftPlanner<f32>,
-    ) -> (Vec<f32>, Vec<f32>) {
+    ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
         let fft_size = settings.fft_size.max(window.len().next_power_of_two());
         let mut input = vec![Complex32::new(0.0, 0.0); fft_size];
         for (slot, sample) in input.iter_mut().zip(window.iter().copied()) {
@@ -511,6 +527,7 @@ mod native {
         let hz_per_bin = sample_rate / input.len() as f32;
         let mut bars: Vec<f32> = vec![0.0; SPECTRUM_BINS];
         let mut note_bars: Vec<f32> = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
+        let mut spiral_bars: Vec<f32> = vec![0.0; SPIRAL_BIN_COUNT];
 
         for (index, magnitude) in magnitudes.iter().enumerate() {
             let frequency = index as f32 * hz_per_bin;
@@ -525,13 +542,15 @@ mod native {
             }
 
             accumulate_note_energy(&mut note_bars, frequency, *magnitude, settings.note_spread);
+            accumulate_spiral_energy(&mut spiral_bars, frequency, *magnitude);
         }
 
         normalize_bars(&mut bars, settings.spectrum_gamma);
         normalize_bars(&mut note_bars, settings.note_gamma);
+        normalize_bars(&mut spiral_bars, 1.0);
         smooth_bars(&mut bars, settings.spectrum_smoothing);
 
-        (bars, note_bars)
+        (bars, note_bars, spiral_bars)
     }
 
     fn frequency_to_note(frequency_hz: f32) -> (String, f32) {
@@ -643,6 +662,28 @@ mod native {
 
             let weight = (-0.5 * (distance / note_spread).powi(2)).exp();
             note_bars[index as usize] += energy * weight;
+        }
+    }
+
+    fn accumulate_spiral_energy(spiral_bars: &mut [f32], frequency: f32, energy: f32) {
+        if frequency <= 0.0 || spiral_bars.is_empty() {
+            return;
+        }
+
+        let midi = 69.0 + 12.0 * (frequency / 440.0).log2();
+        if !(NOTE_BUCKET_MIN_MIDI as f32..=NOTE_BUCKET_MAX_MIDI as f32).contains(&midi) {
+            return;
+        }
+
+        let position = (midi - NOTE_BUCKET_MIN_MIDI as f32) * SPIRAL_BINS_PER_SEMITONE as f32;
+        let left_index = position.floor() as usize;
+        let frac = position - left_index as f32;
+
+        if left_index < spiral_bars.len() {
+            spiral_bars[left_index] += energy * (1.0 - frac);
+        }
+        if left_index + 1 < spiral_bars.len() {
+            spiral_bars[left_index + 1] += energy * frac;
         }
     }
 
@@ -780,6 +821,8 @@ mod native {
         pub waterfall:      Vec<Vec<f32>>,
         pub note_spectrum:  Vec<f32>,
         pub note_waterfall: Vec<Vec<f32>>,
+        pub spiral_spectrum: Vec<f32>,
+        pub spiral_waterfall: Vec<Vec<f32>>,
         pub note_labels:    Vec<String>,
     }
 
