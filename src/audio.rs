@@ -2,11 +2,11 @@
 mod native {
     use std::collections::VecDeque;
     use std::mem::ManuallyDrop;
+    use std::sync::atomic::{
+        AtomicU32,
+        Ordering,
+    };
     use std::sync::{
-        atomic::{
-            AtomicU32,
-            Ordering,
-        },
         Arc,
         Mutex,
     };
@@ -588,7 +588,8 @@ mod native {
             1.0
         }
 
-        pub fn set_input_gain(&self, _gain: f32) {}
+        pub fn set_input_gain(&self, _gain: f32) {
+        }
 
         pub fn input_level(&self) -> f32 {
             0.0

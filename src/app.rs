@@ -58,6 +58,7 @@ const FRETBOARD_MARGIN_LEFT: f32 = 54.0;
 const FRETBOARD_MARGIN_RIGHT: f32 = 24.0;
 const FRETBOARD_MARGIN_TOP: f32 = 110.0;
 const FRETBOARD_MARGIN_BOTTOM: f32 = 52.0;
+const SPIRAL_PITCH_LABELS: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 
 #[derive(Clone, Copy, PartialEq)]
 enum TuningKind {
@@ -163,11 +164,29 @@ const ALL_ROOTS: [(Note, &str); 7] = [
     (Note::B, "B"),
 ];
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiveChartKind {
+    Tuner,
+    Fft,
+    Spiral,
+}
+
+impl LiveChartKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Tuner => "Tuner",
+            Self::Fft => "FFT",
+            Self::Spiral => "Spiral",
+        }
+    }
+}
+
 pub struct App {
     audio:       AudioEngine,
     tuning_kind: TuningKind,
     scale_kind:  ScaleKind,
     root_note:   Note,
+    live_chart:  LiveChartKind,
 }
 
 struct HoveredNote {
@@ -197,6 +216,7 @@ impl App {
             tuning_kind: TuningKind::Cello,
             scale_kind:  ScaleKind::BluesMinor,
             root_note:   Note::A,
+            live_chart:  LiveChartKind::Spiral,
         }
     }
 
@@ -430,7 +450,7 @@ impl App {
             });
     }
 
-    fn draw_tuner_card(&self, ui: &mut Ui) {
+    fn draw_tuner_card(&mut self, ui: &mut Ui) {
         let status = self.audio.status();
         let reading = self.audio.reading();
         let input_level = self.audio.input_level();
@@ -449,7 +469,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("Live tuner")
+                            RichText::new("Live analysis")
                                 .size(20.0)
                                 .color(Color32::from_rgb(228, 220, 208)),
                         );
@@ -466,6 +486,31 @@ impl App {
                                 Color32::from_rgb(206, 198, 183),
                                 Color32::from_rgb(64, 68, 73),
                             );
+                            ui.add_space(8.0);
+                        }
+
+                        for chart in [LiveChartKind::Spiral, LiveChartKind::Fft, LiveChartKind::Tuner] {
+                            let selected = self.live_chart == chart;
+                            let button = egui::Button::new(chart.label())
+                                .min_size(vec2(72.0, 28.0))
+                                .fill(if selected {
+                                    Color32::from_rgb(112, 86, 72)
+                                } else {
+                                    Color32::from_rgb(42, 46, 52)
+                                })
+                                .stroke(Stroke::new(
+                                    1.0,
+                                    if selected {
+                                        Color32::from_rgb(207, 187, 166)
+                                    } else {
+                                        Color32::from_rgb(84, 89, 97)
+                                    },
+                                ))
+                                .corner_radius(CornerRadius::same(14));
+
+                            if ui.add(button).clicked() {
+                                self.live_chart = chart;
+                            }
                         }
                     });
                 });
@@ -473,15 +518,11 @@ impl App {
                 ui.add_space(12.0);
                 self.draw_input_level(ui, input_level);
                 ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    self.draw_tuner_meter(ui, target);
-                    ui.add_space(16.0);
-                    self.draw_spectrum(
-                        ui,
-                        target,
-                        reading.as_ref(),
-                    );
-                });
+                match self.live_chart {
+                    LiveChartKind::Tuner => self.draw_tuner_meter(ui, target),
+                    LiveChartKind::Fft => self.draw_spectrum(ui, target, reading.as_ref()),
+                    LiveChartKind::Spiral => self.draw_spiral_spectrogram(ui, reading.as_ref()),
+                }
             });
     }
 
@@ -529,7 +570,7 @@ impl App {
     }
 
     fn draw_tuner_meter(&self, ui: &mut Ui, reading: Option<&TunerTarget>) {
-        let desired_size = vec2(250.0, 120.0);
+        let desired_size = vec2(ui.available_width().max(250.0), 120.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
@@ -714,6 +755,190 @@ impl App {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "Waterfalls will appear when the tuner locks onto a note",
+                FontId::proportional(13.0),
+                Color32::from_rgb(139, 143, 149),
+            );
+        }
+    }
+
+    fn draw_spiral_spectrogram(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
+        let desired_size = vec2(ui.available_width().max(320.0), 376.0);
+        let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
+        let painter = ui.painter_at(rect);
+
+        painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_stroke(
+            rect,
+            18.0,
+            Stroke::new(1.0, Color32::from_rgb(72, 76, 82)),
+            egui::StrokeKind::Inside,
+        );
+
+        painter.text(
+            pos2(rect.left() + 14.0, rect.top() + 12.0),
+            egui::Align2::LEFT_TOP,
+            "Spiral spectrogram",
+            FontId::proportional(15.0),
+            Color32::from_rgb(201, 195, 184),
+        );
+        painter.text(
+            pos2(rect.right() - 14.0, rect.top() + 12.0),
+            egui::Align2::RIGHT_TOP,
+            "octaves wrap onto the same pitch angle",
+            FontId::proportional(12.0),
+            Color32::from_rgb(152, 158, 165),
+        );
+
+        let viz_rect = Rect::from_min_max(
+            pos2(rect.left() + 20.0, rect.top() + 44.0),
+            pos2(rect.right() - 20.0, rect.bottom() - 20.0),
+        );
+
+        if let Some(reading) = reading {
+            if reading.note_spectrum.is_empty() {
+                painter.text(
+                    viz_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "The note spectrum is empty",
+                    FontId::proportional(13.0),
+                    Color32::from_rgb(139, 143, 149),
+                );
+                return;
+            }
+
+            let square = viz_rect.width().min(viz_rect.height());
+            let chart_rect = Rect::from_center_size(viz_rect.center(), vec2(square, square));
+            let center = chart_rect.center();
+            let inner_radius = square * 0.12;
+            let outer_radius = square * 0.47;
+            let note_count = reading.note_spectrum.len().max(1);
+            let radius_step = if note_count > 1 {
+                (outer_radius - inner_radius) / (note_count - 1) as f32
+            } else {
+                0.0
+            };
+            let active_index = reading
+                .note_labels
+                .iter()
+                .position(|label| label == &reading.note_name);
+
+            painter.circle_filled(
+                center,
+                inner_radius * 0.82,
+                Color32::from_rgba_unmultiplied(70, 106, 148, 26),
+            );
+
+            for ring in 0..=note_count.saturating_sub(1) / 12 {
+                let radius = inner_radius + ring as f32 * radius_step * 12.0;
+                painter.circle_stroke(
+                    center,
+                    radius.min(outer_radius),
+                    Stroke::new(1.0, Color32::from_rgb(59, 64, 72)),
+                );
+            }
+
+            for pitch_class in 0..12 {
+                let angle = pitch_class_angle(pitch_class);
+                let direction = vec2(angle.cos(), angle.sin());
+                let label_pos = center + direction * (outer_radius + 20.0);
+                let spoke_color = pitch_class_color(pitch_class);
+                let spoke_stroke = if Some(pitch_class) == active_index.map(|index| index % 12) {
+                    Stroke::new(1.6, spoke_color)
+                } else {
+                    Stroke::new(1.0, Color32::from_rgb(55, 60, 67))
+                };
+
+                painter.line_segment(
+                    [
+                        center + direction * inner_radius * 0.58,
+                        center + direction * outer_radius,
+                    ],
+                    spoke_stroke,
+                );
+                painter.text(
+                    label_pos,
+                    egui::Align2::CENTER_CENTER,
+                    SPIRAL_PITCH_LABELS[pitch_class],
+                    FontId::proportional(18.0),
+                    spoke_color,
+                );
+            }
+
+            let spiral_points: Vec<_> = (0..note_count)
+                .map(|index| spiral_point(center, inner_radius, radius_step, index))
+                .collect();
+            painter.add(egui::Shape::line(
+                spiral_points,
+                Stroke::new(1.1, Color32::from_rgb(76, 82, 90)),
+            ));
+
+            for (history_index, row) in reading.note_waterfall.iter().enumerate() {
+                let age = history_index as f32 / reading.note_waterfall.len().max(1) as f32;
+                for (note_index, value) in row.iter().enumerate() {
+                    let intensity = value.clamp(0.0, 1.0);
+                    if intensity < 0.06 {
+                        continue;
+                    }
+
+                    let position = spiral_point(center, inner_radius, radius_step, note_index);
+                    let glow = 2.5 + intensity * 8.0 * (0.55 + age * 0.45);
+                    painter.circle_filled(
+                        position,
+                        glow,
+                        spiral_note_color(note_index % 12, intensity, 18 + (age * 40.0) as u8),
+                    );
+                }
+            }
+
+            for (note_index, value) in reading.note_spectrum.iter().enumerate() {
+                let intensity = value.clamp(0.0, 1.0);
+                if intensity < 0.04 {
+                    continue;
+                }
+
+                let position = spiral_point(center, inner_radius, radius_step, note_index);
+                let glow_radius = 5.0 + intensity * 11.0;
+                let core_radius = 1.6 + intensity * 4.2;
+                let color = pitch_class_color(note_index % 12);
+
+                painter.circle_filled(
+                    position,
+                    glow_radius,
+                    spiral_note_color(note_index % 12, intensity, 42 + (intensity * 90.0) as u8),
+                );
+                painter.circle_filled(position, core_radius, color);
+            }
+
+            if let Some(active_index) = active_index {
+                let active_position = spiral_point(center, inner_radius, radius_step, active_index);
+                let active_color = pitch_class_color(active_index % 12);
+                painter.circle_stroke(active_position, 11.0, Stroke::new(2.0, active_color));
+                painter.circle_stroke(
+                    active_position,
+                    17.0,
+                    Stroke::new(
+                        1.0,
+                        Color32::from_rgba_unmultiplied(
+                            active_color.r(),
+                            active_color.g(),
+                            active_color.b(),
+                            100,
+                        ),
+                    ),
+                );
+                painter.text(
+                    pos2(rect.left() + 14.0, rect.bottom() - 14.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    format!("active note {}", reading.note_name),
+                    FontId::proportional(12.0),
+                    Color32::from_rgb(214, 206, 192),
+                );
+            }
+        } else {
+            painter.text(
+                viz_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Play a sustained note to light up the spiral",
                 FontId::proportional(13.0),
                 Color32::from_rgb(139, 143, 149),
             );
@@ -1005,6 +1230,44 @@ fn spectrum_color(value: f32) -> Color32 {
     let g = (88.0 + value * 82.0).round() as u8;
     let b = (82.0 + value * 56.0).round() as u8;
     Color32::from_rgb(r, g, b)
+}
+
+fn pitch_class_angle(pitch_class: usize) -> f32 {
+    -std::f32::consts::FRAC_PI_2 + pitch_class as f32 * std::f32::consts::TAU / 12.0
+}
+
+fn spiral_point(center: egui::Pos2, inner_radius: f32, radius_step: f32, note_index: usize) -> egui::Pos2 {
+    let angle = pitch_class_angle(note_index % 12);
+    let radius = inner_radius + note_index as f32 * radius_step;
+    center + vec2(angle.cos(), angle.sin()) * radius
+}
+
+fn pitch_class_color(pitch_class: usize) -> Color32 {
+    match pitch_class % 12 {
+        0 => Color32::from_rgb(92, 230, 105),
+        1 => Color32::from_rgb(104, 222, 170),
+        2 => Color32::from_rgb(112, 204, 238),
+        3 => Color32::from_rgb(122, 173, 255),
+        4 => Color32::from_rgb(127, 138, 255),
+        5 => Color32::from_rgb(164, 116, 246),
+        6 => Color32::from_rgb(212, 98, 219),
+        7 => Color32::from_rgb(236, 93, 168),
+        8 => Color32::from_rgb(232, 110, 121),
+        9 => Color32::from_rgb(239, 167, 102),
+        10 => Color32::from_rgb(230, 203, 94),
+        _ => Color32::from_rgb(156, 218, 115),
+    }
+}
+
+fn spiral_note_color(pitch_class: usize, intensity: f32, alpha: u8) -> Color32 {
+    let base = pitch_class_color(pitch_class);
+    let glow = (40.0 + intensity * 120.0).round() as u8;
+    Color32::from_rgba_unmultiplied(
+        base.r().saturating_add(glow / 4),
+        base.g().saturating_add(glow / 4),
+        base.b().saturating_add(glow / 5),
+        alpha,
+    )
 }
 
 fn waterfall_color(value: f32, age: f32) -> Color32 {
