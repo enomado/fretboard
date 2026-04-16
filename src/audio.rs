@@ -1,7 +1,13 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::collections::VecDeque;
+    use std::io::Read;
     use std::mem::ManuallyDrop;
+    use std::process::{
+        Child,
+        Command,
+        Stdio,
+    };
     use std::sync::atomic::{
         AtomicU32,
         Ordering,
@@ -9,6 +15,10 @@ mod native {
     use std::sync::{
         Arc,
         Mutex,
+    };
+    use std::thread::{
+        self,
+        JoinHandle,
     };
     use std::time::{
         Duration,
@@ -44,6 +54,94 @@ mod native {
     const SPECTRUM_MIN_FREQUENCY: f32 = 20.0;
     const SPECTRUM_MAX_FREQUENCY: f32 = 2_000.0;
     const NOTE_BUCKET_SPREAD: f32 = 0.35;
+    const CPAL_INPUT_PREFIX: &str = "cpal::";
+    const PULSE_INPUT_PREFIX: &str = "pulse::";
+    const PULSE_SAMPLE_RATE: u32 = 44_100;
+
+    struct PulseCapture {
+        child:  Child,
+        thread: JoinHandle<()>,
+    }
+
+    impl PulseCapture {
+        fn stop(self) {
+            let mut child = self.child;
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = self.thread.join();
+        }
+    }
+
+    struct AnalysisPipeline {
+        buffer:        VecDeque<f32>,
+        last_analysis: Instant,
+        planner:       FftPlanner<f32>,
+        sample_rate:   f32,
+    }
+
+    impl AnalysisPipeline {
+        fn new(sample_rate: f32) -> Self {
+            Self {
+                buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
+                last_analysis: Instant::now() - ANALYSIS_INTERVAL,
+                planner: FftPlanner::new(),
+                sample_rate,
+            }
+        }
+
+        fn push_samples(
+            &mut self,
+            samples: impl IntoIterator<Item = f32>,
+            shared: &Arc<Mutex<SharedState>>,
+            settings: &Arc<Mutex<AnalysisSettings>>,
+            input_gain: &Arc<AtomicU32>,
+            input_level: &Arc<AtomicU32>,
+        ) {
+            let analysis_settings = settings
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default()
+                .sanitized();
+            let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
+
+            for sample in samples {
+                self.buffer.push_back((sample * gain).clamp(-1.0, 1.0));
+            }
+
+            while self.buffer.len() > MAX_WINDOW_SIZE * 2 {
+                self.buffer.pop_front();
+            }
+
+            if self.buffer.len() < analysis_settings.window_size
+                || self.last_analysis.elapsed() < ANALYSIS_INTERVAL
+            {
+                return;
+            }
+            self.last_analysis = Instant::now();
+
+            let start = self.buffer.len().saturating_sub(analysis_settings.window_size);
+            let window: Vec<f32> = self.buffer.iter().skip(start).copied().collect();
+            let level = normalized_level(&window);
+            input_level.store(level.to_bits(), Ordering::Relaxed);
+
+            if let Some(reading) =
+                analyze_window(&window, self.sample_rate, &analysis_settings, &mut self.planner)
+            {
+                publish_reading(shared, reading);
+            }
+        }
+    }
+
+    enum StartedInput {
+        Cpal {
+            stream:      cpal::Stream,
+            selected_id: String,
+        },
+        Pulse {
+            capture:     PulseCapture,
+            selected_id: String,
+        },
+    }
 
     #[derive(Clone, Debug)]
     pub struct TunerReading {
@@ -65,6 +163,20 @@ mod native {
         Idle,
         Listening,
         Error(String),
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum AudioInputKind {
+        Microphone,
+        System,
+        Other,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct AudioInputOption {
+        pub id:    String,
+        pub label: String,
+        pub kind:  AudioInputKind,
     }
 
     #[derive(Clone, Debug)]
@@ -129,11 +241,13 @@ mod native {
     }
 
     pub struct AudioEngine {
-        shared:      Arc<Mutex<SharedState>>,
-        settings:    Arc<Mutex<AnalysisSettings>>,
-        input_gain:  Arc<AtomicU32>,
-        input_level: Arc<AtomicU32>,
-        _stream:     ManuallyDrop<Option<cpal::Stream>>,
+        shared:            Arc<Mutex<SharedState>>,
+        settings:          Arc<Mutex<AnalysisSettings>>,
+        input_gain:        Arc<AtomicU32>,
+        input_level:       Arc<AtomicU32>,
+        selected_input_id: Arc<Mutex<Option<String>>>,
+        streams:           Arc<Mutex<Vec<ManuallyDrop<cpal::Stream>>>>,
+        pulse_capture:     Arc<Mutex<Option<PulseCapture>>>,
     }
 
     impl AudioEngine {
@@ -149,23 +263,46 @@ mod native {
             let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
             let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
             let input_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+            let selected_input_id = Arc::new(Mutex::new(None));
+            let streams = Arc::new(Mutex::new(Vec::new()));
+            let pulse_capture = Arc::new(Mutex::new(None));
 
-            let stream = start_stream(
+            let input = start_input(
                 shared.clone(),
                 settings.clone(),
                 input_gain.clone(),
                 input_level.clone(),
+                None,
             );
+
+            match input {
+                Ok(StartedInput::Cpal { stream, selected_id }) => {
+                    if let Ok(mut current) = selected_input_id.lock() {
+                        *current = Some(selected_id);
+                    }
+                    if let Ok(mut stream_guard) = streams.lock() {
+                        stream_guard.push(ManuallyDrop::new(stream));
+                    }
+                }
+                Ok(StartedInput::Pulse { capture, selected_id }) => {
+                    if let Ok(mut current) = selected_input_id.lock() {
+                        *current = Some(selected_id);
+                    }
+                    if let Ok(mut guard) = pulse_capture.lock() {
+                        *guard = Some(capture);
+                    }
+                }
+                Err(message) => update_error(&shared, &message),
+            }
 
             Self {
                 shared,
                 settings,
                 input_gain,
                 input_level,
-                // CPAL 0.15's ALSA backend can panic while dropping an input stream on shutdown.
-                // Keep the stream alive for the process lifetime instead of tearing it down through
-                // the buggy drop path.
-                _stream: ManuallyDrop::new(stream.ok()),
+                selected_input_id,
+                streams,
+                pulse_capture,
             }
         }
 
@@ -205,25 +342,102 @@ mod native {
         pub fn input_level(&self) -> f32 {
             f32::from_bits(self.input_level.load(Ordering::Relaxed))
         }
+
+        pub fn available_inputs(&self) -> Vec<AudioInputOption> {
+            enumerate_input_options()
+        }
+
+        pub fn selected_input_id(&self) -> Option<String> {
+            self.selected_input_id.lock().ok().and_then(|guard| guard.clone())
+        }
+
+        pub fn set_selected_input_id(&self, input_id: Option<String>) {
+            let current = self.selected_input_id();
+            if current == input_id {
+                return;
+            }
+
+            match start_input(
+                self.shared.clone(),
+                self.settings.clone(),
+                self.input_gain.clone(),
+                self.input_level.clone(),
+                input_id.as_deref(),
+            ) {
+                Ok(started_input) => {
+                    if let Ok(mut state) = self.shared.lock() {
+                        state.reading = None;
+                        state.waterfall.clear();
+                        state.note_waterfall.clear();
+                        state.spiral_waterfall.clear();
+                        state.smoothed_frequency = None;
+                        state.status = AudioStatus::Listening;
+                    }
+
+                    if let Ok(streams) = self.streams.lock() {
+                        if let Some(active) = streams.last() {
+                            let _ = active.pause();
+                        }
+                    }
+                    if let Ok(mut guard) = self.pulse_capture.lock()
+                        && let Some(capture) = guard.take()
+                    {
+                        capture.stop();
+                    }
+
+                    let resolved_id = match started_input {
+                        StartedInput::Cpal { stream, selected_id } => {
+                            if let Ok(mut streams) = self.streams.lock() {
+                                // CPAL 0.15's ALSA backend can panic while dropping an input stream on shutdown.
+                                // Keep old streams paused and alive instead of dropping through the buggy path.
+                                streams.push(ManuallyDrop::new(stream));
+                            }
+                            selected_id
+                        }
+                        StartedInput::Pulse { capture, selected_id } => {
+                            if let Ok(mut guard) = self.pulse_capture.lock() {
+                                *guard = Some(capture);
+                            }
+                            selected_id
+                        }
+                    };
+
+                    if let Ok(mut selected) = self.selected_input_id.lock() {
+                        *selected = Some(resolved_id);
+                    }
+                }
+                Err(message) => update_error(&self.shared, &message),
+            }
+        }
     }
 
-    fn start_stream(
+    fn start_input(
         shared: Arc<Mutex<SharedState>>,
         settings: Arc<Mutex<AnalysisSettings>>,
         input_gain: Arc<AtomicU32>,
         input_level: Arc<AtomicU32>,
-    ) -> Result<cpal::Stream, ()> {
+        requested_input_id: Option<&str>,
+    ) -> Result<StartedInput, String> {
+        if let Some(source_name) = requested_input_id.and_then(strip_pulse_input_id) {
+            let capture = start_pulse_capture(shared, settings, input_gain, input_level, source_name)?;
+            return Ok(StartedInput::Pulse {
+                capture,
+                selected_id: format!("{PULSE_INPUT_PREFIX}{source_name}"),
+            });
+        }
+
+        let requested_cpal_id = requested_input_id.and_then(strip_cpal_input_id);
         let host = cpal::default_host();
-        let Some(device) = host.default_input_device() else {
-            update_error(&shared, "No input device found");
-            return Err(());
-        };
+        let device = select_input_device(&host, requested_cpal_id)?;
+        let selected_input_id = device
+            .name()
+            .map(|name| format!("{CPAL_INPUT_PREFIX}{name}"))
+            .unwrap_or_else(|_| format!("{CPAL_INPUT_PREFIX}Unknown input"));
 
         let config = match device.default_input_config() {
             Ok(config) => config,
             Err(error) => {
-                update_error(&shared, &format!("Input config error: {error}"));
-                return Err(());
+                return Err(format!("Input config error: {error}"));
             }
         };
 
@@ -279,21 +493,23 @@ mod native {
                 )
             }
             sample_format => {
-                update_error(&shared, &format!("Unsupported sample format: {sample_format:?}"));
-                return Err(());
+                return Err(format!("Unsupported sample format: {sample_format:?}"));
             }
         };
 
-        let Ok(stream) = stream else {
-            return Err(());
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => return Err(format!("Failed to build input stream: {error}")),
         };
 
         if stream.play().is_err() {
-            update_error(&shared, "Failed to start input stream");
-            return Err(());
+            return Err("Failed to start input stream".to_owned());
         }
 
-        Ok(stream)
+        Ok(StartedInput::Cpal {
+            stream,
+            selected_id: selected_input_id,
+        })
     }
 
     fn build_stream<T>(
@@ -311,80 +527,85 @@ mod native {
         T: cpal::Sample + cpal::SizedSample,
         f32: cpal::FromSample<T>,
     {
-        let mut buffer: VecDeque<f32> = VecDeque::with_capacity(MAX_WINDOW_SIZE * 2);
-        let mut last_analysis = Instant::now() - ANALYSIS_INTERVAL;
-        let mut planner = FftPlanner::new();
+        let mut pipeline = AnalysisPipeline::new(sample_rate);
 
         device.build_input_stream(
             config,
             move |data: &[T], _| {
-                let analysis_settings = settings
-                    .lock()
-                    .map(|guard| guard.clone())
-                    .unwrap_or_default()
-                    .sanitized();
-                let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
-                for frame in data.chunks(channels) {
-                    let sample = (f32::from_sample(frame[0]) * gain).clamp(-1.0, 1.0);
-                    buffer.push_back(sample);
-                }
-
-                while buffer.len() > MAX_WINDOW_SIZE * 2 {
-                    buffer.pop_front();
-                }
-
-                if buffer.len() < analysis_settings.window_size || last_analysis.elapsed() < ANALYSIS_INTERVAL
-                {
-                    return;
-                }
-                last_analysis = Instant::now();
-
-                let start = buffer.len().saturating_sub(analysis_settings.window_size);
-                let window: Vec<f32> = buffer.iter().skip(start).copied().collect();
-                let level = normalized_level(&window);
-                input_level.store(level.to_bits(), Ordering::Relaxed);
-
-                if let Some(reading) = analyze_window(&window, sample_rate, &analysis_settings, &mut planner)
-                {
-                    if let Ok(mut state) = shared.lock() {
-                        let smoothed_frequency =
-                            smooth_frequency(state.smoothed_frequency, reading.frequency_hz);
-                        state.smoothed_frequency = Some(smoothed_frequency);
-
-                        let (note_name, cents) = frequency_to_note(smoothed_frequency);
-                        state.waterfall.push_back(reading.spectrum.clone());
-                        state.note_waterfall.push_back(reading.note_spectrum.clone());
-                        state.spiral_waterfall.push_back(reading.spiral_spectrum.clone());
-                        while state.waterfall.len() > WATERFALL_HISTORY {
-                            state.waterfall.pop_front();
-                        }
-                        while state.note_waterfall.len() > WATERFALL_HISTORY {
-                            state.note_waterfall.pop_front();
-                        }
-                        while state.spiral_waterfall.len() > WATERFALL_HISTORY {
-                            state.spiral_waterfall.pop_front();
-                        }
-
-                        state.reading = Some(TunerReading {
-                            frequency_hz: smoothed_frequency,
-                            note_name,
-                            cents,
-                            clarity: reading.clarity,
-                            spectrum: reading.spectrum,
-                            waterfall: state.waterfall.iter().cloned().collect(),
-                            note_spectrum: reading.note_spectrum,
-                            note_waterfall: state.note_waterfall.iter().cloned().collect(),
-                            spiral_spectrum: reading.spiral_spectrum,
-                            spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
-                            note_labels: note_bucket_labels(),
-                        });
-                        state.status = AudioStatus::Listening;
-                    }
-                }
+                pipeline.push_samples(
+                    data.chunks(channels).map(|frame| f32::from_sample(frame[0])),
+                    &shared,
+                    &settings,
+                    &input_gain,
+                    &input_level,
+                );
             },
             err_fn,
             None,
         )
+    }
+
+    fn start_pulse_capture(
+        shared: Arc<Mutex<SharedState>>,
+        settings: Arc<Mutex<AnalysisSettings>>,
+        input_gain: Arc<AtomicU32>,
+        input_level: Arc<AtomicU32>,
+        source_name: &str,
+    ) -> Result<PulseCapture, String> {
+        let mut command = Command::new("parec");
+        command
+            .arg("--device")
+            .arg(source_name)
+            .arg("--format=float32le")
+            .arg(format!("--rate={PULSE_SAMPLE_RATE}"))
+            .arg("--channels=1")
+            .arg("--raw")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("Failed to start system audio capture: {error}"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "System audio capture has no stdout pipe".to_owned())?;
+
+        if let Ok(mut state) = shared.lock() {
+            state.status = AudioStatus::Listening;
+        }
+
+        let thread = thread::spawn(move || {
+            let mut pipeline = AnalysisPipeline::new(PULSE_SAMPLE_RATE as f32);
+            let mut reader = stdout;
+            let mut byte_buffer = [0_u8; 4096];
+            let mut remainder = Vec::new();
+
+            loop {
+                match reader.read(&mut byte_buffer) {
+                    Ok(0) => break,
+                    Ok(bytes_read) => {
+                        remainder.extend_from_slice(&byte_buffer[..bytes_read]);
+                        let complete_len = remainder.len() - (remainder.len() % 4);
+                        if complete_len == 0 {
+                            continue;
+                        }
+
+                        let samples = remainder[..complete_len]
+                            .chunks_exact(4)
+                            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                        pipeline.push_samples(samples, &shared, &settings, &input_gain, &input_level);
+                        remainder.drain(..complete_len);
+                    }
+                    Err(error) => {
+                        update_error(&shared, &format!("System audio capture error: {error}"));
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(PulseCapture { child, thread })
     }
 
     fn normalized_level(window: &[f32]) -> f32 {
@@ -700,9 +921,188 @@ mod native {
         format!("{}{}", NOTE_NAMES[note_index], octave)
     }
 
+    fn publish_reading(shared: &Arc<Mutex<SharedState>>, reading: TunerReading) {
+        if let Ok(mut state) = shared.lock() {
+            let smoothed_frequency = smooth_frequency(state.smoothed_frequency, reading.frequency_hz);
+            state.smoothed_frequency = Some(smoothed_frequency);
+
+            let (note_name, cents) = frequency_to_note(smoothed_frequency);
+            state.waterfall.push_back(reading.spectrum.clone());
+            state.note_waterfall.push_back(reading.note_spectrum.clone());
+            state.spiral_waterfall.push_back(reading.spiral_spectrum.clone());
+            while state.waterfall.len() > WATERFALL_HISTORY {
+                state.waterfall.pop_front();
+            }
+            while state.note_waterfall.len() > WATERFALL_HISTORY {
+                state.note_waterfall.pop_front();
+            }
+            while state.spiral_waterfall.len() > WATERFALL_HISTORY {
+                state.spiral_waterfall.pop_front();
+            }
+
+            state.reading = Some(TunerReading {
+                frequency_hz: smoothed_frequency,
+                note_name,
+                cents,
+                clarity: reading.clarity,
+                spectrum: reading.spectrum,
+                waterfall: state.waterfall.iter().cloned().collect(),
+                note_spectrum: reading.note_spectrum,
+                note_waterfall: state.note_waterfall.iter().cloned().collect(),
+                spiral_spectrum: reading.spiral_spectrum,
+                spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
+                note_labels: note_bucket_labels(),
+            });
+            state.status = AudioStatus::Listening;
+        }
+    }
+
     fn update_error(shared: &Arc<Mutex<SharedState>>, message: &str) {
         if let Ok(mut state) = shared.lock() {
             state.status = AudioStatus::Error(message.to_owned());
+        }
+    }
+
+    fn enumerate_input_options() -> Vec<AudioInputOption> {
+        let mut options = enumerate_cpal_input_options();
+        options.extend(enumerate_pulse_input_options());
+        options.sort_by_key(|option| {
+            match option.kind {
+                AudioInputKind::Microphone => 0,
+                AudioInputKind::System => 1,
+                AudioInputKind::Other => 2,
+            }
+        });
+        options
+    }
+
+    fn enumerate_cpal_input_options() -> Vec<AudioInputOption> {
+        let host = cpal::default_host();
+        let default_name = host.default_input_device().and_then(|device| device.name().ok());
+        let mut options = Vec::new();
+
+        let Ok(devices) = host.input_devices() else {
+            return options;
+        };
+
+        for device in devices {
+            let Ok(name) = device.name() else {
+                continue;
+            };
+
+            let kind = classify_input_kind(&name, default_name.as_deref());
+            let tag = match kind {
+                AudioInputKind::Microphone => "Mic",
+                AudioInputKind::System => "System",
+                AudioInputKind::Other => "Input",
+            };
+            let label = if default_name.as_deref() == Some(name.as_str()) {
+                format!("{tag} • {name} (Default)")
+            } else {
+                format!("{tag} • {name}")
+            };
+
+            options.push(AudioInputOption {
+                id: format!("{CPAL_INPUT_PREFIX}{name}"),
+                label,
+                kind,
+            });
+        }
+        options
+    }
+
+    fn enumerate_pulse_input_options() -> Vec<AudioInputOption> {
+        let output = Command::new("pactl").args(["list", "short", "sources"]).output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut monitor_names: Vec<String> = stdout
+            .lines()
+            .filter_map(|line| line.split('\t').nth(1))
+            .filter(|name| name.ends_with(".monitor"))
+            .map(str::to_owned)
+            .collect();
+
+        if monitor_names.is_empty() {
+            return Vec::new();
+        }
+
+        monitor_names.sort();
+        monitor_names.dedup();
+
+        let mut options = vec![AudioInputOption {
+            id:    format!("{PULSE_INPUT_PREFIX}@DEFAULT_MONITOR@"),
+            label: "System • Default monitor".to_owned(),
+            kind:  AudioInputKind::System,
+        }];
+
+        options.extend(monitor_names.into_iter().map(|name| {
+            AudioInputOption {
+                id:    format!("{PULSE_INPUT_PREFIX}{name}"),
+                label: format!("System • {name}"),
+                kind:  AudioInputKind::System,
+            }
+        }));
+        options
+    }
+
+    fn select_input_device(
+        host: &cpal::Host,
+        requested_input_id: Option<&str>,
+    ) -> Result<cpal::Device, String> {
+        if let Some(requested_input_id) = requested_input_id {
+            let devices = host
+                .input_devices()
+                .map_err(|error| format!("Failed to enumerate input devices: {error}"))?;
+            for device in devices {
+                let Ok(name) = device.name() else {
+                    continue;
+                };
+                if name == requested_input_id {
+                    return Ok(device);
+                }
+            }
+
+            return Err(format!("Input device not found: {requested_input_id}"));
+        }
+
+        host.default_input_device()
+            .ok_or_else(|| "No input device found".to_owned())
+    }
+
+    fn strip_cpal_input_id(input_id: &str) -> Option<&str> {
+        input_id
+            .strip_prefix(CPAL_INPUT_PREFIX)
+            .or(Some(input_id).filter(|id| !id.starts_with(PULSE_INPUT_PREFIX)))
+    }
+
+    fn strip_pulse_input_id(input_id: &str) -> Option<&str> {
+        input_id.strip_prefix(PULSE_INPUT_PREFIX)
+    }
+
+    fn classify_input_kind(name: &str, default_name: Option<&str>) -> AudioInputKind {
+        let lowered = name.to_lowercase();
+        if [
+            "monitor",
+            "loopback",
+            "stereo mix",
+            "what u hear",
+            "blackhole",
+            "soundflower",
+        ]
+        .iter()
+        .any(|needle| lowered.contains(needle))
+        {
+            AudioInputKind::System
+        } else if default_name == Some(name) {
+            AudioInputKind::Microphone
+        } else {
+            AudioInputKind::Other
         }
     }
 
@@ -784,6 +1184,20 @@ mod native {
 
 #[cfg(target_arch = "wasm32")]
 mod native {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum AudioInputKind {
+        Microphone,
+        System,
+        Other,
+    }
+
+    #[derive(Clone, Debug)]
+    pub struct AudioInputOption {
+        pub id:    String,
+        pub label: String,
+        pub kind:  AudioInputKind,
+    }
+
     #[derive(Clone, Debug)]
     pub struct AnalysisSettings {
         pub window_size:        usize,
@@ -865,12 +1279,25 @@ mod native {
         pub fn input_level(&self) -> f32 {
             0.0
         }
+
+        pub fn available_inputs(&self) -> Vec<AudioInputOption> {
+            Vec::new()
+        }
+
+        pub fn selected_input_id(&self) -> Option<String> {
+            None
+        }
+
+        pub fn set_selected_input_id(&self, _input_id: Option<String>) {
+        }
     }
 }
 
 pub use native::{
     AnalysisSettings,
     AudioEngine,
+    AudioInputKind,
+    AudioInputOption,
     AudioStatus,
     TunerReading,
 };

@@ -24,6 +24,8 @@ use eframe::{
 use crate::audio::{
     AnalysisSettings,
     AudioEngine,
+    AudioInputKind,
+    AudioInputOption,
     AudioStatus,
     TunerReading,
 };
@@ -184,12 +186,33 @@ impl LiveChartKind {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkspaceTab {
+    Controls,
+    LiveAnalysis,
+    Fretboard,
+}
+
+impl WorkspaceTab {
+    const ALL: [Self; 3] = [Self::Controls, Self::LiveAnalysis, Self::Fretboard];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Controls => "Controls",
+            Self::LiveAnalysis => "Live analysis",
+            Self::Fretboard => "Fretboard",
+        }
+    }
+}
+
 pub struct App {
-    audio:       AudioEngine,
-    tuning_kind: TuningKind,
-    scale_kind:  ScaleKind,
-    root_note:   Note,
-    live_chart:  LiveChartKind,
+    audio:        AudioEngine,
+    audio_inputs: Vec<AudioInputOption>,
+    tuning_kind:  TuningKind,
+    scale_kind:   ScaleKind,
+    root_note:    Note,
+    live_chart:   LiveChartKind,
+    dock_state:   Option<egui_dock::DockState<WorkspaceTab>>,
 }
 
 struct HoveredNote {
@@ -210,16 +233,40 @@ struct TunerTarget {
     degree:       Option<u8>,
 }
 
+struct DockTabViewer<'a> {
+    app: &'a mut App,
+}
+
+impl egui_dock::TabViewer for DockTabViewer<'_> {
+    type Tab = WorkspaceTab;
+
+    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
+        tab.label().into()
+    }
+
+    fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
+        match tab {
+            WorkspaceTab::Controls => self.app.draw_controls(ui),
+            WorkspaceTab::LiveAnalysis => self.app.draw_tuner_card(ui),
+            WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
+        }
+    }
+}
+
 impl App {
     pub fn new(cc: &CreationContext) -> Self {
         apply_theme(&cc.egui_ctx);
+        let audio = AudioEngine::new();
+        let audio_inputs = audio.available_inputs();
 
         Self {
-            audio:       AudioEngine::new(),
+            audio,
+            audio_inputs,
             tuning_kind: TuningKind::Cello,
-            scale_kind:  ScaleKind::BluesMinor,
-            root_note:   Note::A,
-            live_chart:  LiveChartKind::Spiral,
+            scale_kind: ScaleKind::BluesMinor,
+            root_note: Note::A,
+            live_chart: LiveChartKind::Spiral,
+            dock_state: Some(default_dock_state()),
         }
     }
 
@@ -235,11 +282,45 @@ impl App {
                     .request_repaint_after(std::time::Duration::from_millis(33));
                 self.draw_header(ui);
                 ui.add_space(14.0);
-                self.draw_controls(ui);
-                ui.add_space(14.0);
-                self.draw_tuner_card(ui);
-                ui.add_space(14.0);
-                self.draw_fretboard_card(ui);
+                let mut dock_state = self.dock_state.take().unwrap_or_else(default_dock_state);
+                self.draw_workspace_toolbar(ui, &mut dock_state);
+                ui.add_space(12.0);
+
+                if dock_state.iter_all_tabs().next().is_none() {
+                    Frame::new()
+                        .fill(Color32::from_rgb(22, 26, 31))
+                        .corner_radius(CornerRadius::same(18))
+                        .stroke(Stroke::new(1.0, Color32::from_rgb(54, 59, 67)))
+                        .inner_margin(Margin::same(24))
+                        .show(ui, |ui| {
+                            ui.set_min_height(260.0);
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(52.0);
+                                ui.label(
+                                    RichText::new("No tabs open")
+                                        .size(22.0)
+                                        .color(Color32::from_rgb(226, 216, 201)),
+                                );
+                                ui.add_space(8.0);
+                                ui.label(
+                                    RichText::new(
+                                        "Use the buttons above to add Controls, Live analysis or Fretboard",
+                                    )
+                                    .color(Color32::from_rgb(145, 151, 160)),
+                                );
+                            });
+                        });
+                } else {
+                    let style = egui_dock::Style::from_egui(ui.ctx().global_style().as_ref());
+                    let dock_id = egui::Id::new("fretboard_dock_area");
+                    egui_dock::DockArea::new(&mut dock_state)
+                        .id(dock_id)
+                        .style(style)
+                        .draggable_tabs(true)
+                        .show_inside(ui, &mut DockTabViewer { app: self });
+                }
+
+                self.dock_state = Some(dock_state);
             });
     }
 
@@ -286,8 +367,78 @@ impl App {
         });
     }
 
+    fn draw_workspace_toolbar(&mut self, ui: &mut Ui, dock_state: &mut egui_dock::DockState<WorkspaceTab>) {
+        let mut reset_workspace = false;
+
+        Frame::new()
+            .fill(Color32::from_rgb(22, 26, 31))
+            .corner_radius(CornerRadius::same(16))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(54, 59, 67)))
+            .inner_margin(Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Add tab")
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .strong(),
+                    );
+
+                    for tab in WorkspaceTab::ALL {
+                        let is_open = dock_state.find_tab(&tab).is_some();
+                        let button = egui::Button::new(tab.label())
+                            .min_size(vec2(102.0, 28.0))
+                            .fill(if is_open {
+                                Color32::from_rgb(112, 86, 72)
+                            } else {
+                                Color32::from_rgb(38, 43, 49)
+                            })
+                            .stroke(Stroke::new(
+                                1.0,
+                                if is_open {
+                                    Color32::from_rgb(207, 187, 166)
+                                } else {
+                                    Color32::from_rgb(80, 86, 94)
+                                },
+                            ))
+                            .corner_radius(CornerRadius::same(14));
+
+                        if ui.add(button).clicked() {
+                            open_or_focus_tab(dock_state, tab);
+                        }
+                    }
+
+                    ui.separator();
+                    ui.label(
+                        RichText::new("Click to open or focus a tab, then drag it inside the workspace")
+                            .color(Color32::from_rgb(145, 151, 160))
+                            .size(12.0),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Reset workspace").clicked() {
+                            reset_workspace = true;
+                        }
+                    });
+                });
+            });
+
+        if reset_workspace {
+            *dock_state = default_dock_state();
+        }
+    }
+
     fn draw_controls(&mut self, ui: &mut Ui) {
         let mut input_gain = self.audio.input_gain();
+        let selected_input_id = self.audio.selected_input_id();
+        let selected_input_kind = self.selected_input_kind(selected_input_id.as_deref());
+        let has_system_input = self
+            .audio_inputs
+            .iter()
+            .any(|option| option.kind == AudioInputKind::System);
+        let has_microphone_input = self
+            .audio_inputs
+            .iter()
+            .any(|option| option.kind == AudioInputKind::Microphone);
 
         Frame::new()
             .fill(PANEL_FILL)
@@ -355,6 +506,114 @@ impl App {
                             }
                         });
                 });
+
+                ui.add_space(14.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Source")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+
+                    let mic_button = egui::Button::new("Microphone")
+                        .min_size(vec2(104.0, 28.0))
+                        .fill(if selected_input_kind == AudioInputKind::Microphone {
+                            Color32::from_rgb(112, 86, 72)
+                        } else {
+                            Color32::from_rgb(42, 46, 52)
+                        })
+                        .stroke(Stroke::new(
+                            1.0,
+                            if selected_input_kind == AudioInputKind::Microphone {
+                                Color32::from_rgb(207, 187, 166)
+                            } else {
+                                Color32::from_rgb(84, 89, 97)
+                            },
+                        ))
+                        .corner_radius(CornerRadius::same(14));
+                    if ui.add_enabled(has_microphone_input, mic_button).clicked() {
+                        if let Some(input_id) = self.preferred_input_id(AudioInputKind::Microphone) {
+                            self.audio.set_selected_input_id(Some(input_id));
+                        }
+                    }
+
+                    let system_button = egui::Button::new("System")
+                        .min_size(vec2(88.0, 28.0))
+                        .fill(if selected_input_kind == AudioInputKind::System {
+                            Color32::from_rgb(112, 86, 72)
+                        } else {
+                            Color32::from_rgb(42, 46, 52)
+                        })
+                        .stroke(Stroke::new(
+                            1.0,
+                            if selected_input_kind == AudioInputKind::System {
+                                Color32::from_rgb(207, 187, 166)
+                            } else {
+                                Color32::from_rgb(84, 89, 97)
+                            },
+                        ))
+                        .corner_radius(CornerRadius::same(14));
+                    if ui.add_enabled(has_system_input, system_button).clicked() {
+                        if let Some(input_id) = self.preferred_input_id(AudioInputKind::System) {
+                            self.audio.set_selected_input_id(Some(input_id));
+                        }
+                    }
+
+                    ui.separator();
+
+                    ui.label(
+                        RichText::new("Device")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+
+                    let selected_input_label = selected_input_id
+                        .as_deref()
+                        .and_then(|id| self.audio_inputs.iter().find(|option| option.id == id))
+                        .map(|option| option.label.clone())
+                        .unwrap_or_else(|| "Choose input device".to_owned());
+
+                    egui::ComboBox::from_id_salt("audio_input_device")
+                        .selected_text(selected_input_label)
+                        .width(340.0)
+                        .show_ui(ui, |ui| {
+                            for option in &self.audio_inputs {
+                                if ui
+                                    .selectable_label(
+                                        selected_input_id.as_deref() == Some(option.id.as_str()),
+                                        &option.label,
+                                    )
+                                    .clicked()
+                                {
+                                    self.audio.set_selected_input_id(Some(option.id.clone()));
+                                }
+                            }
+                        });
+
+                    if ui.button("Refresh inputs").clicked() {
+                        self.audio_inputs = self.audio.available_inputs();
+                    }
+                });
+
+                if has_system_input {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(
+                            "Use the System source to capture monitor / loopback / Stereo Mix inputs",
+                        )
+                        .color(Color32::from_rgb(145, 151, 160))
+                        .size(12.0),
+                    );
+                } else {
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(
+                            "System audio appears only if the OS exposes a monitor / loopback input device",
+                        )
+                        .color(Color32::from_rgb(145, 151, 160))
+                        .size(12.0),
+                    );
+                }
 
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
@@ -686,6 +945,8 @@ impl App {
         let status = self.audio.status();
         let reading = self.audio.reading();
         let input_level = self.audio.input_level();
+        let selected_input_id = self.audio.selected_input_id();
+        let selected_input_kind = self.selected_input_kind(selected_input_id.as_deref());
         let tuning = self.tuning_kind.to_tuning();
         let root_pc = PCNote::from_note(self.root_note, Accidental::Natural);
         let scale = self.scale_kind.to_scale(root_pc);
@@ -706,7 +967,8 @@ impl App {
                                 .color(Color32::from_rgb(228, 220, 208)),
                         );
                         ui.label(
-                            RichText::new(audio_status_label(&status)).color(audio_status_color(&status)),
+                            RichText::new(audio_status_label(&status, selected_input_kind))
+                                .color(audio_status_color(&status)),
                         );
                     });
 
@@ -748,17 +1010,17 @@ impl App {
                 });
 
                 ui.add_space(12.0);
-                self.draw_input_level(ui, input_level);
+                self.draw_input_level(ui, input_level, selected_input_kind);
                 ui.add_space(12.0);
                 match self.live_chart {
-                    LiveChartKind::Tuner => self.draw_tuner_meter(ui, target),
+                    LiveChartKind::Tuner => self.draw_tuner_meter(ui, target, selected_input_kind),
                     LiveChartKind::Fft => self.draw_spectrum(ui, target, reading.as_ref()),
                     LiveChartKind::Spiral => self.draw_spiral_spectrogram(ui, reading.as_ref()),
                 }
             });
     }
 
-    fn draw_input_level(&self, ui: &mut Ui, input_level: f32) {
+    fn draw_input_level(&self, ui: &mut Ui, input_level: f32, input_kind: AudioInputKind) {
         let desired_size = vec2(ui.available_width(), 28.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
@@ -788,7 +1050,7 @@ impl App {
         painter.text(
             inner.left_center(),
             egui::Align2::LEFT_CENTER,
-            "Mic level",
+            input_level_label(input_kind),
             FontId::proportional(13.0),
             Color32::from_rgb(196, 189, 177),
         );
@@ -801,7 +1063,7 @@ impl App {
         );
     }
 
-    fn draw_tuner_meter(&self, ui: &mut Ui, reading: Option<&TunerTarget>) {
+    fn draw_tuner_meter(&self, ui: &mut Ui, reading: Option<&TunerTarget>, input_kind: AudioInputKind) {
         let desired_size = vec2(ui.available_width().max(250.0), 120.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
@@ -883,7 +1145,7 @@ impl App {
                 painter.text(
                     rect.center_top() + vec2(0.0, 50.0),
                     egui::Align2::CENTER_TOP,
-                    "Play a single sustained note near the microphone",
+                    waiting_prompt(input_kind),
                     FontId::proportional(13.0),
                     Color32::from_rgb(139, 143, 149),
                 );
@@ -1446,6 +1708,21 @@ impl App {
             );
         }
     }
+
+    fn selected_input_kind(&self, selected_input_id: Option<&str>) -> AudioInputKind {
+        selected_input_id
+            .and_then(|id| self.audio_inputs.iter().find(|option| option.id == id))
+            .map(|option| option.kind.clone())
+            .unwrap_or(AudioInputKind::Other)
+    }
+
+    fn preferred_input_id(&self, kind: AudioInputKind) -> Option<String> {
+        self.audio_inputs
+            .iter()
+            .find(|option| option.kind == kind)
+            .or_else(|| self.audio_inputs.first())
+            .map(|option| option.id.clone())
+    }
 }
 
 fn pill(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
@@ -1458,10 +1735,10 @@ fn pill(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
         });
 }
 
-fn audio_status_label(status: &AudioStatus) -> String {
+fn audio_status_label(status: &AudioStatus, input_kind: AudioInputKind) -> String {
     match status {
-        AudioStatus::Idle => "Microphone idle".to_owned(),
-        AudioStatus::Listening => "Listening to microphone".to_owned(),
+        AudioStatus::Idle => format!("{} idle", input_source_label(input_kind)),
+        AudioStatus::Listening => format!("Listening to {}", input_source_label(input_kind).to_lowercase()),
         AudioStatus::Error(message) => format!("Audio error: {message}"),
     }
 }
@@ -1481,6 +1758,30 @@ fn cents_color(cents: f32) -> Color32 {
         Color32::from_rgb(206, 188, 151)
     } else {
         Color32::from_rgb(198, 146, 126)
+    }
+}
+
+fn input_source_label(input_kind: AudioInputKind) -> &'static str {
+    match input_kind {
+        AudioInputKind::Microphone => "Microphone",
+        AudioInputKind::System => "System audio",
+        AudioInputKind::Other => "Audio input",
+    }
+}
+
+fn input_level_label(input_kind: AudioInputKind) -> &'static str {
+    match input_kind {
+        AudioInputKind::Microphone => "Mic level",
+        AudioInputKind::System => "System level",
+        AudioInputKind::Other => "Input level",
+    }
+}
+
+fn waiting_prompt(input_kind: AudioInputKind) -> &'static str {
+    match input_kind {
+        AudioInputKind::Microphone => "Play a single sustained note near the microphone",
+        AudioInputKind::System => "Play audio on the system output or loopback device",
+        AudioInputKind::Other => "Feed a signal into the selected input device",
     }
 }
 
@@ -1620,6 +1921,23 @@ fn format_sample_count(value: usize) -> String {
         format!("{:.1}k", value as f32 / 1000.0)
     } else {
         value.to_string()
+    }
+}
+
+fn default_dock_state() -> egui_dock::DockState<WorkspaceTab> {
+    egui_dock::DockState::new(vec![
+        WorkspaceTab::Fretboard,
+        WorkspaceTab::LiveAnalysis,
+        WorkspaceTab::Controls,
+    ])
+}
+
+fn open_or_focus_tab(dock_state: &mut egui_dock::DockState<WorkspaceTab>, tab: WorkspaceTab) {
+    if let Some(path) = dock_state.find_tab(&tab) {
+        dock_state.set_focused_node_and_surface(path.node_path());
+        let _ = dock_state.set_active_tab(path);
+    } else {
+        dock_state.push_to_focused_leaf(tab);
     }
 }
 
