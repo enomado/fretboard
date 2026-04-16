@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-egui_dock = "0.19"
+egui_tiles = "0.15"
 itertools = { version = "*" }
 serde_json.workspace = true
 serde.workspace = true

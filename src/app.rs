@@ -206,13 +206,13 @@ impl WorkspaceTab {
 }
 
 pub struct App {
-    audio:        AudioEngine,
-    audio_inputs: Vec<AudioInputOption>,
-    tuning_kind:  TuningKind,
-    scale_kind:   ScaleKind,
-    root_note:    Note,
-    live_chart:   LiveChartKind,
-    dock_state:   Option<egui_dock::DockState<WorkspaceTab>>,
+    audio:          AudioEngine,
+    audio_inputs:   Vec<AudioInputOption>,
+    tuning_kind:    TuningKind,
+    scale_kind:     ScaleKind,
+    root_note:      Note,
+    live_chart:     LiveChartKind,
+    workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
 struct HoveredNote {
@@ -233,22 +233,104 @@ struct TunerTarget {
     degree:       Option<u8>,
 }
 
-struct DockTabViewer<'a> {
+struct WorkspaceBehavior<'a> {
     app: &'a mut App,
 }
 
-impl egui_dock::TabViewer for DockTabViewer<'_> {
-    type Tab = WorkspaceTab;
-
-    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
-        tab.label().into()
-    }
-
-    fn ui(&mut self, ui: &mut Ui, tab: &mut Self::Tab) {
-        match tab {
+impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
+    fn pane_ui(
+        &mut self,
+        ui: &mut Ui,
+        _tile_id: egui_tiles::TileId,
+        pane: &mut WorkspaceTab,
+    ) -> egui_tiles::UiResponse {
+        match pane {
             WorkspaceTab::Controls => self.app.draw_controls(ui),
             WorkspaceTab::LiveAnalysis => self.app.draw_tuner_card(ui),
             WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
+        }
+
+        egui_tiles::UiResponse::None
+    }
+
+    fn tab_title_for_pane(&mut self, pane: &WorkspaceTab) -> egui::WidgetText {
+        pane.label().into()
+    }
+
+    fn is_tab_closable(
+        &self,
+        _tiles: &egui_tiles::Tiles<WorkspaceTab>,
+        _tile_id: egui_tiles::TileId,
+    ) -> bool {
+        true
+    }
+
+    fn on_tab_close(
+        &mut self,
+        tiles: &mut egui_tiles::Tiles<WorkspaceTab>,
+        tile_id: egui_tiles::TileId,
+    ) -> bool {
+        tiles.set_visible(tile_id, false);
+        false
+    }
+
+    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
+        egui_tiles::SimplificationOptions {
+            all_panes_must_have_tabs: true,
+            ..egui_tiles::SimplificationOptions::default()
+        }
+    }
+
+    fn tab_bar_color(&self, _visuals: &egui::Visuals) -> Color32 {
+        Color32::from_rgb(22, 26, 31)
+    }
+
+    fn tab_bg_color(
+        &self,
+        _visuals: &egui::Visuals,
+        _tiles: &egui_tiles::Tiles<WorkspaceTab>,
+        _tile_id: egui_tiles::TileId,
+        state: &egui_tiles::TabState,
+    ) -> Color32 {
+        if state.active {
+            Color32::from_rgb(30, 35, 41)
+        } else {
+            Color32::from_rgb(24, 28, 33)
+        }
+    }
+
+    fn tab_outline_stroke(
+        &self,
+        _visuals: &egui::Visuals,
+        _tiles: &egui_tiles::Tiles<WorkspaceTab>,
+        _tile_id: egui_tiles::TileId,
+        state: &egui_tiles::TabState,
+    ) -> Stroke {
+        Stroke::new(
+            1.0,
+            if state.active {
+                Color32::from_rgb(207, 187, 166)
+            } else {
+                Color32::from_rgb(70, 76, 84)
+            },
+        )
+    }
+
+    fn tab_bar_hline_stroke(&self, _visuals: &egui::Visuals) -> Stroke {
+        Stroke::new(1.0, Color32::from_rgb(56, 61, 69))
+    }
+
+    fn tab_text_color(
+        &self,
+        _visuals: &egui::Visuals,
+        _tiles: &egui_tiles::Tiles<WorkspaceTab>,
+        _tile_id: egui_tiles::TileId,
+        state: &egui_tiles::TabState,
+    ) -> Color32 {
+        if state.active {
+            Color32::from_rgb(233, 225, 214)
+        } else {
+            Color32::from_rgb(154, 160, 168)
         }
     }
 }
@@ -266,7 +348,7 @@ impl App {
             scale_kind: ScaleKind::BluesMinor,
             root_note: Note::A,
             live_chart: LiveChartKind::Spiral,
-            dock_state: Some(default_dock_state()),
+            workspace_tree: Some(default_workspace_tree()),
         }
     }
 
@@ -282,11 +364,11 @@ impl App {
                     .request_repaint_after(std::time::Duration::from_millis(33));
                 self.draw_header(ui);
                 ui.add_space(14.0);
-                let mut dock_state = self.dock_state.take().unwrap_or_else(default_dock_state);
-                self.draw_workspace_toolbar(ui, &mut dock_state);
+                let mut workspace_tree = self.workspace_tree.take().unwrap_or_else(default_workspace_tree);
+                self.draw_workspace_toolbar(ui, &mut workspace_tree);
                 ui.add_space(12.0);
 
-                if dock_state.iter_all_tabs().next().is_none() {
+                if visible_workspace_tabs(&workspace_tree) == 0 {
                     Frame::new()
                         .fill(Color32::from_rgb(22, 26, 31))
                         .corner_radius(CornerRadius::same(18))
@@ -311,16 +393,10 @@ impl App {
                             });
                         });
                 } else {
-                    let style = egui_dock::Style::from_egui(ui.ctx().global_style().as_ref());
-                    let dock_id = egui::Id::new("fretboard_dock_area");
-                    egui_dock::DockArea::new(&mut dock_state)
-                        .id(dock_id)
-                        .style(style)
-                        .draggable_tabs(true)
-                        .show_inside(ui, &mut DockTabViewer { app: self });
+                    workspace_tree.ui(&mut WorkspaceBehavior { app: self }, ui);
                 }
 
-                self.dock_state = Some(dock_state);
+                self.workspace_tree = Some(workspace_tree);
             });
     }
 
@@ -367,7 +443,7 @@ impl App {
         });
     }
 
-    fn draw_workspace_toolbar(&mut self, ui: &mut Ui, dock_state: &mut egui_dock::DockState<WorkspaceTab>) {
+    fn draw_workspace_toolbar(&mut self, ui: &mut Ui, workspace_tree: &mut egui_tiles::Tree<WorkspaceTab>) {
         let mut reset_workspace = false;
 
         Frame::new()
@@ -384,7 +460,7 @@ impl App {
                     );
 
                     for tab in WorkspaceTab::ALL {
-                        let is_open = dock_state.find_tab(&tab).is_some();
+                        let is_open = is_workspace_tab_visible(workspace_tree, tab);
                         let button = egui::Button::new(tab.label())
                             .min_size(vec2(102.0, 28.0))
                             .fill(if is_open {
@@ -403,15 +479,17 @@ impl App {
                             .corner_radius(CornerRadius::same(14));
 
                         if ui.add(button).clicked() {
-                            open_or_focus_tab(dock_state, tab);
+                            open_or_focus_tab(workspace_tree, tab);
                         }
                     }
 
                     ui.separator();
                     ui.label(
-                        RichText::new("Click to open or focus a tab, then drag it inside the workspace")
-                            .color(Color32::from_rgb(145, 151, 160))
-                            .size(12.0),
+                        RichText::new(
+                            "Click to open or focus a tab, drag tabs where you want, close them with x",
+                        )
+                        .color(Color32::from_rgb(145, 151, 160))
+                        .size(12.0),
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -423,7 +501,7 @@ impl App {
             });
 
         if reset_workspace {
-            *dock_state = default_dock_state();
+            *workspace_tree = default_workspace_tree();
         }
     }
 
@@ -1924,21 +2002,47 @@ fn format_sample_count(value: usize) -> String {
     }
 }
 
-fn default_dock_state() -> egui_dock::DockState<WorkspaceTab> {
-    egui_dock::DockState::new(vec![
-        WorkspaceTab::Fretboard,
-        WorkspaceTab::LiveAnalysis,
-        WorkspaceTab::Controls,
-    ])
+fn default_workspace_tree() -> egui_tiles::Tree<WorkspaceTab> {
+    let mut tiles = egui_tiles::Tiles::default();
+    let fretboard = tiles.insert_pane(WorkspaceTab::Fretboard);
+    let live_analysis = tiles.insert_pane(WorkspaceTab::LiveAnalysis);
+    let controls = tiles.insert_pane(WorkspaceTab::Controls);
+
+    let fretboard_tabs = tiles.insert_tab_tile(vec![fretboard]);
+    let live_analysis_tabs = tiles.insert_tab_tile(vec![live_analysis]);
+    let controls_tabs = tiles.insert_tab_tile(vec![controls]);
+    let sidebar = tiles.insert_new(egui_tiles::Tile::Container(egui_tiles::Container::new_vertical(
+        vec![live_analysis_tabs, controls_tabs],
+    )));
+    let root = tiles.insert_new(egui_tiles::Tile::Container(
+        egui_tiles::Container::new_horizontal(vec![fretboard_tabs, sidebar]),
+    ));
+
+    egui_tiles::Tree::new("fretboard_workspace_tree", root, tiles)
 }
 
-fn open_or_focus_tab(dock_state: &mut egui_dock::DockState<WorkspaceTab>, tab: WorkspaceTab) {
-    if let Some(path) = dock_state.find_tab(&tab) {
-        dock_state.set_focused_node_and_surface(path.node_path());
-        let _ = dock_state.set_active_tab(path);
-    } else {
-        dock_state.push_to_focused_leaf(tab);
-    }
+fn visible_workspace_tabs(tree: &egui_tiles::Tree<WorkspaceTab>) -> usize {
+    WorkspaceTab::ALL
+        .into_iter()
+        .filter(|tab| is_workspace_tab_visible(tree, *tab))
+        .count()
+}
+
+fn is_workspace_tab_visible(tree: &egui_tiles::Tree<WorkspaceTab>, tab: WorkspaceTab) -> bool {
+    workspace_tile_id(tree, tab).is_some_and(|tile_id| tree.is_visible(tile_id))
+}
+
+fn workspace_tile_id(tree: &egui_tiles::Tree<WorkspaceTab>, tab: WorkspaceTab) -> Option<egui_tiles::TileId> {
+    tree.tiles.find_pane(&tab)
+}
+
+fn open_or_focus_tab(tree: &mut egui_tiles::Tree<WorkspaceTab>, tab: WorkspaceTab) {
+    let Some(tile_id) = workspace_tile_id(tree, tab) else {
+        return;
+    };
+
+    tree.set_visible(tile_id, true);
+    let _ = tree.make_active(|candidate, _| candidate == tile_id);
 }
 
 pub fn rangef_to_range(range: Rangef) -> Range<f32> {
