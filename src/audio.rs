@@ -30,8 +30,8 @@ mod native {
         StreamTrait,
     };
     use cpal::{
-        Sample,
         FromSample,
+        Sample,
     };
     use resonators::{
         ResonatorBank,
@@ -47,6 +47,8 @@ mod native {
     };
     use rustfft::FftPlanner;
     use rustfft::num_complex::Complex32;
+
+    const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
 
     // ------------------------------------------------------------------
     // Конфигурация анализа
@@ -328,8 +330,10 @@ mod native {
         }
 
         pub fn set_input_gain(&self, gain: f32) {
-            self.input_gain
-                .store(gain.clamp(MIN_INPUT_GAIN, MAX_INPUT_GAIN).to_bits(), Ordering::Relaxed);
+            self.input_gain.store(
+                gain.clamp(MIN_INPUT_GAIN, MAX_INPUT_GAIN).to_bits(),
+                Ordering::Relaxed,
+            );
         }
 
         pub fn input_gain_range(&self) -> (f32, f32) {
@@ -378,7 +382,7 @@ mod native {
         pub fn default_output_device_name(&self) -> Option<String> {
             cpal::default_host()
                 .default_output_device()
-                .and_then(|d| d.name().ok())
+                .map(|d| cpal_device_display_name(&d))
         }
 
         pub fn available_inputs(&self) -> Vec<AudioInputOption> {
@@ -414,16 +418,16 @@ mod native {
     // ------------------------------------------------------------------
     #[allow(clippy::too_many_arguments)]
     fn audio_thread_main(
-        rx:                  Receiver<Command>,
-        shared:              Arc<Mutex<SharedState>>,
-        settings:            Arc<Mutex<AnalysisSettings>>,
-        input_gain:          Arc<AtomicU32>,
-        input_level:         Arc<AtomicU32>,
-        monitor_enabled:     Arc<AtomicBool>,
-        monitor_gain:        Arc<AtomicU32>,
-        input_sample_rate:   Arc<AtomicU32>,
+        rx: Receiver<Command>,
+        shared: Arc<Mutex<SharedState>>,
+        settings: Arc<Mutex<AnalysisSettings>>,
+        input_gain: Arc<AtomicU32>,
+        input_level: Arc<AtomicU32>,
+        monitor_enabled: Arc<AtomicBool>,
+        monitor_gain: Arc<AtomicU32>,
+        input_sample_rate: Arc<AtomicU32>,
         monitor_output_rate: Arc<AtomicU32>,
-        selected_input_id:   Arc<Mutex<Option<String>>>,
+        selected_input_id: Arc<Mutex<Option<String>>>,
     ) {
         let ctx = AudioContext {
             shared,
@@ -519,21 +523,18 @@ mod native {
         fn build_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
             let host = cpal::default_host();
             let device = select_input_device(&host, id.as_deref())?;
-            let selected_id = device
-                .name()
-                .unwrap_or_else(|_| "Unknown input".to_owned());
+            let selected_id = cpal_device_route_id(&device);
             let config = device
                 .default_input_config()
                 .map_err(|e| format!("Input config error: {e}"))?;
-            let sample_rate = config.sample_rate().0;
+            let sample_rate = config.sample_rate();
             let channels = usize::from(config.channels());
             let sample_format = config.sample_format();
             let stream_config: cpal::StreamConfig = config.into();
 
             // Кольцевой буфер для анализа. Размер — 0.5с при данном rate,
             // с большим запасом на подёргивания планировщика.
-            let (analysis_prod, analysis_cons) =
-                HeapRb::<f32>::new((sample_rate as usize) / 2).split();
+            let (analysis_prod, analysis_cons) = HeapRb::<f32>::new((sample_rate as usize) / 2).split();
 
             // Кольцевой буфер для монитора-вывода. Создаём только если monitor on.
             // Запас 100мс: латентность мониторинга низкая, overflow при starve
@@ -547,27 +548,15 @@ mod native {
 
             // Входной stream: callback тупо пушит в кольца, без блокировок и паник.
             let input_stream = match sample_format {
-                cpal::SampleFormat::F32 => build_input::<f32>(
-                    &device,
-                    &stream_config,
-                    channels,
-                    analysis_prod,
-                    monitor_prod,
-                )?,
-                cpal::SampleFormat::I16 => build_input::<i16>(
-                    &device,
-                    &stream_config,
-                    channels,
-                    analysis_prod,
-                    monitor_prod,
-                )?,
-                cpal::SampleFormat::U16 => build_input::<u16>(
-                    &device,
-                    &stream_config,
-                    channels,
-                    analysis_prod,
-                    monitor_prod,
-                )?,
+                cpal::SampleFormat::F32 => {
+                    build_input::<f32>(&device, &stream_config, channels, analysis_prod, monitor_prod)?
+                }
+                cpal::SampleFormat::I16 => {
+                    build_input::<i16>(&device, &stream_config, channels, analysis_prod, monitor_prod)?
+                }
+                cpal::SampleFormat::U16 => {
+                    build_input::<u16>(&device, &stream_config, channels, analysis_prod, monitor_prod)?
+                }
                 other => return Err(format!("Unsupported sample format: {other:?}")),
             };
             input_stream
@@ -577,10 +566,12 @@ mod native {
             // Монитор-выход, если нужен. Ошибку запуска не считаем фатальной —
             // без монитора запись и анализ всё равно работают.
             let (output_stream, output_rate) = match monitor_cons {
-                Some(cons) => match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
-                    Ok((stream, rate)) => (Some(stream), rate),
-                    Err(_) => (None, 0),
-                },
+                Some(cons) => {
+                    match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
+                        Ok((stream, rate)) => (Some(stream), rate),
+                        Err(_) => (None, 0),
+                    }
+                }
                 None => (None, 0),
             };
 
@@ -656,10 +647,10 @@ mod native {
 
     fn start_analysis_worker(
         sample_rate: f32,
-        mut cons:    <HeapRb<f32> as Split>::Cons,
-        shared:      Arc<Mutex<SharedState>>,
-        settings:    Arc<Mutex<AnalysisSettings>>,
-        input_gain:  Arc<AtomicU32>,
+        mut cons: <HeapRb<f32> as Split>::Cons,
+        shared: Arc<Mutex<SharedState>>,
+        settings: Arc<Mutex<AnalysisSettings>>,
+        input_gain: Arc<AtomicU32>,
         input_level: Arc<AtomicU32>,
     ) -> AnalysisWorker {
         let stop = Arc::new(AtomicBool::new(false));
@@ -694,11 +685,11 @@ mod native {
     // Построение cpal streams
     // ------------------------------------------------------------------
     fn build_input<T>(
-        device:        &cpal::Device,
-        config:        &cpal::StreamConfig,
-        channels:      usize,
-        mut an_prod:   <HeapRb<f32> as Split>::Prod,
-        mut mon_prod:  Option<<HeapRb<f32> as Split>::Prod>,
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        channels: usize,
+        mut an_prod: <HeapRb<f32> as Split>::Prod,
+        mut mon_prod: Option<<HeapRb<f32> as Split>::Prod>,
     ) -> Result<cpal::Stream, String>
     where
         T: Sample + cpal::SizedSample,
@@ -729,8 +720,8 @@ mod native {
     }
 
     fn build_monitor_output(
-        input_rate:   u32,
-        mut cons:     <HeapRb<f32> as Split>::Cons,
+        input_rate: u32,
+        mut cons: <HeapRb<f32> as Split>::Cons,
         monitor_gain: Arc<AtomicU32>,
     ) -> Result<(cpal::Stream, u32), String> {
         let host = cpal::default_host();
@@ -745,20 +736,17 @@ mod native {
             .map_err(|e| format!("Output configs error: {e}"))?
             .find(|c| {
                 c.sample_format() == cpal::SampleFormat::F32
-                    && c.min_sample_rate().0 <= input_rate
-                    && c.max_sample_rate().0 >= input_rate
+                    && c.min_sample_rate() <= input_rate
+                    && c.max_sample_rate() >= input_rate
             });
 
         let (config, actual_rate) = match matching {
-            Some(c) => (
-                c.with_sample_rate(cpal::SampleRate(input_rate)).config(),
-                input_rate,
-            ),
+            Some(c) => (c.with_sample_rate(input_rate).config(), input_rate),
             None => {
                 let default = device
                     .default_output_config()
                     .map_err(|e| format!("Default output config: {e}"))?;
-                (default.config(), default.sample_rate().0)
+                (default.config(), default.sample_rate())
             }
         };
 
@@ -807,64 +795,78 @@ mod native {
     // ------------------------------------------------------------------
     fn enumerate_input_options() -> Vec<AudioInputOption> {
         let host = cpal::default_host();
-        let default_name = host.default_input_device().and_then(|d| d.name().ok());
+        let default_device = host.default_input_device();
+        let default_name = default_device.as_ref().map(cpal_device_display_name);
+        let default_id = default_device.as_ref().map(cpal_device_route_id);
         let Ok(devices) = host.input_devices() else {
             return Vec::new();
         };
 
-        let mut entries: Vec<(String, AudioInputKind, bool)> = devices
-            .filter_map(|d| d.name().ok())
-            .map(|name| {
+        let mut entries: Vec<(String, String, AudioInputKind, bool)> = devices
+            .map(|device| {
+                let id = cpal_device_route_id(&device);
+                let name = cpal_device_display_name(&device);
                 let kind = classify_input_kind(&name, default_name.as_deref());
-                let is_default = default_name.as_deref() == Some(name.as_str());
-                (name, kind, is_default)
+                let is_default = default_id.as_deref() == Some(id.as_str());
+                (id, name, kind, is_default)
             })
             .collect();
 
         // Если ALSA не отметил ни одного устройства как Microphone —
         // помечаем им дефолтное (либо первое не-System), чтобы UI его
         // не прятал.
-        if !entries.iter().any(|(_, k, _)| *k == AudioInputKind::Microphone) {
+        if !entries
+            .iter()
+            .any(|(_, _, kind, _)| *kind == AudioInputKind::Microphone)
+        {
             let fallback = entries
                 .iter()
-                .position(|(_, k, d)| *k != AudioInputKind::System && *d)
+                .position(|(_, _, kind, is_default)| *kind != AudioInputKind::System && *is_default)
                 .or_else(|| {
                     entries
                         .iter()
-                        .position(|(_, k, _)| *k != AudioInputKind::System)
+                        .position(|(_, _, kind, _)| *kind != AudioInputKind::System)
                 });
             if let Some(i) = fallback {
-                entries[i].1 = AudioInputKind::Microphone;
+                entries[i].2 = AudioInputKind::Microphone;
             }
         }
 
         let mut options: Vec<AudioInputOption> = entries
             .into_iter()
-            .map(|(name, kind, is_default)| AudioInputOption {
-                id:    name.clone(),
-                label: format_input_label(&name, kind, is_default),
-                kind,
+            .map(|(id, name, kind, is_default)| {
+                AudioInputOption {
+                    id,
+                    label: format_input_label(&name, kind, is_default),
+                    kind,
+                }
             })
             .collect();
 
-        options.sort_by_key(|o| match o.kind {
-            AudioInputKind::Microphone => 0,
-            AudioInputKind::System => 1,
-            AudioInputKind::Other => 2,
+        options.sort_by_key(|o| {
+            match o.kind {
+                AudioInputKind::Microphone => 0,
+                AudioInputKind::System => 1,
+                AudioInputKind::Other => 2,
+            }
         });
         options
     }
 
-    fn select_input_device(
-        host: &cpal::Host,
-        requested: Option<&str>,
-    ) -> Result<cpal::Device, String> {
+    fn select_input_device(host: &cpal::Host, requested: Option<&str>) -> Result<cpal::Device, String> {
         if let Some(requested) = requested {
+            if let Some(device_id) = parse_cpal_device_id(requested) {
+                if let Some(device) = host.device_by_id(&device_id) {
+                    return Ok(device);
+                }
+            }
             let devices = host
                 .input_devices()
                 .map_err(|e| format!("Failed to enumerate input devices: {e}"))?;
             for device in devices {
-                if device.name().ok().as_deref() == Some(requested) {
+                let device_name = cpal_device_display_name(&device);
+                let device_id = cpal_device_route_id(&device);
+                if device_id == requested || device_name == requested {
                     return Ok(device);
                 }
             }
@@ -904,6 +906,32 @@ mod native {
         } else {
             format!("{tag} • {name}")
         }
+    }
+
+    fn cpal_device_display_name(device: &cpal::Device) -> String {
+        device
+            .description()
+            .map(|desc| desc.name().to_owned())
+            .unwrap_or_else(|_| "Unknown input".to_owned())
+    }
+
+    fn cpal_device_route_id(device: &cpal::Device) -> String {
+        match device.id() {
+            Ok(id) => format!("{CPAL_INPUT_ID_PREFIX}{id}"),
+            Err(_) => {
+                format!(
+                    "{CPAL_INPUT_ID_PREFIX}compat::{}",
+                    cpal_device_display_name(device)
+                )
+            }
+        }
+    }
+
+    fn parse_cpal_device_id(requested: &str) -> Option<cpal::DeviceId> {
+        requested
+            .strip_prefix(CPAL_INPUT_ID_PREFIX)?
+            .parse::<cpal::DeviceId>()
+            .ok()
     }
 
     // ------------------------------------------------------------------
@@ -952,9 +980,9 @@ mod native {
     impl AnalysisPipeline {
         fn new(sample_rate: f32) -> Self {
             Self {
-                buffer:         VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
-                last_analysis:  Instant::now() - ANALYSIS_INTERVAL,
-                planner:        FftPlanner::new(),
+                buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
+                last_analysis: Instant::now() - ANALYSIS_INTERVAL,
+                planner: FftPlanner::new(),
                 resonator_view: ResonatorViewSettings::default(),
                 sample_rate,
             }
@@ -962,17 +990,13 @@ mod native {
 
         fn push_samples(
             &mut self,
-            samples:     impl IntoIterator<Item = f32>,
-            shared:      &Arc<Mutex<SharedState>>,
-            settings:    &Arc<Mutex<AnalysisSettings>>,
-            input_gain:  &Arc<AtomicU32>,
+            samples: impl IntoIterator<Item = f32>,
+            shared: &Arc<Mutex<SharedState>>,
+            settings: &Arc<Mutex<AnalysisSettings>>,
+            input_gain: &Arc<AtomicU32>,
             input_level: &Arc<AtomicU32>,
         ) {
-            let analysis_settings = settings
-                .lock()
-                .map(|g| g.clone())
-                .unwrap_or_default()
-                .sanitized();
+            let analysis_settings = settings.lock().map(|g| g.clone()).unwrap_or_default().sanitized();
             self.sync_resonator_view(&analysis_settings, shared);
             let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
             let mut recent: Vec<f32> = Vec::new();
@@ -1017,11 +1041,7 @@ mod native {
             publish_reading(shared, frame);
         }
 
-        fn sync_resonator_view(
-            &mut self,
-            settings: &AnalysisSettings,
-            shared:   &Arc<Mutex<SharedState>>,
-        ) {
+        fn sync_resonator_view(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
             let requested = ResonatorViewSettings::from(settings);
             if requested == self.resonator_view {
                 return;
@@ -1083,10 +1103,10 @@ mod native {
     }
 
     fn analyze_window(
-        window:             &[f32],
-        sample_rate:        f32,
-        settings:           &AnalysisSettings,
-        planner:            &mut FftPlanner<f32>,
+        window: &[f32],
+        sample_rate: f32,
+        settings: &AnalysisSettings,
+        planner: &mut FftPlanner<f32>,
         resonator_snapshot: ResonatorSnapshot,
     ) -> AnalysisFrame {
         let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
@@ -1098,9 +1118,10 @@ mod native {
             None
         } else {
             detect_pitch_yin(&normalized, sample_rate).and_then(|(f, c)| {
-                (45.0..=1200.0)
-                    .contains(&f)
-                    .then_some(PitchEstimate { frequency_hz: f, clarity: c })
+                (45.0..=1200.0).contains(&f).then_some(PitchEstimate {
+                    frequency_hz: f,
+                    clarity:      c,
+                })
             })
         };
 
@@ -1185,10 +1206,10 @@ mod native {
     }
 
     fn spectrum_bars(
-        window:      &[f32],
+        window: &[f32],
         sample_rate: f32,
-        settings:    &AnalysisSettings,
-        planner:     &mut FftPlanner<f32>,
+        settings: &AnalysisSettings,
+        planner: &mut FftPlanner<f32>,
     ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
         let fft_size = settings.fft_size.max(window.len().next_power_of_two());
         let mut input = vec![Complex32::new(0.0, 0.0); fft_size];
@@ -1198,11 +1219,7 @@ mod native {
         let fft = planner.plan_fft_forward(input.len());
         fft.process(&mut input);
 
-        let magnitudes: Vec<f32> = input
-            .iter()
-            .take(input.len() / 2)
-            .map(|v| v.norm_sqr())
-            .collect();
+        let magnitudes: Vec<f32> = input.iter().take(input.len() / 2).map(|v| v.norm_sqr()).collect();
 
         let hz_per_bin = sample_rate / input.len() as f32;
         let mut bars: Vec<f32> = vec![0.0; SPECTRUM_BINS];
@@ -1239,8 +1256,7 @@ mod native {
                 let frequency = midi_to_hz(midi, 440.0);
                 let alpha =
                     (heuristic_alpha(frequency, sample_rate) * settings.alpha_scale).clamp(0.0001, 1.0);
-                let beta =
-                    (heuristic_alpha(frequency, sample_rate) * settings.beta_scale).clamp(0.0001, 1.0);
+                let beta = (heuristic_alpha(frequency, sample_rate) * settings.beta_scale).clamp(0.0001, 1.0);
                 ResonatorConfig::new(frequency, alpha, beta)
             })
             .collect();
@@ -1257,9 +1273,9 @@ mod native {
     }
 
     fn resonator_snapshot_for_window(
-        window:      &[f32],
+        window: &[f32],
         sample_rate: f32,
-        settings:    &ResonatorViewSettings,
+        settings: &ResonatorViewSettings,
     ) -> ResonatorSnapshot {
         let mut bank = build_resonator_bank(sample_rate, settings);
         for sample in window.iter().copied() {
@@ -1269,8 +1285,7 @@ mod native {
     }
 
     fn frequency_to_note(frequency_hz: f32) -> (String, f32) {
-        const NOTE_NAMES: [&str; 12] =
-            ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
         let midi = 69.0 + 12.0 * (frequency_hz / 440.0).log2();
         let nearest = midi.round();
         let cents = (midi - nearest) * 100.0;
@@ -1398,12 +1413,13 @@ mod native {
     }
 
     fn resonator_note_labels(min_midi: usize, max_midi: usize) -> Vec<String> {
-        (min_midi..=max_midi).map(|m| midi_to_note_label(m as i32)).collect()
+        (min_midi..=max_midi)
+            .map(|m| midi_to_note_label(m as i32))
+            .collect()
     }
 
     fn midi_to_note_label(midi: i32) -> String {
-        const NOTE_NAMES: [&str; 12] =
-            ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
         let note_index = midi.rem_euclid(12) as usize;
         let octave = midi / 12 - 1;
         format!("{}{}", NOTE_NAMES[note_index], octave)
@@ -1441,7 +1457,9 @@ mod native {
             state.waterfall.push_back(frame.spectrum.clone());
             state.note_waterfall.push_back(frame.note_spectrum.clone());
             state.spiral_waterfall.push_back(frame.spiral_spectrum.clone());
-            state.resonator_waterfall.push_back(frame.resonator_spectrum.clone());
+            state
+                .resonator_waterfall
+                .push_back(frame.resonator_spectrum.clone());
             while state.waterfall.len() > WATERFALL_HISTORY {
                 state.waterfall.pop_front();
             }
@@ -1640,28 +1658,61 @@ mod native {
     pub struct AudioEngine;
 
     impl AudioEngine {
-        pub fn new() -> Self { Self }
+        pub fn new() -> Self {
+            Self
+        }
         pub fn status(&self) -> AudioStatus {
             AudioStatus::Error("Microphone tuner is not implemented for wasm yet".to_owned())
         }
-        pub fn reading(&self) -> Option<TunerReading> { None }
-        pub fn analysis_settings(&self) -> AnalysisSettings { AnalysisSettings::default() }
-        pub fn set_analysis_settings(&self, _settings: AnalysisSettings) {}
-        pub fn input_gain(&self) -> f32 { 1.0 }
-        pub fn set_input_gain(&self, _gain: f32) {}
-        pub fn input_gain_range(&self) -> (f32, f32) { (0.1, 12.0) }
-        pub fn input_level(&self) -> f32 { 0.0 }
-        pub fn input_waveform(&self) -> Vec<f32> { Vec::new() }
-        pub fn monitor_enabled(&self) -> bool { false }
-        pub fn set_monitor_enabled(&self, _enabled: bool) {}
-        pub fn monitor_gain(&self) -> f32 { 0.0 }
-        pub fn set_monitor_gain(&self, _gain: f32) {}
-        pub fn current_input_sample_rate(&self) -> u32 { 0 }
-        pub fn monitor_output_sample_rate(&self) -> Option<u32> { None }
-        pub fn default_output_device_name(&self) -> Option<String> { None }
-        pub fn available_inputs(&self) -> Vec<AudioInputOption> { Vec::new() }
-        pub fn selected_input_id(&self) -> Option<String> { None }
-        pub fn set_selected_input_id(&self, _input_id: Option<String>) {}
+        pub fn reading(&self) -> Option<TunerReading> {
+            None
+        }
+        pub fn analysis_settings(&self) -> AnalysisSettings {
+            AnalysisSettings::default()
+        }
+        pub fn set_analysis_settings(&self, _settings: AnalysisSettings) {
+        }
+        pub fn input_gain(&self) -> f32 {
+            1.0
+        }
+        pub fn set_input_gain(&self, _gain: f32) {
+        }
+        pub fn input_gain_range(&self) -> (f32, f32) {
+            (0.1, 12.0)
+        }
+        pub fn input_level(&self) -> f32 {
+            0.0
+        }
+        pub fn input_waveform(&self) -> Vec<f32> {
+            Vec::new()
+        }
+        pub fn monitor_enabled(&self) -> bool {
+            false
+        }
+        pub fn set_monitor_enabled(&self, _enabled: bool) {
+        }
+        pub fn monitor_gain(&self) -> f32 {
+            0.0
+        }
+        pub fn set_monitor_gain(&self, _gain: f32) {
+        }
+        pub fn current_input_sample_rate(&self) -> u32 {
+            0
+        }
+        pub fn monitor_output_sample_rate(&self) -> Option<u32> {
+            None
+        }
+        pub fn default_output_device_name(&self) -> Option<String> {
+            None
+        }
+        pub fn available_inputs(&self) -> Vec<AudioInputOption> {
+            Vec::new()
+        }
+        pub fn selected_input_id(&self) -> Option<String> {
+            None
+        }
+        pub fn set_selected_input_id(&self, _input_id: Option<String>) {
+        }
     }
 }
 
