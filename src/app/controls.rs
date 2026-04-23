@@ -28,6 +28,7 @@ use crate::ui::theme::PANEL_FILL;
 impl App {
     pub(super) fn draw_controls(&mut self, ui: &mut Ui) {
         let mut input_gain = self.audio.input_gain();
+        let input_level = self.audio.input_level();
         let selected_input_id = self.audio.selected_input_id();
         let selected_input_kind = self.selected_input_kind(selected_input_id.as_deref());
         let frame_width = ui.available_width();
@@ -240,6 +241,9 @@ impl App {
                             .monospace(),
                     );
                 });
+
+                ui.add_space(10.0);
+                self.draw_input_level(ui, input_level, selected_input_kind);
             });
     }
 

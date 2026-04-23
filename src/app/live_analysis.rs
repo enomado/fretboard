@@ -121,7 +121,7 @@ impl App {
             });
     }
 
-    fn draw_input_level(&self, ui: &mut Ui, input_level: f32, input_kind: AudioInputKind) {
+    pub(super) fn draw_input_level(&self, ui: &mut Ui, input_level: f32, input_kind: AudioInputKind) {
         let desired_size = vec2(ui.available_width(), 28.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
