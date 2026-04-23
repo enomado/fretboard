@@ -1,6 +1,12 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
     use std::collections::VecDeque;
+    use std::io::Read;
+    use std::process::{
+        Child,
+        Command as ProcessCommand,
+        Stdio,
+    };
     use std::sync::atomic::{
         AtomicBool,
         AtomicU32,
@@ -30,8 +36,10 @@ mod native {
         StreamTrait,
     };
     use cpal::{
+        BufferSize,
         FromSample,
         Sample,
+        SupportedBufferSize,
     };
     use resonators::{
         ResonatorBank,
@@ -49,6 +57,12 @@ mod native {
     use rustfft::num_complex::Complex32;
 
     const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
+    const PULSE_INPUT_ID_PREFIX: &str = "pulse::";
+    const PULSE_DEFAULT_MONITOR_ID: &str = "pulse::@DEFAULT_MONITOR@";
+    const PULSE_CAPTURE_RATE: u32 = 48_000;
+    const PULSE_CAPTURE_LATENCY_MS: u32 = 20;
+    const PULSE_CAPTURE_PROCESS_MS: u32 = 10;
+    const LOW_LATENCY_TARGET_FRAMES: u32 = 256;
 
     // ------------------------------------------------------------------
     // Конфигурация анализа
@@ -521,6 +535,16 @@ mod native {
         // Поднимает входной stream, кольцевые буферы, анализ-воркер и
         // (опционально) монитор-выход. Возвращает собранный ActiveCapture.
         fn build_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
+            if let Some(requested) = id.as_deref() {
+                if requested.starts_with(PULSE_INPUT_ID_PREFIX) {
+                    return self.build_pulse_capture(requested);
+                }
+            }
+
+            self.build_cpal_capture(id)
+        }
+
+        fn build_cpal_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
             let host = cpal::default_host();
             let device = select_input_device(&host, id.as_deref())?;
             let selected_id = cpal_device_route_id(&device);
@@ -530,17 +554,18 @@ mod native {
             let sample_rate = config.sample_rate();
             let channels = usize::from(config.channels());
             let sample_format = config.sample_format();
-            let stream_config: cpal::StreamConfig = config.into();
+            let input_buffer_size = preferred_low_latency_buffer(config.buffer_size());
+            let mut stream_config: cpal::StreamConfig = config.into();
+            stream_config.buffer_size = input_buffer_size;
 
             // Кольцевой буфер для анализа. Размер — 0.5с при данном rate,
             // с большим запасом на подёргивания планировщика.
             let (analysis_prod, analysis_cons) = HeapRb::<f32>::new((sample_rate as usize) / 2).split();
 
             // Кольцевой буфер для монитора-вывода. Создаём только если monitor on.
-            // Запас 100мс: латентность мониторинга низкая, overflow при starve
-            // дропает старые сэмплы — это нормально для такого жанра.
+            // Держим запас небольшим, чтобы монитор не копил лишнюю задержку.
             let (monitor_prod, monitor_cons) = if self.monitor_enabled.load(Ordering::Relaxed) {
-                let (p, c) = HeapRb::<f32>::new((sample_rate as usize) / 10).split();
+                let (p, c) = HeapRb::<f32>::new(low_latency_monitor_ring_len(sample_rate)).split();
                 (Some(p), Some(c))
             } else {
                 (None, None)
@@ -593,7 +618,61 @@ mod native {
             }
 
             Ok(ActiveCapture {
-                input_stream,
+                input: ActiveInput::Cpal(input_stream),
+                output_stream,
+                analysis,
+                selected_id,
+            })
+        }
+
+        fn build_pulse_capture(&self, id: &str) -> Result<ActiveCapture, String> {
+            let sample_rate = PULSE_CAPTURE_RATE;
+            let selected_id = id.to_owned();
+
+            let (analysis_prod, analysis_cons) = HeapRb::<f32>::new((sample_rate as usize) / 2).split();
+            let (monitor_prod, monitor_cons) = if self.monitor_enabled.load(Ordering::Relaxed) {
+                let (p, c) = HeapRb::<f32>::new(low_latency_monitor_ring_len(sample_rate)).split();
+                (Some(p), Some(c))
+            } else {
+                (None, None)
+            };
+
+            let input = ActiveInput::Pulse(build_pulse_input(
+                id,
+                sample_rate,
+                analysis_prod,
+                monitor_prod,
+                self.shared.clone(),
+            )?);
+
+            let (output_stream, output_rate) = match monitor_cons {
+                Some(cons) => {
+                    match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
+                        Ok((stream, rate)) => (Some(stream), rate),
+                        Err(_) => (None, 0),
+                    }
+                }
+                None => (None, 0),
+            };
+
+            let analysis = start_analysis_worker(
+                sample_rate as f32,
+                analysis_cons,
+                self.shared.clone(),
+                self.settings.clone(),
+                self.input_gain.clone(),
+                self.input_level.clone(),
+            );
+
+            self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
+            self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
+            self.reset_shared_for_new_capture();
+            if let Ok(mut sel) = self.selected_input_id.lock() {
+                *sel = Some(selected_id.clone());
+            }
+
+            Ok(ActiveCapture {
+                input,
                 output_stream,
                 analysis,
                 selected_id,
@@ -606,8 +685,28 @@ mod native {
     // При смене устройства или монитора весь объект дропается целиком;
     // все потоки останавливаются, кольца исчезают.
     // ------------------------------------------------------------------
+    struct PulseInputCapture {
+        stop:   Arc<AtomicBool>,
+        child:  Child,
+        thread: JoinHandle<()>,
+    }
+
+    impl PulseInputCapture {
+        fn shutdown(mut self) {
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = self.thread.join();
+        }
+    }
+
+    enum ActiveInput {
+        Cpal(cpal::Stream),
+        Pulse(PulseInputCapture),
+    }
+
     struct ActiveCapture {
-        input_stream:  cpal::Stream,
+        input:         ActiveInput,
         output_stream: Option<cpal::Stream>,
         analysis:      AnalysisWorker,
         selected_id:   String,
@@ -615,14 +714,19 @@ mod native {
 
     impl ActiveCapture {
         fn shutdown(self) {
-            // ALSA backend cpal может паниковать при drop'е, если callback
-            // успел паникнуть — наш callback не паникует (try_push, без unwrap).
-            // pause() перед drop корректно слайдит трекер-отправитель.
-            let _ = self.input_stream.pause();
+            match self.input {
+                ActiveInput::Cpal(input_stream) => {
+                    // ALSA backend cpal может паниковать при drop'е, если callback
+                    // успел паникнуть — наш callback не паникует (try_push, без unwrap).
+                    // pause() перед drop корректно слайдит трекер-отправитель.
+                    let _ = input_stream.pause();
+                    drop(input_stream);
+                }
+                ActiveInput::Pulse(pulse) => pulse.shutdown(),
+            }
             if let Some(out) = &self.output_stream {
                 let _ = out.pause();
             }
-            drop(self.input_stream);
             drop(self.output_stream);
             // Анализ останавливаем после stream'а: callback больше не пишет
             // в кольцо, воркер додренит остатки и выйдет.
@@ -719,6 +823,103 @@ mod native {
             .map_err(|e| format!("Failed to build input stream: {e}"))
     }
 
+    fn build_pulse_input(
+        input_id: &str,
+        sample_rate: u32,
+        mut an_prod: <HeapRb<f32> as Split>::Prod,
+        mut mon_prod: Option<<HeapRb<f32> as Split>::Prod>,
+        shared: Arc<Mutex<SharedState>>,
+    ) -> Result<PulseInputCapture, String> {
+        let pulse_device = input_id.strip_prefix(PULSE_INPUT_ID_PREFIX).unwrap_or(input_id);
+        let rate = sample_rate.to_string();
+        let latency_ms = PULSE_CAPTURE_LATENCY_MS.to_string();
+        let process_ms = PULSE_CAPTURE_PROCESS_MS.to_string();
+
+        let mut child = ProcessCommand::new("parec")
+            .args([
+                "--record",
+                "--raw",
+                "--format=s16le",
+                "--channels=1",
+                "--rate",
+                &rate,
+                "--latency-msec",
+                &latency_ms,
+                "--process-time-msec",
+                &process_ms,
+                "--client-name=fretboard",
+                "--stream-name=fretboard-input",
+                "--device",
+                pulse_device,
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to start PulseAudio capture via parec: {e}"))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "parec did not provide a readable stdout stream".to_owned())?;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let thread = thread::spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut buf = [0u8; 4096];
+            let mut carry: Option<u8> = None;
+
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        if !stop_flag.load(Ordering::Relaxed) {
+                            set_shared_error(&shared, "PulseAudio capture stopped");
+                        }
+                        break;
+                    }
+                    Ok(n) => {
+                        let mut idx = 0usize;
+
+                        if let Some(lo) = carry.take() {
+                            if let Some(&hi) = buf.first() {
+                                let sample = pulse_i16_to_f32([lo, hi]);
+                                let _ = an_prod.try_push(sample);
+                                if let Some(p) = mon_prod.as_mut() {
+                                    let _ = p.try_push(sample);
+                                }
+                                idx = 1;
+                            } else {
+                                carry = Some(lo);
+                                continue;
+                            }
+                        }
+
+                        while idx + 1 < n {
+                            let sample = pulse_i16_to_f32([buf[idx], buf[idx + 1]]);
+                            let _ = an_prod.try_push(sample);
+                            if let Some(p) = mon_prod.as_mut() {
+                                let _ = p.try_push(sample);
+                            }
+                            idx += 2;
+                        }
+
+                        if idx < n {
+                            carry = Some(buf[idx]);
+                        }
+                    }
+                    Err(err) => {
+                        if !stop_flag.load(Ordering::Relaxed) {
+                            set_shared_error(&shared, &format!("PulseAudio read error: {err}"));
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(PulseInputCapture { stop, child, thread })
+    }
+
     fn build_monitor_output(
         input_rate: u32,
         mut cons: <HeapRb<f32> as Split>::Cons,
@@ -741,12 +942,18 @@ mod native {
             });
 
         let (config, actual_rate) = match matching {
-            Some(c) => (c.with_sample_rate(input_rate).config(), input_rate),
+            Some(c) => {
+                let mut config = c.with_sample_rate(input_rate).config();
+                config.buffer_size = preferred_low_latency_buffer(c.buffer_size());
+                (config, input_rate)
+            }
             None => {
                 let default = device
                     .default_output_config()
                     .map_err(|e| format!("Default output config: {e}"))?;
-                (default.config(), default.sample_rate())
+                let mut config = default.config();
+                config.buffer_size = preferred_low_latency_buffer(default.buffer_size());
+                (config, default.sample_rate())
             }
         };
 
@@ -843,6 +1050,14 @@ mod native {
             })
             .collect();
 
+        if pulse_monitor_input_available() {
+            options.push(AudioInputOption {
+                id:    PULSE_DEFAULT_MONITOR_ID.to_owned(),
+                label: "System • Default monitor (Pulse/PipeWire)".to_owned(),
+                kind:  AudioInputKind::System,
+            });
+        }
+
         options.sort_by_key(|o| {
             match o.kind {
                 AudioInputKind::Microphone => 0,
@@ -932,6 +1147,39 @@ mod native {
             .strip_prefix(CPAL_INPUT_ID_PREFIX)?
             .parse::<cpal::DeviceId>()
             .ok()
+    }
+
+    fn preferred_low_latency_buffer(range: &SupportedBufferSize) -> BufferSize {
+        match range {
+            SupportedBufferSize::Range { min, max } => {
+                let requested = LOW_LATENCY_TARGET_FRAMES.clamp(*min, *max);
+                BufferSize::Fixed(requested)
+            }
+            SupportedBufferSize::Unknown => BufferSize::Default,
+        }
+    }
+
+    fn low_latency_monitor_ring_len(sample_rate: u32) -> usize {
+        ((sample_rate as usize) * 3 / 100).max(256)
+    }
+
+    fn pulse_monitor_input_available() -> bool {
+        ProcessCommand::new("parec")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    fn pulse_i16_to_f32(bytes: [u8; 2]) -> f32 {
+        f32::from(i16::from_le_bytes(bytes)) / 32768.0
+    }
+
+    fn set_shared_error(shared: &Arc<Mutex<SharedState>>, msg: &str) {
+        if let Ok(mut state) = shared.lock() {
+            state.status = AudioStatus::Error(msg.to_owned());
+        }
     }
 
     // ------------------------------------------------------------------
