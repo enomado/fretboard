@@ -1,4 +1,3 @@
-use nom::IResult;
 use nom::branch::alt;
 use nom::bytes::complete::{
     tag,
@@ -13,7 +12,10 @@ use nom::combinator::{
     opt,
 };
 use nom::multi::separated_list1;
-use nom::sequence::tuple;
+use nom::{
+    IResult,
+    Parser,
+};
 
 use crate::core_types::note::{
     ANote,
@@ -35,7 +37,8 @@ fn parse_note(input: &str) -> IResult<&str, Note> {
             'G' => Note::G,
             _ => unreachable!(),
         }
-    })(input)
+    })
+    .parse(input)
 }
 
 /// Парсинг диез/бемоль/натурал
@@ -47,27 +50,29 @@ fn parse_ass(input: &str) -> IResult<&str, Accidental> {
             None => Accidental::Natural,
             _ => unreachable!(),
         }
-    })(input)
+    })
+    .parse(input)
 }
 
 /// Парсинг октавы (цифра или несколько)
 fn parse_octave(input: &str) -> IResult<&str, Octave> {
     map(take_while1(|c: char| c.is_ascii_digit()), |s: &str| {
         Octave(s.parse::<u8>().unwrap())
-    })(input)
+    })
+    .parse(input)
 }
 
 /// Парсинг одной ноты целиком
 pub fn parse_anote(input: &str) -> IResult<&str, ANote> {
-    map(
-        tuple((parse_note, parse_ass, parse_octave)),
-        |(note, ass, octave)| ANote { note, ass, octave },
-    )(input)
+    map((parse_note, parse_ass, parse_octave), |(note, ass, octave)| {
+        ANote { note, ass, octave }
+    })
+    .parse(input)
 }
 
 /// Парсинг списка нот, разделённых длинным тире
 pub fn parse_notes(input: &str) -> IResult<&str, Vec<ANote>> {
-    separated_list1(tag("–"), parse_anote)(input)
+    separated_list1(tag("–"), parse_anote).parse(input)
 }
 
 #[test]

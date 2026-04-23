@@ -38,19 +38,19 @@ fn visuals() -> Visuals {
     visuals.extreme_bg_color = Color32::from_rgb(18, 22, 27);
     visuals.code_bg_color = Color32::from_rgb(30, 34, 40);
     visuals.selection.bg_fill = Color32::from_rgb(121, 92, 74);
-    visuals.selection.stroke = Stroke::new(1.0, Color32::from_rgb(214, 194, 171));
+    visuals.selection.stroke = Stroke::new(1.0_f32, Color32::from_rgb(214, 194, 171));
     visuals.widgets.noninteractive.bg_fill = PANEL_FILL;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(58, 63, 71));
+    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(58, 63, 71));
     visuals.widgets.noninteractive.corner_radius = CornerRadius::same(14);
     visuals.widgets.inactive.bg_fill = Color32::from_rgb(36, 40, 46);
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(78, 82, 90));
+    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(78, 82, 90));
     visuals.widgets.inactive.corner_radius = CornerRadius::same(14);
     visuals.widgets.hovered.bg_fill = Color32::from_rgb(48, 53, 61);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(120, 126, 136));
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, Color32::from_rgb(232, 227, 217));
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(120, 126, 136));
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(232, 227, 217));
     visuals.widgets.hovered.corner_radius = CornerRadius::same(14);
     visuals.widgets.active.bg_fill = Color32::from_rgb(116, 89, 73);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, Color32::from_rgb(213, 190, 162));
+    visuals.widgets.active.bg_stroke = Stroke::new(1.0_f32, Color32::from_rgb(213, 190, 162));
     visuals.widgets.active.corner_radius = CornerRadius::same(14);
     visuals
 }

@@ -63,7 +63,7 @@ impl App {
         Frame::new()
             .fill(PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -93,7 +93,7 @@ impl App {
                 painter.rect_stroke(
                     fretboard_rect,
                     18.0,
-                    Stroke::new(1.0, Color32::from_rgb(112, 88, 66)),
+                    Stroke::new(1.0_f32, Color32::from_rgb(112, 88, 66)),
                     egui::StrokeKind::Inside,
                 );
 
@@ -171,7 +171,7 @@ impl App {
         painter.rect_stroke(
             hovered.rect.expand2(vec2(4.0, 4.0)),
             10.0,
-            Stroke::new(2.0, Color32::from_rgb(214, 200, 182)),
+            Stroke::new(2.0_f32, Color32::from_rgb(214, 200, 182)),
             egui::StrokeKind::Outside,
         );
         painter.circle_filled(hovered.center, 3.0, Color32::from_rgb(224, 213, 196));
@@ -194,7 +194,7 @@ impl App {
         painter.rect_stroke(
             tooltip_rect,
             14.0,
-            Stroke::new(1.0, Color32::from_rgb(88, 92, 98)),
+            Stroke::new(1.0_f32, Color32::from_rgb(88, 92, 98)),
             egui::StrokeKind::Inside,
         );
         painter.text(
@@ -255,11 +255,15 @@ impl App {
                 fretboard.fret_pos(Fret(target.fret)),
                 fretboard.string_pos(GString(target.string)),
             );
-            painter.circle_stroke(center, 18.0, Stroke::new(2.0, Color32::from_rgb(216, 205, 187)));
+            painter.circle_stroke(
+                center,
+                18.0,
+                Stroke::new(2.0_f32, Color32::from_rgb(216, 205, 187)),
+            );
             painter.circle_stroke(
                 center,
                 24.0,
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(216, 205, 187, 96)),
+                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(216, 205, 187, 96)),
             );
         }
     }

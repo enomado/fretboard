@@ -39,7 +39,7 @@ where
             painter.rect_stroke(
                 note_rect,
                 8.0,
-                Stroke::new(1.0, color.gamma_multiply(0.65)),
+                Stroke::new(1.0_f32, color.gamma_multiply(0.65)),
                 egui::StrokeKind::Inside,
             );
 

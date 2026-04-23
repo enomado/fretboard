@@ -31,6 +31,10 @@ mod native {
         HostTrait,
         StreamTrait,
     };
+    use resonators::{
+        ResonatorBank,
+        midi_to_hz,
+    };
     use rustfft::FftPlanner;
     use rustfft::num_complex::Complex32;
 
@@ -47,9 +51,12 @@ mod native {
     const SPIRAL_BINS_PER_SEMITONE: usize = 8;
     const SPIRAL_BIN_COUNT: usize =
         (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
+    const RESONATOR_BINS_PER_SEMITONE: usize = 5;
+    const RESONATOR_BIN_COUNT: usize =
+        (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * RESONATOR_BINS_PER_SEMITONE + 1;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
     const DEFAULT_INPUT_GAIN: f32 = 4.0;
-    const SILENCE_RMS_THRESHOLD: f32 = 0.003;
+    const SILENCE_RMS_THRESHOLD: f32 = 0.0;
     const YIN_THRESHOLD: f32 = 0.12;
     const SPECTRUM_MIN_FREQUENCY: f32 = 20.0;
     const SPECTRUM_MAX_FREQUENCY: f32 = 2_000.0;
@@ -73,10 +80,17 @@ mod native {
     }
 
     struct AnalysisPipeline {
-        buffer:        VecDeque<f32>,
-        last_analysis: Instant,
-        planner:       FftPlanner<f32>,
-        sample_rate:   f32,
+        buffer:         VecDeque<f32>,
+        last_analysis:  Instant,
+        planner:        FftPlanner<f32>,
+        resonator_bank: ResonatorBank,
+        sample_rate:    f32,
+    }
+
+    #[derive(Clone, Debug)]
+    struct ResonatorSnapshot {
+        spectrum:    Vec<f32>,
+        note_labels: Vec<String>,
     }
 
     impl AnalysisPipeline {
@@ -85,6 +99,7 @@ mod native {
                 buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
                 last_analysis: Instant::now() - ANALYSIS_INTERVAL,
                 planner: FftPlanner::new(),
+                resonator_bank: build_resonator_bank(sample_rate),
                 sample_rate,
             }
         }
@@ -105,7 +120,9 @@ mod native {
             let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
 
             for sample in samples {
-                self.buffer.push_back((sample * gain).clamp(-1.0, 1.0));
+                let scaled = (sample * gain).clamp(-1.0, 1.0);
+                self.buffer.push_back(scaled);
+                self.resonator_bank.process_sample(scaled);
             }
 
             while self.buffer.len() > MAX_WINDOW_SIZE * 2 {
@@ -122,11 +139,18 @@ mod native {
             let start = self.buffer.len().saturating_sub(analysis_settings.window_size);
             let window: Vec<f32> = self.buffer.iter().skip(start).copied().collect();
             let level = normalized_level(&window);
-            input_level.store(level.to_bits(), Ordering::Relaxed);
+            let previous_level = f32::from_bits(input_level.load(Ordering::Relaxed));
+            let smoothed_level = smoothed_level(previous_level, level);
+            input_level.store(smoothed_level.to_bits(), Ordering::Relaxed);
+            let resonator_snapshot = resonator_snapshot(&self.resonator_bank);
 
-            if let Some(reading) =
-                analyze_window(&window, self.sample_rate, &analysis_settings, &mut self.planner)
-            {
+            if let Some(reading) = analyze_window(
+                &window,
+                self.sample_rate,
+                &analysis_settings,
+                &mut self.planner,
+                resonator_snapshot,
+            ) {
                 publish_reading(shared, reading);
             }
         }
@@ -145,17 +169,20 @@ mod native {
 
     #[derive(Clone, Debug)]
     pub struct TunerReading {
-        pub frequency_hz:     f32,
-        pub note_name:        String,
-        pub cents:            f32,
-        pub clarity:          f32,
-        pub spectrum:         Vec<f32>,
-        pub waterfall:        Vec<Vec<f32>>,
-        pub note_spectrum:    Vec<f32>,
-        pub note_waterfall:   Vec<Vec<f32>>,
-        pub spiral_spectrum:  Vec<f32>,
-        pub spiral_waterfall: Vec<Vec<f32>>,
-        pub note_labels:      Vec<String>,
+        pub frequency_hz:          f32,
+        pub note_name:             String,
+        pub cents:                 f32,
+        pub clarity:               f32,
+        pub spectrum:              Vec<f32>,
+        pub waterfall:             Vec<Vec<f32>>,
+        pub note_spectrum:         Vec<f32>,
+        pub note_waterfall:        Vec<Vec<f32>>,
+        pub spiral_spectrum:       Vec<f32>,
+        pub spiral_waterfall:      Vec<Vec<f32>>,
+        pub resonator_spectrum:    Vec<f32>,
+        pub resonator_waterfall:   Vec<Vec<f32>>,
+        pub resonator_note_labels: Vec<String>,
+        pub note_labels:           Vec<String>,
     }
 
     #[derive(Clone, Debug)]
@@ -232,12 +259,13 @@ mod native {
     }
 
     struct SharedState {
-        status:             AudioStatus,
-        reading:            Option<TunerReading>,
-        waterfall:          VecDeque<Vec<f32>>,
-        note_waterfall:     VecDeque<Vec<f32>>,
-        spiral_waterfall:   VecDeque<Vec<f32>>,
-        smoothed_frequency: Option<f32>,
+        status:              AudioStatus,
+        reading:             Option<TunerReading>,
+        waterfall:           VecDeque<Vec<f32>>,
+        note_waterfall:      VecDeque<Vec<f32>>,
+        spiral_waterfall:    VecDeque<Vec<f32>>,
+        resonator_waterfall: VecDeque<Vec<f32>>,
+        smoothed_frequency:  Option<f32>,
     }
 
     pub struct AudioEngine {
@@ -253,12 +281,13 @@ mod native {
     impl AudioEngine {
         pub fn new() -> Self {
             let shared = Arc::new(Mutex::new(SharedState {
-                status:             AudioStatus::Idle,
-                reading:            None,
-                waterfall:          VecDeque::with_capacity(WATERFALL_HISTORY),
-                note_waterfall:     VecDeque::with_capacity(WATERFALL_HISTORY),
-                spiral_waterfall:   VecDeque::with_capacity(WATERFALL_HISTORY),
-                smoothed_frequency: None,
+                status:              AudioStatus::Idle,
+                reading:             None,
+                waterfall:           VecDeque::with_capacity(WATERFALL_HISTORY),
+                note_waterfall:      VecDeque::with_capacity(WATERFALL_HISTORY),
+                spiral_waterfall:    VecDeque::with_capacity(WATERFALL_HISTORY),
+                resonator_waterfall: VecDeque::with_capacity(WATERFALL_HISTORY),
+                smoothed_frequency:  None,
             }));
             let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
             let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
@@ -370,6 +399,7 @@ mod native {
                         state.waterfall.clear();
                         state.note_waterfall.clear();
                         state.spiral_waterfall.clear();
+                        state.resonator_waterfall.clear();
                         state.smoothed_frequency = None;
                         state.status = AudioStatus::Listening;
                     }
@@ -430,8 +460,8 @@ mod native {
         let host = cpal::default_host();
         let device = select_input_device(&host, requested_cpal_id)?;
         let selected_input_id = device
-            .name()
-            .map(|name| format!("{CPAL_INPUT_PREFIX}{name}"))
+            .description()
+            .map(|description| format!("{CPAL_INPUT_PREFIX}{}", description.name()))
             .unwrap_or_else(|_| format!("{CPAL_INPUT_PREFIX}Unknown input"));
 
         let config = match device.default_input_config() {
@@ -445,7 +475,7 @@ mod native {
             state.status = AudioStatus::Listening;
         }
 
-        let sample_rate = config.sample_rate().0 as f32;
+        let sample_rate = config.sample_rate() as f32;
         let channels = usize::from(config.channels());
         let stream_config: cpal::StreamConfig = config.clone().into();
 
@@ -610,7 +640,17 @@ mod native {
 
     fn normalized_level(window: &[f32]) -> f32 {
         let rms = (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt();
-        (rms / 0.1).clamp(0.0, 1.0)
+        if rms <= f32::EPSILON {
+            return 0.0;
+        }
+
+        let db = 20.0 * rms.log10();
+        ((db + 54.0) / 48.0).clamp(0.0, 1.0)
+    }
+
+    fn smoothed_level(previous: f32, current: f32) -> f32 {
+        let alpha = if current > previous { 0.32 } else { 0.12 };
+        previous + (current - previous) * alpha
     }
 
     fn analyze_window(
@@ -618,6 +658,7 @@ mod native {
         sample_rate: f32,
         settings: &AnalysisSettings,
         planner: &mut FftPlanner<f32>,
+        resonator_snapshot: ResonatorSnapshot,
     ) -> Option<TunerReading> {
         let rms = (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt();
         if rms < SILENCE_RMS_THRESHOLD {
@@ -647,6 +688,9 @@ mod native {
             note_waterfall: Vec::new(),
             spiral_spectrum,
             spiral_waterfall: Vec::new(),
+            resonator_spectrum: resonator_snapshot.spectrum,
+            resonator_waterfall: Vec::new(),
+            resonator_note_labels: resonator_snapshot.note_labels,
             note_labels: note_bucket_labels(),
         })
     }
@@ -718,9 +762,6 @@ mod native {
         let tau = tau.clamp(min_lag as f32, search_end as f32);
         let tau_index = tau.round().clamp(min_lag as f32, search_end as f32) as usize;
         let clarity = (1.0 - cumulative[tau_index].clamp(0.0, 1.0)).clamp(0.0, 1.0);
-        if clarity < 0.35 {
-            return None;
-        }
 
         Some((sample_rate / tau, clarity))
     }
@@ -772,6 +813,25 @@ mod native {
         smooth_bars(&mut bars, settings.spectrum_smoothing);
 
         (bars, note_bars, spiral_bars)
+    }
+
+    fn build_resonator_bank(sample_rate: f32) -> ResonatorBank {
+        let frequencies: Vec<f32> = (0..RESONATOR_BIN_COUNT)
+            .map(|index| {
+                let midi = NOTE_BUCKET_MIN_MIDI as f32 + index as f32 / RESONATOR_BINS_PER_SEMITONE as f32;
+                midi_to_hz(midi, 440.0)
+            })
+            .collect();
+        ResonatorBank::from_frequencies(&frequencies, sample_rate)
+    }
+
+    fn resonator_snapshot(bank: &ResonatorBank) -> ResonatorSnapshot {
+        let mut spectrum = bank.magnitudes();
+        normalize_bars(&mut spectrum, 0.72);
+        ResonatorSnapshot {
+            spectrum,
+            note_labels: note_bucket_labels(),
+        }
     }
 
     fn frequency_to_note(frequency_hz: f32) -> (String, f32) {
@@ -930,6 +990,9 @@ mod native {
             state.waterfall.push_back(reading.spectrum.clone());
             state.note_waterfall.push_back(reading.note_spectrum.clone());
             state.spiral_waterfall.push_back(reading.spiral_spectrum.clone());
+            state
+                .resonator_waterfall
+                .push_back(reading.resonator_spectrum.clone());
             while state.waterfall.len() > WATERFALL_HISTORY {
                 state.waterfall.pop_front();
             }
@@ -938,6 +1001,9 @@ mod native {
             }
             while state.spiral_waterfall.len() > WATERFALL_HISTORY {
                 state.spiral_waterfall.pop_front();
+            }
+            while state.resonator_waterfall.len() > WATERFALL_HISTORY {
+                state.resonator_waterfall.pop_front();
             }
 
             state.reading = Some(TunerReading {
@@ -951,6 +1017,9 @@ mod native {
                 note_waterfall: state.note_waterfall.iter().cloned().collect(),
                 spiral_spectrum: reading.spiral_spectrum,
                 spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
+                resonator_spectrum: reading.resonator_spectrum,
+                resonator_waterfall: state.resonator_waterfall.iter().cloned().collect(),
+                resonator_note_labels: reading.resonator_note_labels,
                 note_labels: note_bucket_labels(),
             });
             state.status = AudioStatus::Listening;
@@ -978,37 +1047,54 @@ mod native {
 
     fn enumerate_cpal_input_options() -> Vec<AudioInputOption> {
         let host = cpal::default_host();
-        let default_name = host.default_input_device().and_then(|device| device.name().ok());
-        let mut options = Vec::new();
+        let default_name = host.default_input_device().and_then(|device| {
+            device
+                .description()
+                .ok()
+                .map(|description| description.name().to_owned())
+        });
+        let mut entries = Vec::new();
 
         let Ok(devices) = host.input_devices() else {
-            return options;
+            return Vec::new();
         };
 
         for device in devices {
-            let Ok(name) = device.name() else {
+            let Ok(description) = device.description() else {
                 continue;
             };
+            let name = description.name().to_owned();
 
             let kind = classify_input_kind(&name, default_name.as_deref());
-            let tag = match kind {
-                AudioInputKind::Microphone => "Mic",
-                AudioInputKind::System => "System",
-                AudioInputKind::Other => "Input",
-            };
-            let label = if default_name.as_deref() == Some(name.as_str()) {
-                format!("{tag} • {name} (Default)")
-            } else {
-                format!("{tag} • {name}")
-            };
-
-            options.push(AudioInputOption {
-                id: format!("{CPAL_INPUT_PREFIX}{name}"),
-                label,
-                kind,
-            });
+            let is_default = default_name.as_deref() == Some(name.as_str());
+            entries.push((name, kind, is_default));
         }
-        options
+
+        if !entries
+            .iter()
+            .any(|(_, kind, _)| *kind == AudioInputKind::Microphone)
+            && let Some(index) = entries
+                .iter()
+                .position(|(_, kind, is_default)| *kind != AudioInputKind::System && *is_default)
+                .or_else(|| {
+                    entries
+                        .iter()
+                        .position(|(_, kind, _)| *kind != AudioInputKind::System)
+                })
+        {
+            entries[index].1 = AudioInputKind::Microphone;
+        }
+
+        entries
+            .into_iter()
+            .map(|(name, kind, is_default)| {
+                AudioInputOption {
+                    id: format!("{CPAL_INPUT_PREFIX}{name}"),
+                    label: format_input_label(&name, kind, is_default),
+                    kind,
+                }
+            })
+            .collect()
     }
 
     fn enumerate_pulse_input_options() -> Vec<AudioInputOption> {
@@ -1060,9 +1146,10 @@ mod native {
                 .input_devices()
                 .map_err(|error| format!("Failed to enumerate input devices: {error}"))?;
             for device in devices {
-                let Ok(name) = device.name() else {
+                let Ok(description) = device.description() else {
                     continue;
                 };
+                let name = description.name().to_owned();
                 if name == requested_input_id {
                     return Ok(device);
                 }
@@ -1103,6 +1190,20 @@ mod native {
             AudioInputKind::Microphone
         } else {
             AudioInputKind::Other
+        }
+    }
+
+    fn format_input_label(name: &str, kind: AudioInputKind, is_default: bool) -> String {
+        let tag = match kind {
+            AudioInputKind::Microphone => "Mic",
+            AudioInputKind::System => "System",
+            AudioInputKind::Other => "Input",
+        };
+
+        if is_default {
+            format!("{tag} • {name} (Default)")
+        } else {
+            format!("{tag} • {name}")
         }
     }
 
@@ -1227,17 +1328,20 @@ mod native {
 
     #[derive(Clone, Debug)]
     pub struct TunerReading {
-        pub frequency_hz:     f32,
-        pub note_name:        String,
-        pub cents:            f32,
-        pub clarity:          f32,
-        pub spectrum:         Vec<f32>,
-        pub waterfall:        Vec<Vec<f32>>,
-        pub note_spectrum:    Vec<f32>,
-        pub note_waterfall:   Vec<Vec<f32>>,
-        pub spiral_spectrum:  Vec<f32>,
-        pub spiral_waterfall: Vec<Vec<f32>>,
-        pub note_labels:      Vec<String>,
+        pub frequency_hz:          f32,
+        pub note_name:             String,
+        pub cents:                 f32,
+        pub clarity:               f32,
+        pub spectrum:              Vec<f32>,
+        pub waterfall:             Vec<Vec<f32>>,
+        pub note_spectrum:         Vec<f32>,
+        pub note_waterfall:        Vec<Vec<f32>>,
+        pub spiral_spectrum:       Vec<f32>,
+        pub spiral_waterfall:      Vec<Vec<f32>>,
+        pub resonator_spectrum:    Vec<f32>,
+        pub resonator_waterfall:   Vec<Vec<f32>>,
+        pub resonator_note_labels: Vec<String>,
+        pub note_labels:           Vec<String>,
     }
 
     #[derive(Clone, Debug)]

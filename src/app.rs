@@ -1,6 +1,7 @@
 mod controls;
 mod fretboard_panel;
 mod live_analysis;
+mod resonator_panel;
 mod workspace;
 
 use std::ops::Range;
@@ -168,29 +169,39 @@ impl LiveChartKind {
 enum WorkspaceTab {
     Controls,
     LiveAnalysis,
+    Resonators,
+    Waterfall,
     Fretboard,
 }
 
 impl WorkspaceTab {
-    const ALL: [Self; 3] = [Self::Controls, Self::LiveAnalysis, Self::Fretboard];
+    const ALL: [Self; 5] = [
+        Self::Controls,
+        Self::LiveAnalysis,
+        Self::Resonators,
+        Self::Waterfall,
+        Self::Fretboard,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Self::Controls => "Controls",
             Self::LiveAnalysis => "Live analysis",
+            Self::Resonators => "Resonators",
+            Self::Waterfall => "Waterfall",
             Self::Fretboard => "Fretboard",
         }
     }
 }
 
 pub struct App {
-    audio:          AudioEngine,
-    audio_inputs:   Vec<AudioInputOption>,
-    tuning_kind:    TuningKind,
-    scale_kind:     ScaleKind,
-    root_note:      Note,
-    live_chart:     LiveChartKind,
-    workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
+    audio:        AudioEngine,
+    audio_inputs: Vec<AudioInputOption>,
+    tuning_kind:  TuningKind,
+    scale_kind:   ScaleKind,
+    root_note:    Note,
+    live_chart:   LiveChartKind,
+    active_tab:   WorkspaceTab,
 }
 
 struct HoveredNote {
@@ -224,7 +235,7 @@ impl App {
             scale_kind: ScaleKind::BluesMinor,
             root_note: Note::A,
             live_chart: LiveChartKind::Spiral,
-            workspace_tree: Some(workspace::default_workspace_tree()),
+            active_tab: WorkspaceTab::Controls,
         }
     }
 

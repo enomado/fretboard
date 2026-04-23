@@ -47,8 +47,8 @@ pub fn draw_positions(painter: &egui::Painter, fretboard_rect: Rect, fretboard: 
         let x_to = fretboard.fret_pos(Fret(position.fret_to));
 
         let (color, thickness) = match position.name {
-            "1st" | "4th" => (Color32::from_rgba_unmultiplied(255, 140, 102, 210), 2.5),
-            _ => (Color32::from_rgba_unmultiplied(164, 210, 255, 150), 1.5),
+            "1st" | "4th" => (Color32::from_rgba_unmultiplied(255, 140, 102, 210), 2.5_f32),
+            _ => (Color32::from_rgba_unmultiplied(164, 210, 255, 150), 1.5_f32),
         };
 
         let bracket_offset = 18.0 + index as f32 * 20.0;
@@ -56,11 +56,11 @@ pub fn draw_positions(painter: &egui::Painter, fretboard_rect: Rect, fretboard: 
 
         painter.line_segment(
             [pos2(x_from, fretboard_rect.min.y), pos2(x_from, y)],
-            Stroke::new(thickness * 0.5, color.gamma_multiply(0.4)),
+            Stroke::new(thickness * 0.5_f32, color.gamma_multiply(0.4)),
         );
         painter.line_segment(
             [pos2(x_to, fretboard_rect.min.y), pos2(x_to, y)],
-            Stroke::new(thickness * 0.5, color.gamma_multiply(0.4)),
+            Stroke::new(thickness * 0.5_f32, color.gamma_multiply(0.4)),
         );
         painter.line_segment([pos2(x_from, y), pos2(x_to, y)], Stroke::new(thickness, color));
 

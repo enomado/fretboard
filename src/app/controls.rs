@@ -42,7 +42,7 @@ impl App {
         Frame::new()
             .fill(PANEL_FILL)
             .corner_radius(CornerRadius::same(18))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
@@ -76,7 +76,7 @@ impl App {
                                 Color32::from_rgb(42, 46, 52)
                             })
                             .stroke(Stroke::new(
-                                1.0,
+                                1.0_f32,
                                 if selected {
                                     Color32::from_rgb(207, 187, 166)
                                 } else {
@@ -122,7 +122,7 @@ impl App {
                             Color32::from_rgb(42, 46, 52)
                         })
                         .stroke(Stroke::new(
-                            1.0,
+                            1.0_f32,
                             if selected_input_kind == AudioInputKind::Microphone {
                                 Color32::from_rgb(207, 187, 166)
                             } else {
@@ -144,7 +144,7 @@ impl App {
                             Color32::from_rgb(42, 46, 52)
                         })
                         .stroke(Stroke::new(
-                            1.0,
+                            1.0_f32,
                             if selected_input_kind == AudioInputKind::System {
                                 Color32::from_rgb(207, 187, 166)
                             } else {
@@ -251,7 +251,7 @@ impl App {
         Frame::new()
             .fill(Color32::from_rgb(25, 29, 34))
             .corner_radius(CornerRadius::same(16))
-            .stroke(Stroke::new(1.0, Color32::from_rgb(52, 58, 66)))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(52, 58, 66)))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
