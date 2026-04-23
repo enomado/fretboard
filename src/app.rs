@@ -60,14 +60,6 @@ impl TuningKind {
         }
     }
 
-    fn subtitle(self) -> &'static str {
-        match self {
-            Self::Cello => "Compact orchestral layout",
-            Self::StandardE => "Classic six-string tuning",
-            Self::MinorThirds => "Symmetric fretboard geometry",
-        }
-    }
-
     fn to_tuning(self) -> Tuning {
         match self {
             Self::Cello => Tuning::cello(),
@@ -175,14 +167,6 @@ enum WorkspaceTab {
 }
 
 impl WorkspaceTab {
-    const ALL: [Self; 5] = [
-        Self::Controls,
-        Self::LiveAnalysis,
-        Self::Resonators,
-        Self::Waterfall,
-        Self::Fretboard,
-    ];
-
     fn label(self) -> &'static str {
         match self {
             Self::Controls => "Controls",
@@ -195,13 +179,13 @@ impl WorkspaceTab {
 }
 
 pub struct App {
-    audio:        AudioEngine,
-    audio_inputs: Vec<AudioInputOption>,
-    tuning_kind:  TuningKind,
-    scale_kind:   ScaleKind,
-    root_note:    Note,
-    live_chart:   LiveChartKind,
-    active_tab:   WorkspaceTab,
+    audio:          AudioEngine,
+    audio_inputs:   Vec<AudioInputOption>,
+    tuning_kind:    TuningKind,
+    scale_kind:     ScaleKind,
+    root_note:      Note,
+    live_chart:     LiveChartKind,
+    workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
 struct HoveredNote {
@@ -235,15 +219,8 @@ impl App {
             scale_kind: ScaleKind::BluesMinor,
             root_note: Note::A,
             live_chart: LiveChartKind::Spiral,
-            active_tab: WorkspaceTab::Controls,
+            workspace_tree: Some(workspace::default_workspace_tree()),
         }
-    }
-
-    fn root_label(&self) -> &'static str {
-        ALL_ROOTS
-            .iter()
-            .find_map(|(note, label)| (*note == self.root_note).then_some(*label))
-            .unwrap_or("?")
     }
 
     fn selected_input_kind(&self, selected_input_id: Option<&str>) -> AudioInputKind {
