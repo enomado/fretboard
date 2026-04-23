@@ -106,6 +106,22 @@ mod native {
         note_labels: Vec<String>,
     }
 
+    #[derive(Clone, Copy, Debug)]
+    struct PitchEstimate {
+        frequency_hz: f32,
+        clarity:      f32,
+    }
+
+    #[derive(Clone, Debug)]
+    struct AnalysisFrame {
+        pitch:                 Option<PitchEstimate>,
+        spectrum:              Vec<f32>,
+        note_spectrum:         Vec<f32>,
+        spiral_spectrum:       Vec<f32>,
+        resonator_spectrum:    Vec<f32>,
+        resonator_note_labels: Vec<String>,
+    }
+
     impl AnalysisPipeline {
         fn new(sample_rate: f32) -> Self {
             let resonator_view = ResonatorViewSettings::default();
@@ -160,15 +176,14 @@ mod native {
             input_level.store(smoothed_level.to_bits(), Ordering::Relaxed);
             let resonator_snapshot = resonator_snapshot(&self.resonator_bank, &self.resonator_view);
 
-            if let Some(reading) = analyze_window(
+            let frame = analyze_window(
                 &window,
                 self.sample_rate,
                 &analysis_settings,
                 &mut self.planner,
                 resonator_snapshot,
-            ) {
-                publish_reading(shared, reading);
-            }
+            );
+            publish_reading(shared, frame);
         }
 
         fn sync_resonator_bank(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
@@ -716,40 +731,32 @@ mod native {
         settings: &AnalysisSettings,
         planner: &mut FftPlanner<f32>,
         resonator_snapshot: ResonatorSnapshot,
-    ) -> Option<TunerReading> {
+    ) -> AnalysisFrame {
         let rms = (window.iter().map(|sample| sample * sample).sum::<f32>() / window.len() as f32).sqrt();
-        if rms < SILENCE_RMS_THRESHOLD {
-            return None;
-        }
-
         let mut normalized = window.to_vec();
         normalized = apply_hann_window(&normalized);
 
-        let (frequency_hz, clarity) = detect_pitch_yin(&normalized, sample_rate)?;
-        if !(45.0..=1200.0).contains(&frequency_hz) {
-            return None;
-        }
-
-        let (note_name, cents) = frequency_to_note(frequency_hz);
         let (spectrum, note_spectrum, spiral_spectrum) =
             spectrum_bars(&normalized, sample_rate, settings, planner);
+        let pitch = if rms < SILENCE_RMS_THRESHOLD {
+            None
+        } else {
+            detect_pitch_yin(&normalized, sample_rate).and_then(|(frequency_hz, clarity)| {
+                (45.0..=1200.0).contains(&frequency_hz).then_some(PitchEstimate {
+                    frequency_hz,
+                    clarity,
+                })
+            })
+        };
 
-        Some(TunerReading {
-            frequency_hz,
-            note_name,
-            cents,
-            clarity,
+        AnalysisFrame {
+            pitch,
             spectrum,
-            waterfall: Vec::new(),
             note_spectrum,
-            note_waterfall: Vec::new(),
             spiral_spectrum,
-            spiral_waterfall: Vec::new(),
             resonator_spectrum: resonator_snapshot.spectrum,
-            resonator_waterfall: Vec::new(),
             resonator_note_labels: resonator_snapshot.note_labels,
-            note_labels: note_bucket_labels(),
-        })
+        }
     }
 
     fn apply_hann_window(input: &[f32]) -> Vec<f32> {
@@ -1075,18 +1082,29 @@ mod native {
         format!("{}{}", NOTE_NAMES[note_index], octave)
     }
 
-    fn publish_reading(shared: &Arc<Mutex<SharedState>>, reading: TunerReading) {
+    fn publish_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFrame) {
         if let Ok(mut state) = shared.lock() {
-            let smoothed_frequency = smooth_frequency(state.smoothed_frequency, reading.frequency_hz);
-            state.smoothed_frequency = Some(smoothed_frequency);
+            let (smoothed_frequency, clarity) = match frame.pitch {
+                Some(pitch) => {
+                    let smoothed_frequency = smooth_frequency(state.smoothed_frequency, pitch.frequency_hz);
+                    state.smoothed_frequency = Some(smoothed_frequency);
+                    (smoothed_frequency, pitch.clarity)
+                }
+                None => {
+                    let Some(smoothed_frequency) = state.smoothed_frequency else {
+                        return;
+                    };
+                    (smoothed_frequency, 0.0)
+                }
+            };
 
             let (note_name, cents) = frequency_to_note(smoothed_frequency);
-            state.waterfall.push_back(reading.spectrum.clone());
-            state.note_waterfall.push_back(reading.note_spectrum.clone());
-            state.spiral_waterfall.push_back(reading.spiral_spectrum.clone());
+            state.waterfall.push_back(frame.spectrum.clone());
+            state.note_waterfall.push_back(frame.note_spectrum.clone());
+            state.spiral_waterfall.push_back(frame.spiral_spectrum.clone());
             state
                 .resonator_waterfall
-                .push_back(reading.resonator_spectrum.clone());
+                .push_back(frame.resonator_spectrum.clone());
             while state.waterfall.len() > WATERFALL_HISTORY {
                 state.waterfall.pop_front();
             }
@@ -1104,16 +1122,16 @@ mod native {
                 frequency_hz: smoothed_frequency,
                 note_name,
                 cents,
-                clarity: reading.clarity,
-                spectrum: reading.spectrum,
+                clarity,
+                spectrum: frame.spectrum,
                 waterfall: state.waterfall.iter().cloned().collect(),
-                note_spectrum: reading.note_spectrum,
+                note_spectrum: frame.note_spectrum,
                 note_waterfall: state.note_waterfall.iter().cloned().collect(),
-                spiral_spectrum: reading.spiral_spectrum,
+                spiral_spectrum: frame.spiral_spectrum,
                 spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
-                resonator_spectrum: reading.resonator_spectrum,
+                resonator_spectrum: frame.resonator_spectrum,
                 resonator_waterfall: state.resonator_waterfall.iter().cloned().collect(),
-                resonator_note_labels: reading.resonator_note_labels,
+                resonator_note_labels: frame.resonator_note_labels,
                 note_labels: note_bucket_labels(),
             });
             state.status = AudioStatus::Listening;

@@ -30,6 +30,7 @@ impl App {
         let mut input_gain = self.audio.input_gain();
         let selected_input_id = self.audio.selected_input_id();
         let selected_input_kind = self.selected_input_kind(selected_input_id.as_deref());
+        let frame_width = ui.available_width();
         let has_system_input = self
             .audio_inputs
             .iter()
@@ -45,6 +46,8 @@ impl App {
             .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
+                ui.set_min_width(frame_width - 32.0);
+
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new("Tuning")
