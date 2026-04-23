@@ -92,7 +92,7 @@ impl App {
     }
 
     fn draw_resonator_bank_overview(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
-        let desired_size = vec2(ui.available_width().max(320.0), 188.0);
+        let desired_size = vec2(ui.available_width(), 188.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
@@ -235,7 +235,8 @@ impl App {
     }
 
     fn draw_big_resonator_waterfall(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
-        let desired_size = vec2(ui.available_width().max(420.0), ui.available_height().max(420.0));
+        let available_size = ui.available_size_before_wrap();
+        let desired_size = vec2(available_size.x, available_size.y.max(260.0));
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 

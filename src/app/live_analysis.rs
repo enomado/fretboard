@@ -166,7 +166,7 @@ impl App {
     }
 
     fn draw_tuner_meter(&self, ui: &mut Ui, reading: Option<&TunerTarget>, input_kind: AudioInputKind) {
-        let desired_size = vec2(ui.available_width().max(250.0), 120.0);
+        let desired_size = vec2(ui.available_width(), 120.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
@@ -261,7 +261,7 @@ impl App {
     }
 
     fn draw_spectrum(&self, ui: &mut Ui, target: Option<&TunerTarget>, reading: Option<&TunerReading>) {
-        let desired_size = vec2(ui.available_width().max(280.0), 244.0);
+        let desired_size = vec2(ui.available_width(), 244.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
@@ -385,7 +385,7 @@ impl App {
         empty_message: &str,
         active_note_label: &str,
     ) {
-        let desired_size = vec2(ui.available_width().max(320.0), 376.0);
+        let desired_size = vec2(ui.available_width(), 376.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 

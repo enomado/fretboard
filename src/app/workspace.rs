@@ -11,6 +11,7 @@ use super::{
     App,
     WorkspaceTab,
 };
+use crate::ui::theme::PANEL_FILL;
 
 pub(super) struct WorkspaceBehavior<'a> {
     app: &'a mut App,
@@ -20,16 +21,26 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
     fn pane_ui(
         &mut self,
         ui: &mut Ui,
-        _tile_id: egui_tiles::TileId,
+        tile_id: egui_tiles::TileId,
         pane: &mut WorkspaceTab,
     ) -> egui_tiles::UiResponse {
-        match pane {
-            WorkspaceTab::Controls => self.app.draw_controls(ui),
-            WorkspaceTab::LiveAnalysis => self.app.draw_tuner_card(ui),
-            WorkspaceTab::Resonators => self.app.draw_resonator_card(ui),
-            WorkspaceTab::Waterfall => self.app.draw_resonator_waterfall_card(ui),
-            WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
-        }
+        let pane_rect = ui.max_rect();
+        ui.painter().rect_filled(pane_rect, 0.0, PANEL_FILL);
+
+        egui::ScrollArea::both()
+            .id_salt(("workspace_pane_scroll", tile_id))
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_min_size(pane_rect.size());
+
+                match pane {
+                    WorkspaceTab::Controls => self.app.draw_controls(ui),
+                    WorkspaceTab::LiveAnalysis => self.app.draw_tuner_card(ui),
+                    WorkspaceTab::Resonators => self.app.draw_resonator_card(ui),
+                    WorkspaceTab::Waterfall => self.app.draw_resonator_waterfall_card(ui),
+                    WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
+                }
+            });
 
         egui_tiles::UiResponse::None
     }
@@ -44,6 +55,13 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         _tile_id: egui_tiles::TileId,
     ) -> bool {
         false
+    }
+
+    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
+        egui_tiles::SimplificationOptions {
+            all_panes_must_have_tabs: true,
+            ..egui_tiles::SimplificationOptions::default()
+        }
     }
 
     fn tab_bar_color(&self, _visuals: &egui::Visuals) -> Color32 {
