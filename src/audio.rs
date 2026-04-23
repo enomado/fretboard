@@ -66,6 +66,8 @@ mod native {
     const CPAL_INPUT_PREFIX: &str = "cpal::";
     const PULSE_INPUT_PREFIX: &str = "pulse::";
     const PULSE_SAMPLE_RATE: u32 = 44_100;
+    const PULSE_DEFAULT_SOURCE: &str = "@DEFAULT_SOURCE@";
+    const PULSE_DEFAULT_MONITOR: &str = "@DEFAULT_MONITOR@";
 
     struct PulseCapture {
         child:  Child,
@@ -1225,27 +1227,55 @@ mod native {
             .filter(|name| name.ends_with(".monitor"))
             .map(str::to_owned)
             .collect();
+        let mut source_names: Vec<String> = stdout
+            .lines()
+            .filter_map(|line| line.split('\t').nth(1))
+            .filter(|name| !name.ends_with(".monitor"))
+            .map(str::to_owned)
+            .collect();
 
-        if monitor_names.is_empty() {
+        if monitor_names.is_empty() && source_names.is_empty() {
             return Vec::new();
         }
 
         monitor_names.sort();
         monitor_names.dedup();
+        source_names.sort();
+        source_names.dedup();
 
-        let mut options = vec![AudioInputOption {
-            id:    format!("{PULSE_INPUT_PREFIX}@DEFAULT_MONITOR@"),
-            label: "System • Default monitor".to_owned(),
-            kind:  AudioInputKind::System,
-        }];
+        let mut options = Vec::new();
 
-        options.extend(monitor_names.into_iter().map(|name| {
-            AudioInputOption {
-                id:    format!("{PULSE_INPUT_PREFIX}{name}"),
-                label: format!("System • {name}"),
+        if !source_names.is_empty() {
+            options.push(AudioInputOption {
+                id:    format!("{PULSE_INPUT_PREFIX}{PULSE_DEFAULT_SOURCE}"),
+                label: "Mic • Pulse default source".to_owned(),
+                kind:  AudioInputKind::Microphone,
+            });
+            options.extend(source_names.into_iter().map(|name| {
+                AudioInputOption {
+                    id:    format!("{PULSE_INPUT_PREFIX}{name}"),
+                    label: format!("Mic • {name}"),
+                    kind:  AudioInputKind::Microphone,
+                }
+            }));
+        }
+
+        if !monitor_names.is_empty() {
+            options.push(AudioInputOption {
+                id:    format!("{PULSE_INPUT_PREFIX}{PULSE_DEFAULT_MONITOR}"),
+                label: "System • Default monitor".to_owned(),
                 kind:  AudioInputKind::System,
-            }
-        }));
+            });
+
+            options.extend(monitor_names.into_iter().map(|name| {
+                AudioInputOption {
+                    id:    format!("{PULSE_INPUT_PREFIX}{name}"),
+                    label: format!("System • {name}"),
+                    kind:  AudioInputKind::System,
+                }
+            }));
+        }
+
         options
     }
 

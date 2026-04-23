@@ -238,9 +238,19 @@ impl App {
     }
 
     fn preferred_input_id(&self, kind: AudioInputKind) -> Option<String> {
-        self.audio_inputs
-            .iter()
-            .find(|option| option.kind == kind)
+        let preferred_pulse_id = match kind {
+            AudioInputKind::Microphone => Some("pulse::@DEFAULT_SOURCE@"),
+            AudioInputKind::System => Some("pulse::@DEFAULT_MONITOR@"),
+            AudioInputKind::Other => None,
+        };
+
+        preferred_pulse_id
+            .and_then(|preferred_id| {
+                self.audio_inputs
+                    .iter()
+                    .find(|option| option.id == preferred_id)
+            })
+            .or_else(|| self.audio_inputs.iter().find(|option| option.kind == kind))
             .or_else(|| self.audio_inputs.first())
             .map(|option| option.id.clone())
     }
