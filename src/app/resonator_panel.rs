@@ -218,16 +218,23 @@ impl App {
                                 Color32::from_rgb(201, 195, 184),
                                 Color32::from_rgb(64, 68, 73),
                             );
+                        } else {
+                            pill(
+                                ui,
+                                "waiting for input",
+                                Color32::from_rgb(184, 188, 196),
+                                Color32::from_rgb(56, 61, 68),
+                            );
                         }
                     });
                 });
 
                 ui.add_space(12.0);
-                self.draw_big_resonator_waterfall(ui, reading_ref);
+                self.draw_resonator_waterfall_panel(ui, reading_ref);
             });
     }
 
-    fn draw_big_resonator_waterfall(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
+    fn draw_resonator_waterfall_panel(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
         let available_size = ui.available_size_before_wrap();
         let desired_size = vec2(available_size.x, available_size.y.max(260.0));
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());

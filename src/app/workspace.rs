@@ -35,9 +35,12 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
 
                 match pane {
                     WorkspaceTab::Controls => self.app.draw_controls(ui),
+                    WorkspaceTab::ConfigGeneral => self.app.draw_general_config_card(ui),
+                    WorkspaceTab::ConfigFft1 => self.app.draw_fft1_config_card(ui),
+                    WorkspaceTab::ConfigResonatorFft => self.app.draw_resonator_fft_config_card(ui),
                     WorkspaceTab::LiveAnalysis => self.app.draw_tuner_card(ui),
-                    WorkspaceTab::Resonators => self.app.draw_resonator_card(ui),
-                    WorkspaceTab::Waterfall => self.app.draw_resonator_waterfall_card(ui),
+                    WorkspaceTab::ResonatorSnail => self.app.draw_resonator_card(ui),
+                    WorkspaceTab::ResonatorWaterfall => self.app.draw_resonator_waterfall_card(ui),
                     WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
                 }
             });
@@ -138,10 +141,13 @@ pub(super) fn default_workspace_tree() -> egui_tiles::Tree<WorkspaceTab> {
         "fretboard_workspace_tree",
         vec![
             WorkspaceTab::Controls,
+            WorkspaceTab::ConfigGeneral,
+            WorkspaceTab::ConfigFft1,
+            WorkspaceTab::ConfigResonatorFft,
             WorkspaceTab::Fretboard,
             WorkspaceTab::LiveAnalysis,
-            WorkspaceTab::Resonators,
-            WorkspaceTab::Waterfall,
+            WorkspaceTab::ResonatorSnail,
+            WorkspaceTab::ResonatorWaterfall,
         ],
     )
 }

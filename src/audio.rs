@@ -33,6 +33,8 @@ mod native {
     };
     use resonators::{
         ResonatorBank,
+        ResonatorConfig,
+        heuristic_alpha,
         midi_to_hz,
     };
     use rustfft::FftPlanner;
@@ -51,9 +53,6 @@ mod native {
     const SPIRAL_BINS_PER_SEMITONE: usize = 8;
     const SPIRAL_BIN_COUNT: usize =
         (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
-    const RESONATOR_BINS_PER_SEMITONE: usize = 5;
-    const RESONATOR_BIN_COUNT: usize =
-        (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * RESONATOR_BINS_PER_SEMITONE + 1;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
     const DEFAULT_INPUT_GAIN: f32 = 4.0;
     const SILENCE_RMS_THRESHOLD: f32 = 0.0;
@@ -61,6 +60,9 @@ mod native {
     const SPECTRUM_MIN_FREQUENCY: f32 = 20.0;
     const SPECTRUM_MAX_FREQUENCY: f32 = 2_000.0;
     const NOTE_BUCKET_SPREAD: f32 = 0.35;
+    const RESONATOR_MIN_MIDI: usize = NOTE_BUCKET_MIN_MIDI;
+    const RESONATOR_MAX_MIDI: usize = NOTE_BUCKET_MAX_MIDI;
+    const RESONATOR_DEFAULT_BINS_PER_SEMITONE: usize = 5;
     const CPAL_INPUT_PREFIX: &str = "cpal::";
     const PULSE_INPUT_PREFIX: &str = "pulse::";
     const PULSE_SAMPLE_RATE: u32 = 44_100;
@@ -84,7 +86,18 @@ mod native {
         last_analysis:  Instant,
         planner:        FftPlanner<f32>,
         resonator_bank: ResonatorBank,
+        resonator_view: ResonatorViewSettings,
         sample_rate:    f32,
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct ResonatorViewSettings {
+        min_midi:          usize,
+        max_midi:          usize,
+        bins_per_semitone: usize,
+        alpha_scale:       f32,
+        beta_scale:        f32,
+        gamma:             f32,
     }
 
     #[derive(Clone, Debug)]
@@ -95,11 +108,13 @@ mod native {
 
     impl AnalysisPipeline {
         fn new(sample_rate: f32) -> Self {
+            let resonator_view = ResonatorViewSettings::default();
             Self {
                 buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
                 last_analysis: Instant::now() - ANALYSIS_INTERVAL,
                 planner: FftPlanner::new(),
-                resonator_bank: build_resonator_bank(sample_rate),
+                resonator_bank: build_resonator_bank(sample_rate, &resonator_view),
+                resonator_view,
                 sample_rate,
             }
         }
@@ -117,6 +132,7 @@ mod native {
                 .map(|guard| guard.clone())
                 .unwrap_or_default()
                 .sanitized();
+            self.sync_resonator_bank(&analysis_settings, shared);
             let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
 
             for sample in samples {
@@ -142,7 +158,7 @@ mod native {
             let previous_level = f32::from_bits(input_level.load(Ordering::Relaxed));
             let smoothed_level = smoothed_level(previous_level, level);
             input_level.store(smoothed_level.to_bits(), Ordering::Relaxed);
-            let resonator_snapshot = resonator_snapshot(&self.resonator_bank);
+            let resonator_snapshot = resonator_snapshot(&self.resonator_bank, &self.resonator_view);
 
             if let Some(reading) = analyze_window(
                 &window,
@@ -152,6 +168,26 @@ mod native {
                 resonator_snapshot,
             ) {
                 publish_reading(shared, reading);
+            }
+        }
+
+        fn sync_resonator_bank(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
+            let requested = ResonatorViewSettings::from(settings);
+            if requested == self.resonator_view {
+                return;
+            }
+
+            self.resonator_bank = build_resonator_bank(self.sample_rate, &requested);
+            self.resonator_view = requested;
+
+            if let Ok(mut state) = shared.lock() {
+                state.resonator_waterfall.clear();
+                if let Some(reading) = state.reading.as_mut() {
+                    reading.resonator_spectrum.clear();
+                    reading.resonator_waterfall.clear();
+                    reading.resonator_note_labels =
+                        resonator_note_labels(self.resonator_view.min_midi, self.resonator_view.max_midi);
+                }
             }
         }
     }
@@ -216,6 +252,12 @@ mod native {
         pub note_spread:        f32,
         pub spectrum_gamma:     f32,
         pub note_gamma:         f32,
+        pub resonator_min_midi: usize,
+        pub resonator_max_midi: usize,
+        pub resonator_bins:     usize,
+        pub resonator_alpha:    f32,
+        pub resonator_beta:     f32,
+        pub resonator_gamma:    f32,
     }
 
     impl Default for AnalysisSettings {
@@ -229,6 +271,12 @@ mod native {
                 note_spread:        NOTE_BUCKET_SPREAD,
                 spectrum_gamma:     0.58,
                 note_gamma:         0.72,
+                resonator_min_midi: RESONATOR_MIN_MIDI,
+                resonator_max_midi: RESONATOR_MAX_MIDI,
+                resonator_bins:     RESONATOR_DEFAULT_BINS_PER_SEMITONE,
+                resonator_alpha:    1.0,
+                resonator_beta:     1.0,
+                resonator_gamma:    0.72,
             }
         }
     }
@@ -254,6 +302,15 @@ mod native {
             self.note_spread = self.note_spread.clamp(0.15, 0.8);
             self.spectrum_gamma = self.spectrum_gamma.clamp(0.35, 1.2);
             self.note_gamma = self.note_gamma.clamp(0.35, 1.2);
+            self.resonator_min_midi = self.resonator_min_midi.clamp(24, 84);
+            self.resonator_max_midi = self.resonator_max_midi.clamp(36, 108);
+            if self.resonator_max_midi <= self.resonator_min_midi + 6 {
+                self.resonator_max_midi = (self.resonator_min_midi + 6).clamp(36, 108);
+            }
+            self.resonator_bins = self.resonator_bins.clamp(1, 12);
+            self.resonator_alpha = self.resonator_alpha.clamp(0.2, 4.0);
+            self.resonator_beta = self.resonator_beta.clamp(0.2, 4.0);
+            self.resonator_gamma = self.resonator_gamma.clamp(0.35, 1.2);
             self
         }
     }
@@ -815,22 +872,53 @@ mod native {
         (bars, note_bars, spiral_bars)
     }
 
-    fn build_resonator_bank(sample_rate: f32) -> ResonatorBank {
-        let frequencies: Vec<f32> = (0..RESONATOR_BIN_COUNT)
-            .map(|index| {
-                let midi = NOTE_BUCKET_MIN_MIDI as f32 + index as f32 / RESONATOR_BINS_PER_SEMITONE as f32;
-                midi_to_hz(midi, 440.0)
-            })
-            .collect();
-        ResonatorBank::from_frequencies(&frequencies, sample_rate)
+    impl Default for ResonatorViewSettings {
+        fn default() -> Self {
+            Self {
+                min_midi:          RESONATOR_MIN_MIDI,
+                max_midi:          RESONATOR_MAX_MIDI,
+                bins_per_semitone: RESONATOR_DEFAULT_BINS_PER_SEMITONE,
+                alpha_scale:       1.0,
+                beta_scale:        1.0,
+                gamma:             0.72,
+            }
+        }
     }
 
-    fn resonator_snapshot(bank: &ResonatorBank) -> ResonatorSnapshot {
+    impl From<&AnalysisSettings> for ResonatorViewSettings {
+        fn from(settings: &AnalysisSettings) -> Self {
+            Self {
+                min_midi:          settings.resonator_min_midi,
+                max_midi:          settings.resonator_max_midi,
+                bins_per_semitone: settings.resonator_bins,
+                alpha_scale:       settings.resonator_alpha,
+                beta_scale:        settings.resonator_beta,
+                gamma:             settings.resonator_gamma,
+            }
+        }
+    }
+
+    fn build_resonator_bank(sample_rate: f32, settings: &ResonatorViewSettings) -> ResonatorBank {
+        let bin_count = (settings.max_midi - settings.min_midi) * settings.bins_per_semitone + 1;
+        let configs: Vec<ResonatorConfig> = (0..bin_count)
+            .map(|index| {
+                let midi = settings.min_midi as f32 + index as f32 / settings.bins_per_semitone as f32;
+                let frequency = midi_to_hz(midi, 440.0);
+                let alpha =
+                    (heuristic_alpha(frequency, sample_rate) * settings.alpha_scale).clamp(0.0001, 1.0);
+                let beta = (heuristic_alpha(frequency, sample_rate) * settings.beta_scale).clamp(0.0001, 1.0);
+                ResonatorConfig::new(frequency, alpha, beta)
+            })
+            .collect();
+        ResonatorBank::new(&configs, sample_rate)
+    }
+
+    fn resonator_snapshot(bank: &ResonatorBank, settings: &ResonatorViewSettings) -> ResonatorSnapshot {
         let mut spectrum = bank.magnitudes();
-        normalize_bars(&mut spectrum, 0.72);
+        normalize_bars(&mut spectrum, settings.gamma);
         ResonatorSnapshot {
             spectrum,
-            note_labels: note_bucket_labels(),
+            note_labels: resonator_note_labels(settings.min_midi, settings.max_midi),
         }
     }
 
@@ -970,6 +1058,12 @@ mod native {
 
     fn note_bucket_labels() -> Vec<String> {
         (NOTE_BUCKET_MIN_MIDI..=NOTE_BUCKET_MAX_MIDI)
+            .map(|midi| midi_to_note_label(midi as i32))
+            .collect()
+    }
+
+    fn resonator_note_labels(min_midi: usize, max_midi: usize) -> Vec<String> {
+        (min_midi..=max_midi)
             .map(|midi| midi_to_note_label(midi as i32))
             .collect()
     }
@@ -1271,6 +1365,12 @@ mod native {
                 note_spread:        0.01,
                 spectrum_gamma:     0.01,
                 note_gamma:         9.0,
+                resonator_min_midi: 10,
+                resonator_max_midi: 11,
+                resonator_bins:     99,
+                resonator_alpha:    0.01,
+                resonator_beta:     9.0,
+                resonator_gamma:    9.0,
             }
             .sanitized();
 
@@ -1279,6 +1379,8 @@ mod native {
             assert!(settings.max_frequency > settings.min_frequency);
             assert!(settings.spectrum_smoothing <= 4);
             assert!((0.15..=0.8).contains(&settings.note_spread));
+            assert!(settings.resonator_max_midi > settings.resonator_min_midi);
+            assert!((1..=12).contains(&settings.resonator_bins));
         }
     }
 }
@@ -1309,6 +1411,12 @@ mod native {
         pub note_spread:        f32,
         pub spectrum_gamma:     f32,
         pub note_gamma:         f32,
+        pub resonator_min_midi: usize,
+        pub resonator_max_midi: usize,
+        pub resonator_bins:     usize,
+        pub resonator_alpha:    f32,
+        pub resonator_beta:     f32,
+        pub resonator_gamma:    f32,
     }
 
     impl Default for AnalysisSettings {
@@ -1322,6 +1430,12 @@ mod native {
                 note_spread:        0.35,
                 spectrum_gamma:     0.58,
                 note_gamma:         0.72,
+                resonator_min_midi: 36,
+                resonator_max_midi: 84,
+                resonator_bins:     5,
+                resonator_alpha:    1.0,
+                resonator_beta:     1.0,
+                resonator_gamma:    0.72,
             }
         }
     }

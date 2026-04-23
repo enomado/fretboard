@@ -160,9 +160,12 @@ impl LiveChartKind {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WorkspaceTab {
     Controls,
+    ConfigGeneral,
+    ConfigFft1,
+    ConfigResonatorFft,
     LiveAnalysis,
-    Resonators,
-    Waterfall,
+    ResonatorSnail,
+    ResonatorWaterfall,
     Fretboard,
 }
 
@@ -170,9 +173,12 @@ impl WorkspaceTab {
     fn label(self) -> &'static str {
         match self {
             Self::Controls => "Controls",
+            Self::ConfigGeneral => "Config General",
+            Self::ConfigFft1 => "Config FFT1",
+            Self::ConfigResonatorFft => "Config Resonator FFT",
             Self::LiveAnalysis => "Live analysis",
-            Self::Resonators => "Resonators",
-            Self::Waterfall => "Waterfall",
+            Self::ResonatorSnail => "Resonator Snail",
+            Self::ResonatorWaterfall => "Resonator Waterfall",
             Self::Fretboard => "Fretboard",
         }
     }
