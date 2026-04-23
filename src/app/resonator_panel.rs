@@ -51,13 +51,6 @@ impl App {
                         if let Some(reading) = reading_ref {
                             pill(
                                 ui,
-                                &format!("focus {}", reading.note_name),
-                                Color32::from_rgb(224, 214, 198),
-                                Color32::from_rgb(78, 61, 54),
-                            );
-                            ui.add_space(8.0);
-                            pill(
-                                ui,
                                 &format!("{} bins", reading.resonator_spectrum.len()),
                                 Color32::from_rgb(201, 195, 184),
                                 Color32::from_rgb(64, 68, 73),
@@ -83,7 +76,7 @@ impl App {
                     reading_ref.map(|value| value.resonator_spectrum.as_slice()),
                     reading_ref.map_or(&[][..], |value| value.resonator_waterfall.as_slice()),
                     reading_ref.map_or(&[][..], |value| value.resonator_note_labels.as_slice()),
-                    reading_ref.map(|value| value.note_name.as_str()),
+                    None,
                     "Play a sustained note to charge the resonator bank",
                     "The resonator bank is empty",
                     "bank focus",

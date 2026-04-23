@@ -216,7 +216,7 @@ impl App {
         );
     }
 
-    pub(super) fn filtered_tuner_targets(&self, tuning: &Tuning, scale: &Scale) -> Vec<TunerTarget> {
+    pub(super) fn filtered_tuner_targets(&self, tuning: &Tuning, _scale: &Scale) -> Vec<TunerTarget> {
         let Some(reading) = self.audio.reading() else {
             return Vec::new();
         };
@@ -233,14 +233,12 @@ impl App {
                     continue;
                 }
 
-                let degree = scale.degree(note.to_pc().1).map(|value| value.0);
                 matches.push(TunerTarget {
                     string,
                     fret,
                     note_name: note.to_anote().name(),
                     frequency_hz: reading.frequency_hz,
                     cents,
-                    degree,
                 });
             }
         }

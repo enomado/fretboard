@@ -21,7 +21,6 @@ use super::{
     audio_status_color,
     audio_status_label,
     cents_color,
-    degree_suffix,
     input_level_label,
     pill,
     pitch_class_angle,
@@ -116,7 +115,7 @@ impl App {
                 ui.add_space(12.0);
                 match self.live_chart {
                     LiveChartKind::Tuner => self.draw_tuner_meter(ui, target, selected_input_kind),
-                    LiveChartKind::Fft => self.draw_spectrum(ui, target, reading.as_ref()),
+                    LiveChartKind::Fft => self.draw_spectrum(ui, reading.as_ref()),
                     LiveChartKind::Spiral => self.draw_spiral_spectrogram(ui, reading.as_ref()),
                 }
             });
@@ -260,7 +259,7 @@ impl App {
         );
     }
 
-    fn draw_spectrum(&self, ui: &mut Ui, target: Option<&TunerTarget>, reading: Option<&TunerReading>) {
+    fn draw_spectrum(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
         let desired_size = vec2(ui.available_width(), 244.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
@@ -280,21 +279,6 @@ impl App {
             FontId::proportional(15.0),
             Color32::from_rgb(201, 195, 184),
         );
-
-        if let Some(target) = target {
-            painter.text(
-                pos2(rect.right() - 14.0, rect.top() + 12.0),
-                egui::Align2::RIGHT_TOP,
-                format!(
-                    "auto-filter: S{} F{}{}",
-                    target.string,
-                    target.fret,
-                    degree_suffix(target.degree)
-                ),
-                FontId::proportional(12.0),
-                Color32::from_rgb(152, 158, 165),
-            );
-        }
 
         if let Some(reading) = reading {
             let section_label_gap = 16.0;
@@ -327,7 +311,7 @@ impl App {
                 note_rect,
                 &reading.note_waterfall,
                 &reading.note_labels,
-                Some(reading.note_name.as_str()),
+                None,
             );
 
             let bars_rect = Rect::from_min_max(
@@ -365,7 +349,7 @@ impl App {
             reading.map(|value| value.spiral_spectrum.as_slice()),
             reading.map_or(&[][..], |value| value.spiral_waterfall.as_slice()),
             reading.map_or(&[][..], |value| value.note_labels.as_slice()),
-            reading.map(|value| value.note_name.as_str()),
+            None,
             "Play a sustained note to light up the spiral",
             "The note spectrum is empty",
             "active note",

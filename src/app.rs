@@ -203,7 +203,6 @@ struct TunerTarget {
     note_name:    String,
     frequency_hz: f32,
     cents:        f32,
-    degree:       Option<u8>,
 }
 
 impl App {
@@ -422,12 +421,6 @@ fn midi_to_frequency(midi: f32) -> f32 {
 
 fn frequency_to_midi(frequency_hz: f32) -> f32 {
     69.0 + 12.0 * (frequency_hz / 440.0).log2()
-}
-
-fn degree_suffix(degree: Option<u8>) -> String {
-    degree
-        .map(|value| format!(" • degree {}", value))
-        .unwrap_or_default()
 }
 
 fn format_sample_count(value: usize) -> String {
