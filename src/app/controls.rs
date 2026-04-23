@@ -17,7 +17,15 @@ use super::{
     App,
     FFT_SIZE_PRESETS,
     WINDOW_SIZE_PRESETS,
+    audio_status_color,
+    audio_status_label,
     format_sample_count,
+    input_path_class_label,
+    input_path_detail,
+    input_source_debug_label,
+    input_supports_monitor,
+    monitor_output_debug_label,
+    output_has_bluetooth_risk,
 };
 use crate::audio::{
     AnalysisSettings,
@@ -29,8 +37,15 @@ impl App {
     pub(super) fn draw_controls(&mut self, ui: &mut Ui) {
         let mut input_gain = self.audio.input_gain();
         let input_level = self.audio.input_level();
+        let mut monitor_enabled = self.audio.monitor_enabled();
+        let mut monitor_gain = self.audio.monitor_gain();
+        let status = self.audio.status();
         let selected_input_id = self.audio.selected_input_id();
         let selected_input_kind = self.selected_input_kind(selected_input_id.as_deref());
+        let monitor_supported = input_supports_monitor(selected_input_id.as_deref());
+        let input_sample_rate = self.audio.current_input_sample_rate();
+        let monitor_output_sample_rate = self.audio.monitor_output_sample_rate();
+        let output_device_name = self.audio.default_output_device_name();
         let frame_width = ui.available_width();
         let has_system_input = self
             .audio_inputs
@@ -244,6 +259,130 @@ impl App {
 
                 ui.add_space(10.0);
                 self.draw_input_level(ui, input_level, selected_input_kind);
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let monitor_button = egui::Button::new(if monitor_enabled {
+                        "Monitor on"
+                    } else {
+                        "Monitor off"
+                    })
+                    .min_size(vec2(104.0, 28.0))
+                    .fill(if monitor_enabled {
+                        Color32::from_rgb(112, 86, 72)
+                    } else {
+                        Color32::from_rgb(42, 46, 52)
+                    })
+                    .stroke(Stroke::new(
+                        1.0_f32,
+                        if monitor_enabled {
+                            Color32::from_rgb(207, 187, 166)
+                        } else {
+                            Color32::from_rgb(84, 89, 97)
+                        },
+                    ))
+                    .corner_radius(CornerRadius::same(14));
+
+                    if ui.add_enabled(monitor_supported, monitor_button).clicked() {
+                        monitor_enabled = !monitor_enabled;
+                        self.audio.set_monitor_enabled(monitor_enabled);
+                    }
+
+                    ui.label(
+                        RichText::new("Monitor gain")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+
+                    let slider = egui::Slider::new(&mut monitor_gain, 0.0..=1.0)
+                        .clamping(egui::SliderClamping::Always)
+                        .trailing_fill(true)
+                        .show_value(false);
+                    if ui.add_sized([140.0, 18.0], slider).changed() {
+                        self.audio.set_monitor_gain(monitor_gain);
+                    }
+
+                    ui.label(
+                        RichText::new(format!("{:>3.0}%", monitor_gain * 100.0))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+                });
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(audio_status_label(&status, selected_input_kind))
+                        .color(audio_status_color(&status))
+                        .size(12.0),
+                );
+                ui.label(
+                    RichText::new(if monitor_supported {
+                        "Monitor plays the selected input back through the default output"
+                    } else {
+                        "Monitor is disabled for monitor / loopback system inputs"
+                    })
+                    .color(Color32::from_rgb(145, 151, 160))
+                    .size(12.0),
+                );
+                ui.label(
+                    RichText::new(input_source_debug_label(selected_input_id.as_deref()))
+                        .color(Color32::from_rgb(145, 151, 160))
+                        .size(12.0)
+                        .monospace(),
+                );
+                ui.add_space(8.0);
+                Frame::new()
+                    .fill(Color32::from_rgb(28, 32, 37))
+                    .corner_radius(CornerRadius::same(12))
+                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(52, 58, 66)))
+                    .inner_margin(Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new("Signal path diagnostics")
+                                .color(Color32::from_rgb(205, 194, 176))
+                                .strong()
+                                .size(12.0),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Input path: {}",
+                                input_path_class_label(selected_input_id.as_deref())
+                            ))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .size(12.0),
+                        );
+                        ui.label(
+                            RichText::new(input_path_detail(selected_input_id.as_deref()))
+                                .color(Color32::from_rgb(145, 151, 160))
+                                .size(12.0),
+                        );
+                        ui.label(
+                            RichText::new(format!("Input rate: {} Hz", input_sample_rate))
+                                .color(Color32::from_rgb(145, 151, 160))
+                                .size(12.0)
+                                .monospace(),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "Monitor output: {}",
+                                monitor_output_debug_label(
+                                    output_device_name.as_deref(),
+                                    monitor_output_sample_rate,
+                                )
+                            ))
+                            .color(Color32::from_rgb(145, 151, 160))
+                            .size(12.0)
+                            .monospace(),
+                        );
+                        if output_has_bluetooth_risk(output_device_name.as_deref()) {
+                            ui.label(
+                                RichText::new(
+                                    "Bluetooth output detected: playback monitor latency and clicks are much more likely.",
+                                )
+                                .color(Color32::from_rgb(210, 166, 136))
+                                .size(12.0),
+                            );
+                        }
+                    });
             });
     }
 

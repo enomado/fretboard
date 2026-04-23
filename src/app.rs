@@ -160,6 +160,7 @@ impl LiveChartKind {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WorkspaceTab {
     Controls,
+    InputScope,
     ConfigGeneral,
     ConfigFft1,
     ConfigResonatorFft,
@@ -174,6 +175,7 @@ impl WorkspaceTab {
     fn label(self) -> &'static str {
         match self {
             Self::Controls => "Controls",
+            Self::InputScope => "Input Scope",
             Self::ConfigGeneral => "Config General",
             Self::ConfigFft1 => "Config FFT1",
             Self::ConfigResonatorFft => "Config Resonator FFT",
@@ -245,11 +247,7 @@ impl App {
         };
 
         preferred_pulse_id
-            .and_then(|preferred_id| {
-                self.audio_inputs
-                    .iter()
-                    .find(|option| option.id == preferred_id)
-            })
+            .and_then(|preferred_id| self.audio_inputs.iter().find(|option| option.id == preferred_id))
             .or_else(|| self.audio_inputs.iter().find(|option| option.kind == kind))
             .or_else(|| self.audio_inputs.first())
             .map(|option| option.id.clone())
@@ -306,6 +304,96 @@ fn input_level_label(input_kind: AudioInputKind) -> &'static str {
         AudioInputKind::System => "System level",
         AudioInputKind::Other => "Input level",
     }
+}
+
+fn input_backend_label(selected_input_id: Option<&str>) -> &'static str {
+    match selected_input_id {
+        Some(id) if id.starts_with("pulse::") => "PulseAudio",
+        Some(id) if id.starts_with("cpal::") => "CPAL",
+        Some(_) => "Custom",
+        None => "None",
+    }
+}
+
+fn input_source_debug_label(selected_input_id: Option<&str>) -> String {
+    match selected_input_id {
+        Some(id) => format!("{} • {}", input_backend_label(Some(id)), id),
+        None => "No input selected".to_owned(),
+    }
+}
+
+fn input_path_class_label(selected_input_id: Option<&str>) -> &'static str {
+    match selected_input_id {
+        Some(id) if id.starts_with("pulse::@DEFAULT_SOURCE@") => "Direct source",
+        Some(id)
+            if id.starts_with("pulse::")
+                && (id.ends_with("@DEFAULT_MONITOR@") || id.ends_with(".monitor")) =>
+        {
+            "Monitor source"
+        }
+        Some(id) if id.starts_with("pulse::") => "Direct source",
+        Some(id) if id.starts_with("cpal::") && is_compat_input_path(id) => "Compat path",
+        Some(id) if id.starts_with("cpal::") => "Device path",
+        Some(_) => "Custom path",
+        None => "No input",
+    }
+}
+
+fn input_path_detail(selected_input_id: Option<&str>) -> &'static str {
+    match selected_input_id {
+        Some(id) if id.starts_with("pulse::@DEFAULT_SOURCE@") => {
+            "Server-chosen live source. Usually the safest low-friction path."
+        }
+        Some(id)
+            if id.starts_with("pulse::")
+                && (id.ends_with("@DEFAULT_MONITOR@") || id.ends_with(".monitor")) =>
+        {
+            "Loopback / monitor source exposed by the audio server."
+        }
+        Some(id) if id.starts_with("pulse::") => "Direct Pulse/PipeWire source path.",
+        Some(id) if id.starts_with("cpal::") && is_compat_input_path(id) => {
+            "Compatibility device. Often adds plugin buffering or resampling on Linux."
+        }
+        Some(id) if id.starts_with("cpal::") => "Direct host device via CPAL.",
+        Some(_) => "Custom audio path.",
+        None => "Choose an input to inspect the route.",
+    }
+}
+
+fn is_compat_input_path(input_id: &str) -> bool {
+    let lowered = input_id.to_lowercase();
+    [
+        "default",
+        "pulse",
+        "sysdefault",
+        "front:",
+        "surround",
+        "plug",
+        "dmix",
+        "dsnoop",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn monitor_output_debug_label(output_name: Option<&str>, output_sample_rate: Option<u32>) -> String {
+    match (output_name, output_sample_rate) {
+        (Some(name), Some(rate)) => format!("{name} • {} Hz", rate),
+        (Some(name), None) => format!("{name} • idle"),
+        (None, Some(rate)) => format!("Unknown output • {} Hz", rate),
+        (None, None) => "No active monitor output".to_owned(),
+    }
+}
+
+fn output_has_bluetooth_risk(output_name: Option<&str>) -> bool {
+    output_name.is_some_and(|name| {
+        let lowered = name.to_lowercase();
+        lowered.contains("bluez") || lowered.contains("bluetooth") || lowered.contains("a2dp")
+    })
+}
+
+fn input_supports_monitor(selected_input_id: Option<&str>) -> bool {
+    selected_input_id.is_some_and(|id| !id.ends_with("@DEFAULT_MONITOR@") && !id.ends_with(".monitor"))
 }
 
 fn waiting_prompt(input_kind: AudioInputKind) -> &'static str {

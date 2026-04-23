@@ -22,6 +22,7 @@ use super::{
     audio_status_label,
     cents_color,
     input_level_label,
+    input_source_debug_label,
     pill,
     pitch_class_angle,
     pitch_class_color,
@@ -42,6 +43,56 @@ use crate::core_types::pitch::PCNote;
 use crate::ui::theme::PANEL_FILL;
 
 impl App {
+    pub(super) fn draw_input_scope_card(&mut self, ui: &mut Ui) {
+        let status = self.audio.status();
+        let input_level = self.audio.input_level();
+        let waveform = self.audio.input_waveform();
+        let selected_input_id = self.audio.selected_input_id();
+        let selected_input_kind = self.selected_input_kind(selected_input_id.as_deref());
+
+        Frame::new()
+            .fill(PANEL_FILL)
+            .corner_radius(CornerRadius::same(22))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .inner_margin(Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("Input Scope")
+                                .size(20.0)
+                                .color(Color32::from_rgb(228, 220, 208)),
+                        );
+                        ui.label(
+                            egui::RichText::new(audio_status_label(&status, selected_input_kind))
+                                .color(audio_status_color(&status)),
+                        );
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        pill(
+                            ui,
+                            &format!("{} samples", waveform.len()),
+                            Color32::from_rgb(201, 195, 184),
+                            Color32::from_rgb(64, 68, 73),
+                        );
+                    });
+                });
+
+                ui.add_space(12.0);
+                self.draw_input_level(ui, input_level, selected_input_kind);
+                ui.add_space(12.0);
+                self.draw_input_scope_panel(ui, &waveform);
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(input_source_debug_label(selected_input_id.as_deref()))
+                        .color(Color32::from_rgb(145, 151, 160))
+                        .size(12.0)
+                        .monospace(),
+                );
+            });
+    }
+
     pub(super) fn draw_tuner_card(&mut self, ui: &mut Ui) {
         let status = self.audio.status();
         let reading = self.audio.reading();
@@ -162,6 +213,83 @@ impl App {
             FontId::monospace(12.0),
             Color32::from_rgb(230, 223, 210),
         );
+    }
+
+    fn draw_input_scope_panel(&self, ui: &mut Ui, waveform: &[f32]) {
+        let available_size = ui.available_size_before_wrap();
+        let desired_size = vec2(available_size.x, available_size.y.max(220.0));
+        let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
+        let painter = ui.painter_at(rect);
+
+        painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_stroke(
+            rect,
+            18.0,
+            Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+            egui::StrokeKind::Inside,
+        );
+
+        painter.text(
+            pos2(rect.left() + 14.0, rect.top() + 12.0),
+            egui::Align2::LEFT_TOP,
+            "Raw waveform preview",
+            FontId::proportional(15.0),
+            Color32::from_rgb(201, 195, 184),
+        );
+        painter.text(
+            pos2(rect.right() - 14.0, rect.top() + 12.0),
+            egui::Align2::RIGHT_TOP,
+            "recent mono samples after input gain",
+            FontId::proportional(12.0),
+            Color32::from_rgb(152, 158, 165),
+        );
+
+        let plot_rect = Rect::from_min_max(
+            pos2(rect.left() + 14.0, rect.top() + 42.0),
+            pos2(rect.right() - 14.0, rect.bottom() - 14.0),
+        );
+        let center_y = plot_rect.center().y;
+        painter.line_segment(
+            [
+                pos2(plot_rect.left(), center_y),
+                pos2(plot_rect.right(), center_y),
+            ],
+            Stroke::new(1.0_f32, Color32::from_rgb(70, 75, 83)),
+        );
+
+        if waveform.len() < 2 {
+            painter.text(
+                plot_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Waiting for input samples",
+                FontId::proportional(14.0),
+                Color32::from_rgb(139, 143, 149),
+            );
+            return;
+        }
+
+        let points: Vec<_> = waveform
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| {
+                let x = egui::remap(
+                    index as f32,
+                    0.0..=(waveform.len().saturating_sub(1) as f32),
+                    plot_rect.left()..=plot_rect.right(),
+                );
+                let y = egui::remap(
+                    sample.clamp(-1.0, 1.0),
+                    -1.0..=1.0,
+                    plot_rect.bottom()..=plot_rect.top(),
+                );
+                pos2(x, y)
+            })
+            .collect();
+
+        painter.add(egui::Shape::line(
+            points,
+            Stroke::new(1.5_f32, Color32::from_rgb(120, 204, 238)),
+        ));
     }
 
     fn draw_tuner_meter(&self, ui: &mut Ui, reading: Option<&TunerTarget>, input_kind: AudioInputKind) {

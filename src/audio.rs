@@ -9,11 +9,13 @@ mod native {
         Stdio,
     };
     use std::sync::atomic::{
+        AtomicBool,
         AtomicU32,
         Ordering,
     };
     use std::sync::{
         Arc,
+        Condvar,
         Mutex,
     };
     use std::thread::{
@@ -68,7 +70,9 @@ mod native {
     const PULSE_SAMPLE_RATE: u32 = 44_100;
     const PULSE_DEFAULT_SOURCE: &str = "@DEFAULT_SOURCE@";
     const PULSE_DEFAULT_MONITOR: &str = "@DEFAULT_MONITOR@";
-
+    const INPUT_WAVEFORM_HISTORY: usize = 2048;
+    const MONITOR_DEFAULT_GAIN: f32 = 0.35;
+    const MONITOR_BUFFER_MAX_FRAMES: usize = 4096;
     struct PulseCapture {
         child:  Child,
         thread: JoinHandle<()>,
@@ -83,11 +87,66 @@ mod native {
         }
     }
 
+    struct MonitorOutput {
+        stream:      cpal::Stream,
+        sample_rate: u32,
+    }
+
+    impl MonitorOutput {
+        fn stop(self) {
+            let _ = self.stream.pause();
+        }
+    }
+
+    struct AnalysisWorker {
+        stop:   Arc<AtomicBool>,
+        thread: JoinHandle<()>,
+    }
+
+    impl AnalysisWorker {
+        fn stop(self) {
+            self.stop.store(true, Ordering::Relaxed);
+            let _ = self.thread.join();
+        }
+    }
+
+    struct AnalysisMailbox {
+        latest: Mutex<Option<Vec<f32>>>,
+        wake:   Condvar,
+    }
+
+    impl AnalysisMailbox {
+        fn new() -> Self {
+            Self {
+                latest: Mutex::new(None),
+                wake:   Condvar::new(),
+            }
+        }
+    }
+
+    struct MonitorBuffer {
+        samples:        VecDeque<f32>,
+        resample_phase: f32,
+    }
+
+    impl MonitorBuffer {
+        fn with_capacity(capacity: usize) -> Self {
+            Self {
+                samples:        VecDeque::with_capacity(capacity),
+                resample_phase: 0.0,
+            }
+        }
+
+        fn clear(&mut self) {
+            self.samples.clear();
+            self.resample_phase = 0.0;
+        }
+    }
+
     struct AnalysisPipeline {
         buffer:         VecDeque<f32>,
         last_analysis:  Instant,
         planner:        FftPlanner<f32>,
-        resonator_bank: ResonatorBank,
         resonator_view: ResonatorViewSettings,
         sample_rate:    f32,
     }
@@ -131,7 +190,6 @@ mod native {
                 buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
                 last_analysis: Instant::now() - ANALYSIS_INTERVAL,
                 planner: FftPlanner::new(),
-                resonator_bank: build_resonator_bank(sample_rate, &resonator_view),
                 resonator_view,
                 sample_rate,
             }
@@ -150,14 +208,17 @@ mod native {
                 .map(|guard| guard.clone())
                 .unwrap_or_default()
                 .sanitized();
-            self.sync_resonator_bank(&analysis_settings, shared);
+            self.sync_resonator_view(&analysis_settings, shared);
             let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
+            let mut recent_samples = Vec::new();
 
             for sample in samples {
                 let scaled = (sample * gain).clamp(-1.0, 1.0);
                 self.buffer.push_back(scaled);
-                self.resonator_bank.process_sample(scaled);
+                recent_samples.push(scaled);
             }
+
+            append_input_waveform(shared, &recent_samples);
 
             while self.buffer.len() > MAX_WINDOW_SIZE * 2 {
                 self.buffer.pop_front();
@@ -176,7 +237,8 @@ mod native {
             let previous_level = f32::from_bits(input_level.load(Ordering::Relaxed));
             let smoothed_level = smoothed_level(previous_level, level);
             input_level.store(smoothed_level.to_bits(), Ordering::Relaxed);
-            let resonator_snapshot = resonator_snapshot(&self.resonator_bank, &self.resonator_view);
+            let resonator_snapshot =
+                resonator_snapshot_for_window(&window, self.sample_rate, &self.resonator_view);
 
             let frame = analyze_window(
                 &window,
@@ -188,13 +250,12 @@ mod native {
             publish_reading(shared, frame);
         }
 
-        fn sync_resonator_bank(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
+        fn sync_resonator_view(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
             let requested = ResonatorViewSettings::from(settings);
             if requested == self.resonator_view {
                 return;
             }
 
-            self.resonator_bank = build_resonator_bank(self.sample_rate, &requested);
             self.resonator_view = requested;
 
             if let Ok(mut state) = shared.lock() {
@@ -211,12 +272,16 @@ mod native {
 
     enum StartedInput {
         Cpal {
-            stream:      cpal::Stream,
-            selected_id: String,
+            stream:          cpal::Stream,
+            analysis_worker: AnalysisWorker,
+            selected_id:     String,
+            sample_rate:     u32,
         },
         Pulse {
-            capture:     PulseCapture,
-            selected_id: String,
+            capture:         PulseCapture,
+            analysis_worker: AnalysisWorker,
+            selected_id:     String,
+            sample_rate:     u32,
         },
     }
 
@@ -335,6 +400,7 @@ mod native {
     struct SharedState {
         status:              AudioStatus,
         reading:             Option<TunerReading>,
+        input_waveform:      VecDeque<f32>,
         waterfall:           VecDeque<Vec<f32>>,
         note_waterfall:      VecDeque<Vec<f32>>,
         spiral_waterfall:    VecDeque<Vec<f32>>,
@@ -343,13 +409,19 @@ mod native {
     }
 
     pub struct AudioEngine {
-        shared:            Arc<Mutex<SharedState>>,
-        settings:          Arc<Mutex<AnalysisSettings>>,
-        input_gain:        Arc<AtomicU32>,
-        input_level:       Arc<AtomicU32>,
-        selected_input_id: Arc<Mutex<Option<String>>>,
-        streams:           Arc<Mutex<Vec<ManuallyDrop<cpal::Stream>>>>,
-        pulse_capture:     Arc<Mutex<Option<PulseCapture>>>,
+        shared:              Arc<Mutex<SharedState>>,
+        settings:            Arc<Mutex<AnalysisSettings>>,
+        input_gain:          Arc<AtomicU32>,
+        input_level:         Arc<AtomicU32>,
+        monitor_enabled:     Arc<AtomicBool>,
+        monitor_gain:        Arc<AtomicU32>,
+        monitor_sample_rate: Arc<AtomicU32>,
+        monitor_buffer:      Arc<Mutex<MonitorBuffer>>,
+        selected_input_id:   Arc<Mutex<Option<String>>>,
+        streams:             Arc<Mutex<Vec<ManuallyDrop<cpal::Stream>>>>,
+        pulse_capture:       Arc<Mutex<Option<PulseCapture>>>,
+        analysis_worker:     Arc<Mutex<Option<AnalysisWorker>>>,
+        monitor_output:      Arc<Mutex<Option<MonitorOutput>>>,
     }
 
     impl AudioEngine {
@@ -357,6 +429,7 @@ mod native {
             let shared = Arc::new(Mutex::new(SharedState {
                 status:              AudioStatus::Idle,
                 reading:             None,
+                input_waveform:      VecDeque::with_capacity(INPUT_WAVEFORM_HISTORY),
                 waterfall:           VecDeque::with_capacity(WATERFALL_HISTORY),
                 note_waterfall:      VecDeque::with_capacity(WATERFALL_HISTORY),
                 spiral_waterfall:    VecDeque::with_capacity(WATERFALL_HISTORY),
@@ -366,33 +439,92 @@ mod native {
             let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
             let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
             let input_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+            let monitor_enabled = Arc::new(AtomicBool::new(false));
+            let monitor_gain = Arc::new(AtomicU32::new(MONITOR_DEFAULT_GAIN.to_bits()));
+            let monitor_sample_rate = Arc::new(AtomicU32::new(PULSE_SAMPLE_RATE));
+            let monitor_buffer = Arc::new(Mutex::new(MonitorBuffer::with_capacity(
+                MONITOR_BUFFER_MAX_FRAMES,
+            )));
             let selected_input_id = Arc::new(Mutex::new(None));
             let streams = Arc::new(Mutex::new(Vec::new()));
             let pulse_capture = Arc::new(Mutex::new(None));
+            let analysis_worker = Arc::new(Mutex::new(None));
+            let monitor_output = Arc::new(Mutex::new(None));
+            let preferred_input_id = preferred_initial_input_id();
 
             let input = start_input(
                 shared.clone(),
                 settings.clone(),
                 input_gain.clone(),
                 input_level.clone(),
-                None,
-            );
+                monitor_enabled.clone(),
+                monitor_gain.clone(),
+                monitor_sample_rate.clone(),
+                monitor_buffer.clone(),
+                monitor_output.clone(),
+                preferred_input_id.as_deref(),
+            )
+            .or_else(|preferred_error| {
+                let should_fallback = preferred_input_id
+                    .as_deref()
+                    .is_none_or(|id| !id.starts_with(PULSE_INPUT_PREFIX));
+
+                if should_fallback {
+                    start_input(
+                        shared.clone(),
+                        settings.clone(),
+                        input_gain.clone(),
+                        input_level.clone(),
+                        monitor_enabled.clone(),
+                        monitor_gain.clone(),
+                        monitor_sample_rate.clone(),
+                        monitor_buffer.clone(),
+                        monitor_output.clone(),
+                        None,
+                    )
+                    .map_err(|fallback_error| {
+                        format!(
+                            "Preferred input failed: {preferred_error}. Fallback failed: {fallback_error}"
+                        )
+                    })
+                } else {
+                    Err(preferred_error)
+                }
+            });
 
             match input {
-                Ok(StartedInput::Cpal { stream, selected_id }) => {
+                Ok(StartedInput::Cpal {
+                    stream,
+                    analysis_worker: worker,
+                    selected_id,
+                    sample_rate,
+                }) => {
+                    monitor_sample_rate.store(sample_rate, Ordering::Relaxed);
                     if let Ok(mut current) = selected_input_id.lock() {
                         *current = Some(selected_id);
                     }
                     if let Ok(mut stream_guard) = streams.lock() {
                         stream_guard.push(ManuallyDrop::new(stream));
                     }
+                    if let Ok(mut guard) = analysis_worker.lock() {
+                        *guard = Some(worker);
+                    }
                 }
-                Ok(StartedInput::Pulse { capture, selected_id }) => {
+                Ok(StartedInput::Pulse {
+                    capture,
+                    analysis_worker: worker,
+                    selected_id,
+                    sample_rate,
+                }) => {
+                    monitor_sample_rate.store(sample_rate, Ordering::Relaxed);
                     if let Ok(mut current) = selected_input_id.lock() {
                         *current = Some(selected_id);
                     }
                     if let Ok(mut guard) = pulse_capture.lock() {
                         *guard = Some(capture);
+                    }
+                    if let Ok(mut guard) = analysis_worker.lock() {
+                        *guard = Some(worker);
                     }
                 }
                 Err(message) => update_error(&shared, &message),
@@ -403,9 +535,15 @@ mod native {
                 settings,
                 input_gain,
                 input_level,
+                monitor_enabled,
+                monitor_gain,
+                monitor_sample_rate,
+                monitor_buffer,
                 selected_input_id,
                 streams,
                 pulse_capture,
+                analysis_worker,
+                monitor_output,
             }
         }
 
@@ -446,6 +584,55 @@ mod native {
             f32::from_bits(self.input_level.load(Ordering::Relaxed))
         }
 
+        pub fn input_waveform(&self) -> Vec<f32> {
+            self.shared
+                .lock()
+                .map(|guard| guard.input_waveform.iter().copied().collect())
+                .unwrap_or_default()
+        }
+
+        pub fn monitor_enabled(&self) -> bool {
+            self.monitor_enabled.load(Ordering::Relaxed)
+        }
+
+        pub fn set_monitor_enabled(&self, enabled: bool) {
+            self.monitor_enabled.store(enabled, Ordering::Relaxed);
+            let selected_input_id = self.selected_input_id();
+            refresh_monitor_playback(
+                selected_input_id.as_deref(),
+                &self.monitor_enabled,
+                &self.monitor_sample_rate,
+                &self.monitor_buffer,
+                &self.monitor_output,
+            );
+        }
+
+        pub fn monitor_gain(&self) -> f32 {
+            f32::from_bits(self.monitor_gain.load(Ordering::Relaxed))
+        }
+
+        pub fn set_monitor_gain(&self, gain: f32) {
+            self.monitor_gain
+                .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+        }
+
+        pub fn current_input_sample_rate(&self) -> u32 {
+            self.monitor_sample_rate.load(Ordering::Relaxed)
+        }
+
+        pub fn monitor_output_sample_rate(&self) -> Option<u32> {
+            self.monitor_output
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|output| output.sample_rate))
+        }
+
+        pub fn default_output_device_name(&self) -> Option<String> {
+            cpal::default_host()
+                .default_output_device()
+                .and_then(|device| device.name().ok())
+        }
+
         pub fn available_inputs(&self) -> Vec<AudioInputOption> {
             enumerate_input_options()
         }
@@ -465,17 +652,26 @@ mod native {
                 self.settings.clone(),
                 self.input_gain.clone(),
                 self.input_level.clone(),
+                self.monitor_enabled.clone(),
+                self.monitor_gain.clone(),
+                self.monitor_sample_rate.clone(),
+                self.monitor_buffer.clone(),
+                self.monitor_output.clone(),
                 input_id.as_deref(),
             ) {
                 Ok(started_input) => {
                     if let Ok(mut state) = self.shared.lock() {
                         state.reading = None;
+                        state.input_waveform.clear();
                         state.waterfall.clear();
                         state.note_waterfall.clear();
                         state.spiral_waterfall.clear();
                         state.resonator_waterfall.clear();
                         state.smoothed_frequency = None;
                         state.status = AudioStatus::Listening;
+                    }
+                    if let Ok(mut buffer) = self.monitor_buffer.lock() {
+                        buffer.clear();
                     }
 
                     if let Ok(streams) = self.streams.lock() {
@@ -488,19 +684,42 @@ mod native {
                     {
                         capture.stop();
                     }
+                    if let Ok(mut guard) = self.analysis_worker.lock()
+                        && let Some(worker) = guard.take()
+                    {
+                        worker.stop();
+                    }
 
                     let resolved_id = match started_input {
-                        StartedInput::Cpal { stream, selected_id } => {
+                        StartedInput::Cpal {
+                            stream,
+                            analysis_worker: worker,
+                            selected_id,
+                            sample_rate,
+                        } => {
+                            self.monitor_sample_rate.store(sample_rate, Ordering::Relaxed);
                             if let Ok(mut streams) = self.streams.lock() {
                                 // CPAL 0.15's ALSA backend can panic while dropping an input stream on shutdown.
                                 // Keep old streams paused and alive instead of dropping through the buggy path.
                                 streams.push(ManuallyDrop::new(stream));
                             }
+                            if let Ok(mut guard) = self.analysis_worker.lock() {
+                                *guard = Some(worker);
+                            }
                             selected_id
                         }
-                        StartedInput::Pulse { capture, selected_id } => {
+                        StartedInput::Pulse {
+                            capture,
+                            analysis_worker: worker,
+                            selected_id,
+                            sample_rate,
+                        } => {
+                            self.monitor_sample_rate.store(sample_rate, Ordering::Relaxed);
                             if let Ok(mut guard) = self.pulse_capture.lock() {
                                 *guard = Some(capture);
+                            }
+                            if let Ok(mut guard) = self.analysis_worker.lock() {
+                                *guard = Some(worker);
                             }
                             selected_id
                         }
@@ -509,8 +728,38 @@ mod native {
                     if let Ok(mut selected) = self.selected_input_id.lock() {
                         *selected = Some(resolved_id);
                     }
+
+                    let selected_input_id = self.selected_input_id();
+                    refresh_monitor_playback(
+                        selected_input_id.as_deref(),
+                        &self.monitor_enabled,
+                        &self.monitor_sample_rate,
+                        &self.monitor_buffer,
+                        &self.monitor_output,
+                    );
                 }
                 Err(message) => update_error(&self.shared, &message),
+            }
+        }
+    }
+
+    impl Drop for AudioEngine {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = self.pulse_capture.lock()
+                && let Some(capture) = guard.take()
+            {
+                capture.stop();
+            }
+            if let Ok(mut guard) = self.analysis_worker.lock()
+                && let Some(worker) = guard.take()
+            {
+                worker.stop();
+            }
+
+            if let Ok(mut guard) = self.monitor_output.lock()
+                && let Some(playback) = guard.take()
+            {
+                playback.stop();
             }
         }
     }
@@ -520,13 +769,34 @@ mod native {
         settings: Arc<Mutex<AnalysisSettings>>,
         input_gain: Arc<AtomicU32>,
         input_level: Arc<AtomicU32>,
+        monitor_enabled: Arc<AtomicBool>,
+        monitor_gain: Arc<AtomicU32>,
+        monitor_sample_rate: Arc<AtomicU32>,
+        monitor_buffer: Arc<Mutex<MonitorBuffer>>,
+        monitor_output: Arc<Mutex<Option<MonitorOutput>>>,
         requested_input_id: Option<&str>,
     ) -> Result<StartedInput, String> {
         if let Some(source_name) = requested_input_id.and_then(strip_pulse_input_id) {
-            let capture = start_pulse_capture(shared, settings, input_gain, input_level, source_name)?;
+            let (analysis_sender, analysis_worker) = start_analysis_worker(
+                PULSE_SAMPLE_RATE as f32,
+                shared.clone(),
+                settings.clone(),
+                input_gain.clone(),
+                input_level.clone(),
+            );
+            let capture = start_pulse_capture(
+                shared,
+                monitor_enabled,
+                monitor_gain,
+                monitor_buffer,
+                analysis_sender,
+                source_name,
+            )?;
             return Ok(StartedInput::Pulse {
                 capture,
+                analysis_worker,
                 selected_id: format!("{PULSE_INPUT_PREFIX}{source_name}"),
+                sample_rate: PULSE_SAMPLE_RATE,
             });
         }
 
@@ -534,8 +804,8 @@ mod native {
         let host = cpal::default_host();
         let device = select_input_device(&host, requested_cpal_id)?;
         let selected_input_id = device
-            .description()
-            .map(|description| format!("{CPAL_INPUT_PREFIX}{}", description.name()))
+            .name()
+            .map(|name| format!("{CPAL_INPUT_PREFIX}{name}"))
             .unwrap_or_else(|_| format!("{CPAL_INPUT_PREFIX}Unknown input"));
 
         let config = match device.default_input_config() {
@@ -549,9 +819,16 @@ mod native {
             state.status = AudioStatus::Listening;
         }
 
-        let sample_rate = config.sample_rate() as f32;
+        let sample_rate = config.sample_rate().0 as f32;
         let channels = usize::from(config.channels());
         let stream_config: cpal::StreamConfig = config.clone().into();
+        let (analysis_sender, analysis_worker) = start_analysis_worker(
+            sample_rate,
+            shared.clone(),
+            settings.clone(),
+            input_gain.clone(),
+            input_level.clone(),
+        );
 
         let err_state = shared.clone();
         let err_fn = move |error| update_error(&err_state, &format!("Audio stream error: {error}"));
@@ -563,10 +840,10 @@ mod native {
                     &stream_config,
                     channels,
                     sample_rate,
-                    shared.clone(),
-                    settings.clone(),
-                    input_gain.clone(),
-                    input_level.clone(),
+                    monitor_enabled.clone(),
+                    monitor_gain.clone(),
+                    monitor_buffer.clone(),
+                    analysis_sender.clone(),
                     err_fn,
                 )
             }
@@ -576,10 +853,10 @@ mod native {
                     &stream_config,
                     channels,
                     sample_rate,
-                    shared.clone(),
-                    settings.clone(),
-                    input_gain.clone(),
-                    input_level.clone(),
+                    monitor_enabled.clone(),
+                    monitor_gain.clone(),
+                    monitor_buffer.clone(),
+                    analysis_sender.clone(),
                     err_fn,
                 )
             }
@@ -589,10 +866,10 @@ mod native {
                     &stream_config,
                     channels,
                     sample_rate,
-                    shared.clone(),
-                    settings.clone(),
-                    input_gain.clone(),
-                    input_level.clone(),
+                    monitor_enabled.clone(),
+                    monitor_gain.clone(),
+                    monitor_buffer.clone(),
+                    analysis_sender,
                     err_fn,
                 )
             }
@@ -610,10 +887,60 @@ mod native {
             return Err("Failed to start input stream".to_owned());
         }
 
+        refresh_monitor_playback(
+            Some(selected_input_id.as_str()),
+            &monitor_enabled,
+            &monitor_sample_rate,
+            &monitor_buffer,
+            &monitor_output,
+        );
+
         Ok(StartedInput::Cpal {
             stream,
+            analysis_worker,
             selected_id: selected_input_id,
+            sample_rate: sample_rate.round() as u32,
         })
+    }
+
+    fn start_analysis_worker(
+        sample_rate: f32,
+        shared: Arc<Mutex<SharedState>>,
+        settings: Arc<Mutex<AnalysisSettings>>,
+        input_gain: Arc<AtomicU32>,
+        input_level: Arc<AtomicU32>,
+    ) -> (Arc<AnalysisMailbox>, AnalysisWorker) {
+        let mailbox = Arc::new(AnalysisMailbox::new());
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+        let worker_mailbox = mailbox.clone();
+
+        let thread = thread::spawn(move || {
+            let mut pipeline = AnalysisPipeline::new(sample_rate);
+            while !stop_flag.load(Ordering::Relaxed) {
+                let mut latest = match worker_mailbox.latest.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => break,
+                };
+
+                while latest.is_none() && !stop_flag.load(Ordering::Relaxed) {
+                    match worker_mailbox
+                        .wake
+                        .wait_timeout(latest, Duration::from_millis(25))
+                    {
+                        Ok((guard, _)) => latest = guard,
+                        Err(_) => return,
+                    }
+                }
+
+                if let Some(samples) = latest.take() {
+                    drop(latest);
+                    pipeline.push_samples(samples, &shared, &settings, &input_gain, &input_level);
+                }
+            }
+        });
+
+        (mailbox, AnalysisWorker { stop, thread })
     }
 
     fn build_stream<T>(
@@ -621,28 +948,30 @@ mod native {
         config: &cpal::StreamConfig,
         channels: usize,
         sample_rate: f32,
-        shared: Arc<Mutex<SharedState>>,
-        settings: Arc<Mutex<AnalysisSettings>>,
-        input_gain: Arc<AtomicU32>,
-        input_level: Arc<AtomicU32>,
+        monitor_enabled: Arc<AtomicBool>,
+        monitor_gain: Arc<AtomicU32>,
+        monitor_buffer: Arc<Mutex<MonitorBuffer>>,
+        analysis_mailbox: Arc<AnalysisMailbox>,
         err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
         T: cpal::Sample + cpal::SizedSample,
         f32: cpal::FromSample<T>,
     {
-        let mut pipeline = AnalysisPipeline::new(sample_rate);
-
         device.build_input_stream(
             config,
             move |data: &[T], _| {
-                pipeline.push_samples(
-                    data.chunks(channels).map(|frame| f32::from_sample(frame[0])),
-                    &shared,
-                    &settings,
-                    &input_gain,
-                    &input_level,
-                );
+                let _ = sample_rate;
+                let samples: Vec<f32> = data
+                    .chunks(channels)
+                    .map(|frame| f32::from_sample(frame[0]))
+                    .collect();
+
+                if monitor_enabled.load(Ordering::Relaxed) {
+                    push_monitor_samples(&samples, &monitor_gain, &monitor_buffer);
+                }
+
+                push_analysis_samples(&analysis_mailbox, samples);
             },
             err_fn,
             None,
@@ -651,9 +980,10 @@ mod native {
 
     fn start_pulse_capture(
         shared: Arc<Mutex<SharedState>>,
-        settings: Arc<Mutex<AnalysisSettings>>,
-        input_gain: Arc<AtomicU32>,
-        input_level: Arc<AtomicU32>,
+        monitor_enabled: Arc<AtomicBool>,
+        monitor_gain: Arc<AtomicU32>,
+        monitor_buffer: Arc<Mutex<MonitorBuffer>>,
+        analysis_mailbox: Arc<AnalysisMailbox>,
         source_name: &str,
     ) -> Result<PulseCapture, String> {
         let mut command = Command::new("parec");
@@ -680,7 +1010,6 @@ mod native {
         }
 
         let thread = thread::spawn(move || {
-            let mut pipeline = AnalysisPipeline::new(PULSE_SAMPLE_RATE as f32);
             let mut reader = stdout;
             let mut byte_buffer = [0_u8; 4096];
             let mut remainder = Vec::new();
@@ -695,10 +1024,15 @@ mod native {
                             continue;
                         }
 
-                        let samples = remainder[..complete_len]
+                        if monitor_enabled.load(Ordering::Relaxed) {
+                            push_monitor_bytes(&remainder[..complete_len], &monitor_gain, &monitor_buffer);
+                        }
+
+                        let samples: Vec<f32> = remainder[..complete_len]
                             .chunks_exact(4)
-                            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                        pipeline.push_samples(samples, &shared, &settings, &input_gain, &input_level);
+                            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                            .collect();
+                        push_analysis_samples(&analysis_mailbox, samples);
                         remainder.drain(..complete_len);
                     }
                     Err(error) => {
@@ -710,6 +1044,278 @@ mod native {
         });
 
         Ok(PulseCapture { child, thread })
+    }
+
+    fn push_analysis_samples(mailbox: &Arc<AnalysisMailbox>, samples: Vec<f32>) {
+        if let Ok(mut latest) = mailbox.latest.lock() {
+            *latest = Some(samples);
+            mailbox.wake.notify_one();
+        }
+    }
+
+    fn append_input_waveform(shared: &Arc<Mutex<SharedState>>, samples: &[f32]) {
+        if samples.is_empty() {
+            return;
+        }
+
+        if let Ok(mut state) = shared.lock() {
+            state.input_waveform.extend(samples.iter().copied());
+            while state.input_waveform.len() > INPUT_WAVEFORM_HISTORY {
+                state.input_waveform.pop_front();
+            }
+        }
+    }
+
+    fn refresh_monitor_playback(
+        selected_input_id: Option<&str>,
+        monitor_enabled: &Arc<AtomicBool>,
+        monitor_sample_rate: &Arc<AtomicU32>,
+        monitor_buffer: &Arc<Mutex<MonitorBuffer>>,
+        monitor_output: &Arc<Mutex<Option<MonitorOutput>>>,
+    ) {
+        let should_run = monitor_enabled.load(Ordering::Relaxed)
+            && selected_input_id.is_some_and(monitor_supported_for_input);
+        let desired_sample_rate = monitor_sample_rate.load(Ordering::Relaxed);
+
+        if should_run {
+            if let Ok(mut output) = monitor_output.lock() {
+                let needs_restart = output
+                    .as_ref()
+                    .is_none_or(|active| active.sample_rate != desired_sample_rate);
+                if needs_restart {
+                    if let Some(active) = output.take() {
+                        active.stop();
+                    }
+                    if let Ok(mut buffer) = monitor_buffer.lock() {
+                        buffer.clear();
+                    }
+                    if let Ok(started) = start_monitor_output(
+                        desired_sample_rate,
+                        monitor_buffer.clone(),
+                        monitor_output.clone(),
+                    ) {
+                        *output = Some(started);
+                    }
+                }
+            }
+        } else if let Ok(mut output) = monitor_output.lock()
+            && let Some(active) = output.take()
+        {
+            active.stop();
+        }
+    }
+
+    fn start_monitor_output(
+        desired_sample_rate: u32,
+        monitor_buffer: Arc<Mutex<MonitorBuffer>>,
+        _monitor_output: Arc<Mutex<Option<MonitorOutput>>>,
+    ) -> Result<MonitorOutput, String> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| "No output device found for monitor playback".to_owned())?;
+        let (config, sample_format, actual_sample_rate) =
+            select_monitor_output_config(&device, desired_sample_rate)?;
+
+        let channels = usize::from(config.channels);
+        let err_fn = move |_error| {};
+
+        let stream = match sample_format {
+            cpal::SampleFormat::F32 => {
+                build_output_stream::<f32>(
+                    &device,
+                    &config,
+                    channels,
+                    desired_sample_rate,
+                    actual_sample_rate,
+                    monitor_buffer.clone(),
+                    err_fn,
+                )
+                .map_err(|error| format!("Failed to build monitor output stream: {error}"))?
+            }
+            cpal::SampleFormat::I16 => {
+                build_output_stream::<i16>(
+                    &device,
+                    &config,
+                    channels,
+                    desired_sample_rate,
+                    actual_sample_rate,
+                    monitor_buffer.clone(),
+                    err_fn,
+                )
+                .map_err(|error| format!("Failed to build monitor output stream: {error}"))?
+            }
+            cpal::SampleFormat::U16 => {
+                build_output_stream::<u16>(
+                    &device,
+                    &config,
+                    channels,
+                    desired_sample_rate,
+                    actual_sample_rate,
+                    monitor_buffer.clone(),
+                    err_fn,
+                )
+                .map_err(|error| format!("Failed to build monitor output stream: {error}"))?
+            }
+            other => return Err(format!("Unsupported monitor output format: {other:?}")),
+        };
+
+        stream
+            .play()
+            .map_err(|error| format!("Failed to start monitor output stream: {error}"))?;
+
+        Ok(MonitorOutput {
+            stream,
+            sample_rate: actual_sample_rate,
+        })
+    }
+
+    fn push_monitor_bytes(
+        input_bytes: &[u8],
+        monitor_gain: &Arc<AtomicU32>,
+        monitor_buffer: &Arc<Mutex<MonitorBuffer>>,
+    ) {
+        let gain = f32::from_bits(monitor_gain.load(Ordering::Relaxed)).clamp(0.0, 1.0);
+        let mut samples = Vec::with_capacity(input_bytes.len() / 4);
+
+        for chunk in input_bytes.chunks_exact(4) {
+            let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            samples.push((sample * gain).clamp(-1.0, 1.0));
+        }
+        append_monitor_buffer(monitor_buffer, &samples);
+    }
+
+    fn push_monitor_samples(
+        samples: &[f32],
+        monitor_gain: &Arc<AtomicU32>,
+        monitor_buffer: &Arc<Mutex<MonitorBuffer>>,
+    ) {
+        let gain = f32::from_bits(monitor_gain.load(Ordering::Relaxed)).clamp(0.0, 1.0);
+        let scaled: Vec<f32> = samples
+            .iter()
+            .map(|sample| (sample * gain).clamp(-1.0, 1.0))
+            .collect();
+        append_monitor_buffer(monitor_buffer, &scaled);
+    }
+
+    fn append_monitor_buffer(monitor_buffer: &Arc<Mutex<MonitorBuffer>>, samples: &[f32]) {
+        if let Ok(mut buffer) = monitor_buffer.lock() {
+            buffer.samples.extend(samples.iter().copied());
+            while buffer.samples.len() > MONITOR_BUFFER_MAX_FRAMES {
+                buffer.samples.pop_front();
+            }
+        }
+    }
+
+    fn select_monitor_output_config(
+        device: &cpal::Device,
+        desired_sample_rate: u32,
+    ) -> Result<(cpal::StreamConfig, cpal::SampleFormat, u32), String> {
+        let preferred_formats = [
+            cpal::SampleFormat::F32,
+            cpal::SampleFormat::I16,
+            cpal::SampleFormat::U16,
+        ];
+
+        if let Ok(configs) = device.supported_output_configs() {
+            let configs: Vec<_> = configs.collect();
+            for preferred_format in preferred_formats {
+                if let Some(config) = configs.iter().find(|config| {
+                    config.sample_format() == preferred_format
+                        && config.min_sample_rate().0 <= desired_sample_rate
+                        && config.max_sample_rate().0 >= desired_sample_rate
+                }) {
+                    return Ok((
+                        config
+                            .with_sample_rate(cpal::SampleRate(desired_sample_rate))
+                            .config(),
+                        config.sample_format(),
+                        desired_sample_rate,
+                    ));
+                }
+            }
+        }
+
+        let default = device
+            .default_output_config()
+            .map_err(|error| format!("Monitor output config error: {error}"))?;
+        let actual_sample_rate = default.sample_rate().0;
+        Ok((default.config(), default.sample_format(), actual_sample_rate))
+    }
+
+    fn build_output_stream<T>(
+        device: &cpal::Device,
+        config: &cpal::StreamConfig,
+        channels: usize,
+        input_sample_rate: u32,
+        output_sample_rate: u32,
+        monitor_buffer: Arc<Mutex<MonitorBuffer>>,
+        err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
+    ) -> Result<cpal::Stream, cpal::BuildStreamError>
+    where
+        T: cpal::Sample + cpal::SizedSample + cpal::FromSample<f32>,
+    {
+        device.build_output_stream(
+            config,
+            move |data: &mut [T], _| {
+                fill_output_buffer(
+                    data,
+                    channels,
+                    input_sample_rate,
+                    output_sample_rate,
+                    &monitor_buffer,
+                );
+            },
+            err_fn,
+            None,
+        )
+    }
+
+    fn fill_output_buffer<T>(
+        data: &mut [T],
+        channels: usize,
+        input_sample_rate: u32,
+        output_sample_rate: u32,
+        monitor_buffer: &Arc<Mutex<MonitorBuffer>>,
+    ) where
+        T: cpal::Sample + cpal::FromSample<f32>,
+    {
+        if let Ok(mut buffer) = monitor_buffer.lock() {
+            let step = if input_sample_rate == 0 || output_sample_rate == 0 {
+                1.0
+            } else {
+                input_sample_rate as f32 / output_sample_rate as f32
+            };
+            for frame in data.chunks_mut(channels) {
+                while buffer.resample_phase >= 1.0 && buffer.samples.len() > 1 {
+                    buffer.samples.pop_front();
+                    buffer.resample_phase -= 1.0;
+                }
+
+                let sample = match buffer.samples.len() {
+                    0 => 0.0,
+                    1 => buffer.samples[0],
+                    _ => {
+                        let a = buffer.samples[0];
+                        let b = buffer.samples[1];
+                        a + (b - a) * buffer.resample_phase.clamp(0.0, 1.0)
+                    }
+                };
+
+                buffer.resample_phase += step;
+                for channel in frame {
+                    *channel = T::from_sample(sample);
+                }
+            }
+        } else {
+            for sample in data.iter_mut() {
+                *sample = T::from_sample(0.0);
+            }
+        }
+    }
+
+    fn monitor_supported_for_input(input_id: &str) -> bool {
+        !input_id.ends_with(PULSE_DEFAULT_MONITOR) && !input_id.ends_with(".monitor")
     }
 
     fn normalized_level(window: &[f32]) -> f32 {
@@ -931,6 +1537,18 @@ mod native {
         }
     }
 
+    fn resonator_snapshot_for_window(
+        window: &[f32],
+        sample_rate: f32,
+        settings: &ResonatorViewSettings,
+    ) -> ResonatorSnapshot {
+        let mut bank = build_resonator_bank(sample_rate, settings);
+        for sample in window.iter().copied() {
+            bank.process_sample(sample);
+        }
+        resonator_snapshot(&bank, settings)
+    }
+
     fn frequency_to_note(frequency_hz: f32) -> (String, f32) {
         const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -1149,6 +1767,11 @@ mod native {
     fn enumerate_input_options() -> Vec<AudioInputOption> {
         let mut options = enumerate_cpal_input_options();
         options.extend(enumerate_pulse_input_options());
+        let preferred_mic_id = format!("{PULSE_INPUT_PREFIX}{PULSE_DEFAULT_SOURCE}");
+        if options.iter().any(|option| option.id == preferred_mic_id) {
+            options
+                .retain(|option| option.kind != AudioInputKind::Microphone || option.id == preferred_mic_id);
+        }
         options.sort_by_key(|option| {
             match option.kind {
                 AudioInputKind::Microphone => 0,
@@ -1159,14 +1782,22 @@ mod native {
         options
     }
 
+    fn preferred_initial_input_id() -> Option<String> {
+        let pulse_options = enumerate_pulse_input_options();
+        pulse_options
+            .iter()
+            .find(|option| option.id == format!("{PULSE_INPUT_PREFIX}{PULSE_DEFAULT_SOURCE}"))
+            .or_else(|| {
+                pulse_options
+                    .iter()
+                    .find(|option| option.kind == AudioInputKind::Microphone)
+            })
+            .map(|option| option.id.clone())
+    }
+
     fn enumerate_cpal_input_options() -> Vec<AudioInputOption> {
         let host = cpal::default_host();
-        let default_name = host.default_input_device().and_then(|device| {
-            device
-                .description()
-                .ok()
-                .map(|description| description.name().to_owned())
-        });
+        let default_name = host.default_input_device().and_then(|device| device.name().ok());
         let mut entries = Vec::new();
 
         let Ok(devices) = host.input_devices() else {
@@ -1174,10 +1805,9 @@ mod native {
         };
 
         for device in devices {
-            let Ok(description) = device.description() else {
+            let Ok(name) = device.name() else {
                 continue;
             };
-            let name = description.name().to_owned();
 
             let kind = classify_input_kind(&name, default_name.as_deref());
             let is_default = default_name.as_deref() == Some(name.as_str());
@@ -1248,7 +1878,7 @@ mod native {
         if !source_names.is_empty() {
             options.push(AudioInputOption {
                 id:    format!("{PULSE_INPUT_PREFIX}{PULSE_DEFAULT_SOURCE}"),
-                label: "Mic • Pulse default source".to_owned(),
+                label: "Mic • Pulse default source (Recommended)".to_owned(),
                 kind:  AudioInputKind::Microphone,
             });
             options.extend(source_names.into_iter().map(|name| {
@@ -1288,10 +1918,9 @@ mod native {
                 .input_devices()
                 .map_err(|error| format!("Failed to enumerate input devices: {error}"))?;
             for device in devices {
-                let Ok(description) = device.description() else {
+                let Ok(name) = device.name() else {
                     continue;
                 };
-                let name = description.name().to_owned();
                 if name == requested_input_id {
                     return Ok(device);
                 }
@@ -1544,6 +2173,36 @@ mod native {
 
         pub fn input_level(&self) -> f32 {
             0.0
+        }
+
+        pub fn input_waveform(&self) -> Vec<f32> {
+            Vec::new()
+        }
+
+        pub fn monitor_enabled(&self) -> bool {
+            false
+        }
+
+        pub fn set_monitor_enabled(&self, _enabled: bool) {
+        }
+
+        pub fn monitor_gain(&self) -> f32 {
+            0.0
+        }
+
+        pub fn set_monitor_gain(&self, _gain: f32) {
+        }
+
+        pub fn current_input_sample_rate(&self) -> u32 {
+            0
+        }
+
+        pub fn monitor_output_sample_rate(&self) -> Option<u32> {
+            None
+        }
+
+        pub fn default_output_device_name(&self) -> Option<String> {
+            None
         }
 
         pub fn available_inputs(&self) -> Vec<AudioInputOption> {
