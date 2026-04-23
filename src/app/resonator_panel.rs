@@ -22,7 +22,7 @@ use crate::audio::TunerReading;
 use crate::ui::theme::PANEL_FILL;
 
 impl App {
-    pub(super) fn draw_resonator_card(&mut self, ui: &mut Ui) {
+    pub(super) fn draw_resonator_snail_card(&mut self, ui: &mut Ui) {
         let reading = self.audio.reading();
         let reading_ref = reading.as_ref();
 
@@ -67,8 +67,6 @@ impl App {
                 });
 
                 ui.add_space(12.0);
-                self.draw_resonator_bank_overview(ui, reading_ref);
-                ui.add_space(12.0);
                 self.draw_spiral_chart(
                     ui,
                     "Resonator spiral",
@@ -84,8 +82,56 @@ impl App {
             });
     }
 
-    fn draw_resonator_bank_overview(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
-        let desired_size = vec2(ui.available_width(), 188.0);
+    pub(super) fn draw_resonator_bank_card(&mut self, ui: &mut Ui) {
+        let reading = self.audio.reading();
+        let reading_ref = reading.as_ref();
+
+        Frame::new()
+            .fill(PANEL_FILL)
+            .corner_radius(CornerRadius::same(22))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .inner_margin(Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new("Resonator Bank")
+                                .size(20.0)
+                                .color(Color32::from_rgb(228, 220, 208)),
+                        );
+                        ui.label(
+                            egui::RichText::new("Continuous resonator state and current magnitudes")
+                                .color(Color32::from_rgb(152, 158, 165)),
+                        );
+                    });
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(reading) = reading_ref {
+                            pill(
+                                ui,
+                                &format!("{} bins", reading.resonator_spectrum.len()),
+                                Color32::from_rgb(201, 195, 184),
+                                Color32::from_rgb(64, 68, 73),
+                            );
+                        } else {
+                            pill(
+                                ui,
+                                "waiting for input",
+                                Color32::from_rgb(184, 188, 196),
+                                Color32::from_rgb(56, 61, 68),
+                            );
+                        }
+                    });
+                });
+
+                ui.add_space(12.0);
+                self.draw_resonator_bank_panel(ui, reading_ref);
+            });
+    }
+
+    fn draw_resonator_bank_panel(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
+        let available_size = ui.available_size_before_wrap();
+        let desired_size = vec2(available_size.x, available_size.y.max(244.0));
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
@@ -112,13 +158,18 @@ impl App {
             Color32::from_rgb(152, 158, 165),
         );
 
+        let content_top = rect.top() + 42.0;
+        let content_bottom = rect.bottom() - 14.0;
+        let content_height = content_bottom - content_top;
+        let bars_height = (content_height * 0.28).clamp(46.0, 92.0);
+        let waterfall_height = (content_height - bars_height - 26.0).max(84.0);
         let waterfall_rect = Rect::from_min_max(
-            pos2(rect.left() + 14.0, rect.top() + 42.0),
-            pos2(rect.right() - 14.0, rect.top() + 112.0),
+            pos2(rect.left() + 14.0, content_top),
+            pos2(rect.right() - 14.0, content_top + waterfall_height),
         );
         let bars_rect = Rect::from_min_max(
-            pos2(rect.left() + 14.0, rect.top() + 132.0),
-            pos2(rect.right() - 14.0, rect.bottom() - 14.0),
+            pos2(rect.left() + 14.0, waterfall_rect.bottom() + 26.0),
+            pos2(rect.right() - 14.0, content_bottom),
         );
 
         let Some(reading) = reading else {

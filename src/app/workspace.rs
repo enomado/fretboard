@@ -5,6 +5,7 @@ use eframe::egui::{
     Margin,
     Stroke,
     Ui,
+    vec2,
 };
 
 use super::{
@@ -24,6 +25,8 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         tile_id: egui_tiles::TileId,
         pane: &mut WorkspaceTab,
     ) -> egui_tiles::UiResponse {
+        let pane_padding = 8;
+        let pane_padding_f = f32::from(pane_padding);
         let pane_rect = ui.max_rect();
         ui.painter().rect_filled(pane_rect, 0.0, PANEL_FILL);
 
@@ -31,18 +34,24 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
             .id_salt(("workspace_pane_scroll", tile_id))
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.set_min_size(pane_rect.size());
+                Frame::new()
+                    .inner_margin(Margin::same(pane_padding))
+                    .show(ui, |ui| {
+                        let min_size = pane_rect.size() - vec2(pane_padding_f * 2.0, pane_padding_f * 2.0);
+                        ui.set_min_size(vec2(min_size.x.max(0.0), min_size.y.max(0.0)));
 
-                match pane {
-                    WorkspaceTab::Controls => self.app.draw_controls(ui),
-                    WorkspaceTab::ConfigGeneral => self.app.draw_general_config_card(ui),
-                    WorkspaceTab::ConfigFft1 => self.app.draw_fft1_config_card(ui),
-                    WorkspaceTab::ConfigResonatorFft => self.app.draw_resonator_fft_config_card(ui),
-                    WorkspaceTab::LiveAnalysis => self.app.draw_tuner_card(ui),
-                    WorkspaceTab::ResonatorSnail => self.app.draw_resonator_card(ui),
-                    WorkspaceTab::ResonatorWaterfall => self.app.draw_resonator_waterfall_card(ui),
-                    WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
-                }
+                        match pane {
+                            WorkspaceTab::Controls => self.app.draw_controls(ui),
+                            WorkspaceTab::ConfigGeneral => self.app.draw_general_config_card(ui),
+                            WorkspaceTab::ConfigFft1 => self.app.draw_fft1_config_card(ui),
+                            WorkspaceTab::ConfigResonatorFft => self.app.draw_resonator_fft_config_card(ui),
+                            WorkspaceTab::LiveAnalysis => self.app.draw_tuner_card(ui),
+                            WorkspaceTab::ResonatorBank => self.app.draw_resonator_bank_card(ui),
+                            WorkspaceTab::ResonatorSnail => self.app.draw_resonator_snail_card(ui),
+                            WorkspaceTab::ResonatorWaterfall => self.app.draw_resonator_waterfall_card(ui),
+                            WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
+                        }
+                    });
             });
 
         egui_tiles::UiResponse::None
@@ -146,6 +155,7 @@ pub(super) fn default_workspace_tree() -> egui_tiles::Tree<WorkspaceTab> {
             WorkspaceTab::ConfigResonatorFft,
             WorkspaceTab::Fretboard,
             WorkspaceTab::LiveAnalysis,
+            WorkspaceTab::ResonatorBank,
             WorkspaceTab::ResonatorSnail,
             WorkspaceTab::ResonatorWaterfall,
         ],
