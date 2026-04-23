@@ -23,6 +23,7 @@ use super::{
     cents_color,
     input_level_label,
     input_source_debug_label,
+    note_label_pitch_class,
     pill,
     pitch_class_angle,
     pitch_class_color,
@@ -564,6 +565,10 @@ impl App {
         } else {
             1.0
         };
+        let pitch_class_offset = note_labels
+            .first()
+            .and_then(|label| note_label_pitch_class(label))
+            .unwrap_or(0);
         let radius_step = if semitone_count > 1 {
             (outer_radius - inner_radius) / (semitone_count - 1) as f32
         } else {
@@ -591,11 +596,12 @@ impl App {
             let direction = vec2(angle.cos(), angle.sin());
             let label_pos = center + direction * (outer_radius + 20.0);
             let spoke_color = pitch_class_color(pitch_class);
-            let spoke_stroke = if Some(pitch_class) == active_index.map(|index| index % 12) {
-                Stroke::new(1.6_f32, spoke_color)
-            } else {
-                Stroke::new(1.0_f32, Color32::from_rgb(55, 60, 67))
-            };
+            let spoke_stroke =
+                if Some(pitch_class) == active_index.map(|index| (pitch_class_offset + index) % 12) {
+                    Stroke::new(1.6_f32, spoke_color)
+                } else {
+                    Stroke::new(1.0_f32, Color32::from_rgb(55, 60, 67))
+                };
 
             painter.line_segment(
                 [
@@ -620,6 +626,7 @@ impl App {
                     inner_radius,
                     radius_step,
                     index as f32 / bins_per_semitone,
+                    pitch_class_offset as f32,
                 )
             })
             .collect();
@@ -637,16 +644,19 @@ impl App {
                 }
 
                 let semitone_position = note_index as f32 / bins_per_semitone;
-                let position = spiral_point_fractional(center, inner_radius, radius_step, semitone_position);
+                let pitch_class = (pitch_class_offset + semitone_position.floor() as usize) % 12;
+                let position = spiral_point_fractional(
+                    center,
+                    inner_radius,
+                    radius_step,
+                    semitone_position,
+                    pitch_class_offset as f32,
+                );
                 let glow = 1.8 + intensity * 6.0 * (0.45 + age * 0.40);
                 painter.circle_filled(
                     position,
                     glow,
-                    spiral_note_color(
-                        semitone_position.floor() as usize % 12,
-                        intensity,
-                        10 + (age * 28.0) as u8,
-                    ),
+                    spiral_note_color(pitch_class, intensity, 10 + (age * 28.0) as u8),
                 );
             }
         }
@@ -660,27 +670,35 @@ impl App {
             }
 
             let semitone_position = note_index as f32 / bins_per_semitone;
-            let position = spiral_point_fractional(center, inner_radius, radius_step, semitone_position);
+            let pitch_class = (pitch_class_offset + semitone_position.floor() as usize) % 12;
+            let position = spiral_point_fractional(
+                center,
+                inner_radius,
+                radius_step,
+                semitone_position,
+                pitch_class_offset as f32,
+            );
             let glow_radius = 3.0 + intensity * 8.0;
             let core_radius = 1.4 + intensity * 3.2;
-            let color = pitch_class_color(semitone_position.floor() as usize % 12);
+            let color = pitch_class_color(pitch_class);
 
             painter.circle_filled(
                 position,
                 glow_radius,
-                spiral_note_color(
-                    semitone_position.floor() as usize % 12,
-                    intensity,
-                    28 + (intensity * 96.0) as u8,
-                ),
+                spiral_note_color(pitch_class, intensity, 28 + (intensity * 96.0) as u8),
             );
             painter.circle_filled(position, core_radius, color);
         }
 
         if let Some(active_index) = active_index {
-            let active_position =
-                spiral_point_fractional(center, inner_radius, radius_step, active_index as f32);
-            let active_color = pitch_class_color(active_index % 12);
+            let active_position = spiral_point_fractional(
+                center,
+                inner_radius,
+                radius_step,
+                active_index as f32,
+                pitch_class_offset as f32,
+            );
+            let active_color = pitch_class_color((pitch_class_offset + active_index) % 12);
             painter.circle_stroke(active_position, 11.0, Stroke::new(2.0_f32, active_color));
             painter.circle_stroke(
                 active_position,

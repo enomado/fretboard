@@ -416,13 +416,34 @@ fn pitch_class_angle(pitch_class: usize) -> f32 {
     -std::f32::consts::FRAC_PI_2 + pitch_class as f32 * std::f32::consts::TAU / 12.0
 }
 
+fn note_label_pitch_class(label: &str) -> Option<usize> {
+    let note = label.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-');
+    match note {
+        "C" => Some(0),
+        "C#" | "Db" => Some(1),
+        "D" => Some(2),
+        "D#" | "Eb" => Some(3),
+        "E" => Some(4),
+        "F" => Some(5),
+        "F#" | "Gb" => Some(6),
+        "G" => Some(7),
+        "G#" | "Ab" => Some(8),
+        "A" => Some(9),
+        "A#" | "Bb" => Some(10),
+        "B" => Some(11),
+        _ => None,
+    }
+}
+
 fn spiral_point_fractional(
     center: egui::Pos2,
     inner_radius: f32,
     radius_step: f32,
     semitone_position: f32,
+    pitch_class_offset: f32,
 ) -> egui::Pos2 {
-    let angle = -std::f32::consts::FRAC_PI_2 + semitone_position * std::f32::consts::TAU / 12.0;
+    let angle = -std::f32::consts::FRAC_PI_2
+        + (semitone_position + pitch_class_offset) * std::f32::consts::TAU / 12.0;
     let radius = inner_radius + semitone_position * radius_step;
     center + vec2(angle.cos(), angle.sin()) * radius
 }
@@ -548,5 +569,18 @@ impl eframe::App for App {
 
         #[cfg(target_arch = "wasm32")]
         self.render(ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::note_label_pitch_class;
+
+    #[test]
+    fn note_label_pitch_class_reads_sharp_flat_and_natural_notes() {
+        assert_eq!(note_label_pitch_class("C2"), Some(0));
+        assert_eq!(note_label_pitch_class("F3"), Some(5));
+        assert_eq!(note_label_pitch_class("G#4"), Some(8));
+        assert_eq!(note_label_pitch_class("Bb5"), Some(10));
     }
 }
