@@ -195,6 +195,7 @@ pub struct App {
     scale_kind:     ScaleKind,
     root_note:      Note,
     live_chart:     LiveChartKind,
+    test_note_midi: usize,
     workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
@@ -228,6 +229,7 @@ impl App {
             scale_kind: ScaleKind::BluesMinor,
             root_note: Note::A,
             live_chart: LiveChartKind::Spiral,
+            test_note_midi: 24,
             workspace_tree: Some(workspace::default_workspace_tree()),
         }
     }

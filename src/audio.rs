@@ -75,13 +75,14 @@ mod native {
     const MAX_FFT_SIZE: usize = 32768;
     const SPECTRUM_BINS: usize = 72;
     const WATERFALL_HISTORY: usize = 52;
-    const NOTE_BUCKET_MIN_MIDI: usize = 36;
+    const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
+    const NOTE_BUCKET_MIN_MIDI: usize = 12;
     const NOTE_BUCKET_MAX_MIDI: usize = 84;
     const SPIRAL_BINS_PER_SEMITONE: usize = 8;
     const SPIRAL_BIN_COUNT: usize =
         (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
-    const SPECTRUM_MIN_FREQUENCY: f32 = 20.0;
+    const SPECTRUM_MIN_FREQUENCY: f32 = LOWEST_TRACKED_FREQUENCY;
     const SPECTRUM_MAX_FREQUENCY: f32 = 2_000.0;
     const NOTE_BUCKET_SPREAD: f32 = 0.35;
     const RESONATOR_MIN_MIDI: usize = NOTE_BUCKET_MIN_MIDI;
@@ -96,6 +97,8 @@ mod native {
     const MIN_INPUT_GAIN: f32 = 0.1;
     const MAX_INPUT_GAIN: f32 = 12.0;
     const MONITOR_DEFAULT_GAIN: f32 = 0.35;
+    const TEST_TONE_GAIN: f32 = 0.28;
+    const TEST_TONE_DURATION: Duration = Duration::from_millis(1_600);
 
     // Время паузы воркера, когда в кольце нет свежих сэмплов
     const ANALYSIS_IDLE_SLEEP: Duration = Duration::from_millis(5);
@@ -193,7 +196,7 @@ mod native {
                 .max(MIN_FFT_SIZE)
                 .next_power_of_two()
                 .clamp(min_fft_for_window, MAX_FFT_SIZE);
-            self.min_frequency = self.min_frequency.clamp(20.0, 1_200.0);
+            self.min_frequency = self.min_frequency.clamp(LOWEST_TRACKED_FREQUENCY, 1_200.0);
             self.max_frequency = self.max_frequency.clamp(120.0, 4_000.0);
             if self.max_frequency <= self.min_frequency + 40.0 {
                 self.max_frequency = (self.min_frequency + 40.0).clamp(120.0, 4_000.0);
@@ -202,10 +205,10 @@ mod native {
             self.note_spread = self.note_spread.clamp(0.15, 0.8);
             self.spectrum_gamma = self.spectrum_gamma.clamp(0.35, 1.2);
             self.note_gamma = self.note_gamma.clamp(0.35, 1.2);
-            self.resonator_min_midi = self.resonator_min_midi.clamp(24, 84);
-            self.resonator_max_midi = self.resonator_max_midi.clamp(36, 108);
+            self.resonator_min_midi = self.resonator_min_midi.clamp(12, 84);
+            self.resonator_max_midi = self.resonator_max_midi.clamp(24, 108);
             if self.resonator_max_midi <= self.resonator_min_midi + 6 {
-                self.resonator_max_midi = (self.resonator_min_midi + 6).clamp(36, 108);
+                self.resonator_max_midi = (self.resonator_min_midi + 6).clamp(24, 108);
             }
             self.resonator_bins = self.resonator_bins.clamp(1, 12);
             self.resonator_alpha = self.resonator_alpha.clamp(0.2, 4.0);
@@ -250,6 +253,7 @@ mod native {
     enum Command {
         SwitchInput(Option<String>),
         SetMonitorEnabled(bool),
+        PlayTestNote(usize),
     }
 
     impl AudioEngine {
@@ -415,6 +419,12 @@ mod native {
                 let _ = tx.send(Command::SwitchInput(input_id));
             }
         }
+
+        pub fn play_test_note(&self, midi: usize) {
+            if let Some(tx) = self.command_tx.as_ref() {
+                let _ = tx.send(Command::PlayTestNote(midi));
+            }
+        }
     }
 
     impl Drop for AudioEngine {
@@ -491,6 +501,9 @@ mod native {
                         }
                     }
                 }
+                Command::PlayTestNote(midi) => {
+                    ctx.play_test_note(midi);
+                }
             }
         }
 
@@ -530,6 +543,34 @@ mod native {
                 s.smoothed_frequency = None;
                 s.status = AudioStatus::Listening;
             }
+        }
+
+        fn reset_shared_for_test_tone(&self) {
+            if let Ok(mut s) = self.shared.lock() {
+                s.reading = None;
+                s.input_waveform.clear();
+                s.waterfall.clear();
+                s.note_waterfall.clear();
+                s.spiral_waterfall.clear();
+                s.resonator_waterfall.clear();
+                s.smoothed_frequency = None;
+                s.status = AudioStatus::Listening;
+            }
+            self.input_level.store(0.0f32.to_bits(), Ordering::Relaxed);
+        }
+
+        fn play_test_note(&self, midi: usize) {
+            let midi = midi.clamp(NOTE_BUCKET_MIN_MIDI, NOTE_BUCKET_MAX_MIDI);
+            self.reset_shared_for_test_tone();
+            let shared = self.shared.clone();
+            let settings = self.settings.clone();
+            let input_level = self.input_level.clone();
+
+            thread::spawn(move || {
+                if let Err(message) = play_test_note_thread(midi, shared.clone(), settings, input_level) {
+                    set_shared_error(&shared, &message);
+                }
+            });
         }
 
         // Поднимает входной stream, кольцевые буферы, анализ-воркер и
@@ -995,6 +1036,88 @@ mod native {
         Ok((stream, actual_rate))
     }
 
+    fn play_test_note_thread(
+        midi: usize,
+        shared: Arc<Mutex<SharedState>>,
+        settings: Arc<Mutex<AnalysisSettings>>,
+        input_level: Arc<AtomicU32>,
+    ) -> Result<(), String> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| "No output device".to_owned())?;
+        let mut supported = device
+            .supported_output_configs()
+            .map_err(|e| format!("Output configs error: {e}"))?;
+        let output_config = supported
+            .find(|config| config.sample_format() == cpal::SampleFormat::F32)
+            .ok_or_else(|| "No f32 output config for test note".to_owned())?;
+        let output_rate = 48_000_u32.clamp(output_config.min_sample_rate(), output_config.max_sample_rate());
+        let mut config = output_config.with_sample_rate(output_rate).config();
+        config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
+        let sample_rate = config.sample_rate as f32;
+        let channels = usize::from(config.channels);
+        let frequency = midi_to_hz(midi as f32, 440.0);
+        let total_samples = (sample_rate * TEST_TONE_DURATION.as_secs_f32()) as usize;
+        let samples = Arc::new(test_tone_samples(frequency, sample_rate, total_samples));
+        let playback_samples = samples.clone();
+        let playback_index = Arc::new(AtomicU32::new(0));
+        let playback_position = playback_index.clone();
+
+        let stream = device
+            .build_output_stream(
+                &config,
+                move |data: &mut [f32], _| {
+                    for frame in data.chunks_mut(channels) {
+                        let index = playback_position.fetch_add(1, Ordering::Relaxed) as usize;
+                        let sample = playback_samples.get(index).copied().unwrap_or(0.0);
+                        for out in frame {
+                            *out = sample;
+                        }
+                    }
+                },
+                |err| eprintln!("Test note output error: {err}"),
+                None,
+            )
+            .map_err(|e| format!("Failed to build test note output: {e}"))?;
+
+        stream
+            .play()
+            .map_err(|e| format!("Failed to start test note output: {e}"))?;
+
+        let input_gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+        let mut pipeline = AnalysisPipeline::new(sample_rate);
+        let chunk_len = (sample_rate / 50.0).max(1.0) as usize;
+        for chunk in samples.chunks(chunk_len) {
+            pipeline.push_samples(
+                chunk.iter().copied(),
+                &shared,
+                &settings,
+                &input_gain,
+                &input_level,
+            );
+            thread::sleep(Duration::from_secs_f32(chunk.len() as f32 / sample_rate));
+        }
+
+        thread::sleep(Duration::from_millis(120));
+        drop(stream);
+        Ok(())
+    }
+
+    fn test_tone_samples(frequency: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|i| {
+                let t = i as f32 / sample_rate;
+                let attack = (i as f32 / (sample_rate * 0.025)).clamp(0.0, 1.0);
+                let release = ((len.saturating_sub(i) as f32) / (sample_rate * 0.08)).clamp(0.0, 1.0);
+                let envelope = attack.min(release);
+                let phase = std::f32::consts::TAU * frequency * t;
+                let sample = 0.55 * phase.sin() + 0.18 * (phase * 2.0).sin() + 0.07 * (phase * 3.0).sin();
+                sample * envelope * TEST_TONE_GAIN
+            })
+            .collect()
+    }
+
     // ------------------------------------------------------------------
     // Енумерация устройств (только cpal — на Linux это ALSA-устройства,
     // включая pulse-обёрнутые default/pulse). Pulse-мониторы пока не
@@ -1366,10 +1489,12 @@ mod native {
             None
         } else {
             detect_pitch_yin(window, sample_rate).and_then(|(f, c)| {
-                (45.0..=1200.0).contains(&f).then_some(PitchEstimate {
-                    frequency_hz: f,
-                    clarity:      c,
-                })
+                (LOWEST_TRACKED_FREQUENCY..=1200.0)
+                    .contains(&f)
+                    .then_some(PitchEstimate {
+                        frequency_hz: f,
+                        clarity:      c,
+                    })
             })
         };
 
@@ -1398,7 +1523,7 @@ mod native {
 
     fn detect_pitch_yin(window: &[f32], sample_rate: f32) -> Option<(f32, f32)> {
         let min_lag = (sample_rate / 1000.0).max(1.0) as usize;
-        let max_lag = (sample_rate / 45.0) as usize;
+        let max_lag = (sample_rate / LOWEST_TRACKED_FREQUENCY) as usize;
         let search_end = max_lag.min(window.len().saturating_sub(1));
         if min_lag >= search_end {
             return None;
@@ -1749,8 +1874,11 @@ mod native {
             NOTE_BUCKET_MAX_MIDI,
             NOTE_BUCKET_MIN_MIDI,
             NOTE_BUCKET_SPREAD,
+            SPIRAL_BIN_COUNT,
             accumulate_note_energy,
+            accumulate_spiral_energy,
             detect_pitch_yin,
+            note_bucket_labels,
             parabolic_tau,
             spectrum_bucket_index,
         };
@@ -1802,10 +1930,43 @@ mod native {
         }
 
         #[test]
+        fn note_bucket_labels_include_low_octaves() {
+            let labels = note_bucket_labels();
+
+            assert_eq!(labels.first().map(String::as_str), Some("C0"));
+            assert!(labels.iter().any(|label| label == "C1"));
+            assert!(labels.iter().any(|label| label == "C2"));
+        }
+
+        #[test]
+        fn low_octave_energy_lands_in_note_and_spiral_buckets() {
+            let mut note_bars = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
+            accumulate_note_energy(&mut note_bars, 16.3516, 1.0, NOTE_BUCKET_SPREAD);
+            assert!(note_bars[0] > 0.9);
+
+            let mut spiral_bars = vec![0.0; SPIRAL_BIN_COUNT];
+            accumulate_spiral_energy(&mut spiral_bars, 32.7032, 1.0);
+            let c1_index = 12 * 8;
+            assert!(spiral_bars[c1_index] > 0.9);
+        }
+
+        #[test]
         fn yin_detects_c2_on_raw_signal() {
             let sample_rate = 44_100.0;
             let expected = 65.40639;
             let window = sine_wave(expected, sample_rate, 6144);
+            let (detected, _clarity) = detect_pitch_yin(&window, sample_rate).unwrap();
+            assert!(
+                (detected - expected).abs() < 1.0,
+                "detected {detected} expected {expected}"
+            );
+        }
+
+        #[test]
+        fn yin_detects_c1_on_raw_signal() {
+            let sample_rate = 44_100.0;
+            let expected = 32.7032;
+            let window = sine_wave(expected, sample_rate, 8192);
             let (detected, _clarity) = detect_pitch_yin(&window, sample_rate).unwrap();
             assert!(
                 (detected - expected).abs() < 1.0,
@@ -1895,13 +2056,13 @@ mod native {
             Self {
                 window_size:        6144,
                 fft_size:           16384,
-                min_frequency:      20.0,
+                min_frequency:      16.0,
                 max_frequency:      2_000.0,
                 spectrum_smoothing: 1,
                 note_spread:        0.35,
                 spectrum_gamma:     0.58,
                 note_gamma:         0.72,
-                resonator_min_midi: 36,
+                resonator_min_midi: 12,
                 resonator_max_midi: 84,
                 resonator_bins:     5,
                 resonator_alpha:    1.0,
@@ -1993,6 +2154,8 @@ mod native {
             None
         }
         pub fn set_selected_input_id(&self, _input_id: Option<String>) {
+        }
+        pub fn play_test_note(&self, _midi: usize) {
         }
     }
 }

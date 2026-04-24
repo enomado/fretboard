@@ -328,6 +328,36 @@ impl App {
                         .size(12.0)
                         .monospace(),
                 );
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Test note")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    if ui
+                        .add_sized(
+                            [180.0, 18.0],
+                            egui::Slider::new(&mut self.test_note_midi, 12..=84).show_value(false),
+                        )
+                        .changed()
+                    {
+                        self.test_note_midi = self.test_note_midi.clamp(12, 84);
+                    }
+                    ui.label(
+                        RichText::new(midi_label(self.test_note_midi))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+                    let play_button = egui::Button::new("Play note")
+                        .min_size(vec2(92.0, 28.0))
+                        .fill(Color32::from_rgb(42, 78, 72))
+                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(111, 154, 142)))
+                        .corner_radius(CornerRadius::same(14));
+                    if ui.add(play_button).clicked() {
+                        self.audio.play_test_note(self.test_note_midi);
+                    }
+                });
                 ui.add_space(8.0);
                 Frame::new()
                     .fill(Color32::from_rgb(28, 32, 37))
@@ -576,7 +606,7 @@ impl App {
             if ui
                 .add_sized(
                     [180.0, 18.0],
-                    egui::Slider::new(&mut settings.min_frequency, 20.0..=600.0)
+                    egui::Slider::new(&mut settings.min_frequency, 16.0..=600.0)
                         .logarithmic(true)
                         .show_value(false),
                 )
@@ -721,7 +751,7 @@ impl App {
             if ui
                 .add_sized(
                     [140.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator_min_midi, 24..=84).show_value(false),
+                    egui::Slider::new(&mut settings.resonator_min_midi, 12..=84).show_value(false),
                 )
                 .changed()
             {
@@ -742,7 +772,7 @@ impl App {
             if ui
                 .add_sized(
                     [140.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator_max_midi, 36..=108).show_value(false),
+                    egui::Slider::new(&mut settings.resonator_max_midi, 24..=108).show_value(false),
                 )
                 .changed()
             {

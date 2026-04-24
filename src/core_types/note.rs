@@ -107,3 +107,33 @@ impl ANote {
         PCNote::from_note(self.note, self.ass)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core_types::pitch::Interval;
+
+    #[test]
+    fn low_octave_notes_convert_to_expected_pitches() {
+        assert_eq!(ANote::parse("C0").to_pitch().as_u8(), 12);
+        assert_eq!(ANote::parse("A0").to_pitch().as_u8(), 21);
+        assert_eq!(ANote::parse("B0").to_pitch().as_u8(), 23);
+        assert_eq!(ANote::parse("C1").to_pitch().as_u8(), 24);
+    }
+
+    #[test]
+    fn low_octave_pitches_round_trip_to_note_names() {
+        for note in ["C0", "C#0", "A0", "B0", "C1"] {
+            let pitch = ANote::parse(note).to_pitch();
+
+            assert_eq!(pitch.to_anote().name(), note);
+        }
+    }
+
+    #[test]
+    fn adding_interval_crosses_from_b0_to_c1() {
+        let note = ANote::parse("B0").add_interval(Interval(1));
+
+        assert_eq!(note.name(), "C1");
+    }
+}
