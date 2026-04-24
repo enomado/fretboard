@@ -1358,14 +1358,14 @@ mod native {
         resonator_snapshot: ResonatorSnapshot,
     ) -> AnalysisFrame {
         let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
-        let normalized = apply_hann_window(window);
+        let windowed = apply_hann_window(window);
 
         let (spectrum, note_spectrum, spiral_spectrum) =
-            spectrum_bars(&normalized, sample_rate, settings, planner);
+            spectrum_bars(&windowed, sample_rate, settings, planner);
         let pitch = if rms < SILENCE_RMS_THRESHOLD {
             None
         } else {
-            detect_pitch_yin(&normalized, sample_rate).and_then(|(f, c)| {
+            detect_pitch_yin(window, sample_rate).and_then(|(f, c)| {
                 (45.0..=1200.0).contains(&f).then_some(PitchEstimate {
                     frequency_hz: f,
                     clarity:      c,
@@ -1755,6 +1755,15 @@ mod native {
             spectrum_bucket_index,
         };
 
+        fn sine_wave(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+            (0..len)
+                .map(|i| {
+                    let phase = i as f32 * frequency_hz * std::f32::consts::TAU / sample_rate;
+                    phase.sin()
+                })
+                .collect()
+        }
+
         #[test]
         fn parabolic_tau_can_overshoot_without_producing_invalid_index() {
             let values = vec![0.0, 0.5, 0.0, -0.499];
@@ -1790,6 +1799,30 @@ mod native {
             assert_eq!(strongest, a4_index);
             assert!(bars[a4_index] > bars[a4_index - 1]);
             assert!(bars[a4_index] > bars[a4_index + 1]);
+        }
+
+        #[test]
+        fn yin_detects_c2_on_raw_signal() {
+            let sample_rate = 44_100.0;
+            let expected = 65.40639;
+            let window = sine_wave(expected, sample_rate, 6144);
+            let (detected, _clarity) = detect_pitch_yin(&window, sample_rate).unwrap();
+            assert!(
+                (detected - expected).abs() < 1.0,
+                "detected {detected} expected {expected}"
+            );
+        }
+
+        #[test]
+        fn yin_detects_c3_on_raw_signal() {
+            let sample_rate = 44_100.0;
+            let expected = 130.81278;
+            let window = sine_wave(expected, sample_rate, 6144);
+            let (detected, _clarity) = detect_pitch_yin(&window, sample_rate).unwrap();
+            assert!(
+                (detected - expected).abs() < 1.0,
+                "detected {detected} expected {expected}"
+            );
         }
 
         #[test]

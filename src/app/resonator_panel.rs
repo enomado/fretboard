@@ -207,7 +207,7 @@ impl App {
             &reading.resonator_waterfall,
             &reading.resonator_note_labels,
             bins_per_label,
-            Some(reading.note_name.as_str()),
+            None,
         );
 
         let bar_width = bars_rect.width() / reading.resonator_spectrum.len().max(1) as f32;
@@ -256,13 +256,6 @@ impl App {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(reading) = reading_ref {
-                            pill(
-                                ui,
-                                &format!("focus {}", reading.note_name),
-                                Color32::from_rgb(224, 214, 198),
-                                Color32::from_rgb(78, 61, 54),
-                            );
-                            ui.add_space(8.0);
                             pill(
                                 ui,
                                 &format!("{} frames", reading.resonator_waterfall.len()),
@@ -339,7 +332,7 @@ impl App {
             &reading.resonator_waterfall,
             &reading.resonator_note_labels,
             bins_per_label,
-            Some(reading.note_name.as_str()),
+            None,
         );
 
         painter.text(
