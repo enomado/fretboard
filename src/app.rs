@@ -250,8 +250,21 @@ impl App {
             AudioInputKind::Other => None,
         };
 
-        preferred_pulse_id
-            .and_then(|preferred_id| self.audio_inputs.iter().find(|option| option.id == preferred_id))
+        let concrete_pulse_microphone = (kind == AudioInputKind::Microphone).then(|| {
+            self.audio_inputs.iter().find(|option| {
+                option.kind == AudioInputKind::Microphone
+                    && option.id.starts_with("pulse::")
+                    && option.id != "pulse::@DEFAULT_SOURCE@"
+            })
+        });
+
+        concrete_pulse_microphone
+            .flatten()
+            .or_else(|| {
+                preferred_pulse_id.and_then(|preferred_id| {
+                    self.audio_inputs.iter().find(|option| option.id == preferred_id)
+                })
+            })
             .or_else(|| self.audio_inputs.iter().find(|option| option.kind == kind))
             .or_else(|| self.audio_inputs.first())
             .map(|option| option.id.clone())

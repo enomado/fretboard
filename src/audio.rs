@@ -1,6 +1,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod native {
-    use std::collections::VecDeque;
+    use std::collections::{
+        HashSet,
+        VecDeque,
+    };
     use std::io::Read;
     use std::process::{
         Child,
@@ -58,6 +61,7 @@ mod native {
 
     const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
     const PULSE_INPUT_ID_PREFIX: &str = "pulse::";
+    const PULSE_DEFAULT_SOURCE_ID: &str = "pulse::@DEFAULT_SOURCE@";
     const PULSE_DEFAULT_MONITOR_ID: &str = "pulse::@DEFAULT_MONITOR@";
     const PULSE_CAPTURE_RATE: u32 = 48_000;
     const PULSE_CAPTURE_LATENCY_MS: u32 = 20;
@@ -1119,26 +1123,60 @@ mod native {
     }
 
     // ------------------------------------------------------------------
-    // Енумерация устройств (только cpal — на Linux это ALSA-устройства,
-    // включая pulse-обёрнутые default/pulse). Pulse-мониторы пока не
-    // видны — их добавим в step 2 через libpulse-simple для Linux.
+    // Енумерация устройств. Pulse/PipeWire routes are preferred on Linux:
+    // they track the live default source and avoid noisy ALSA compatibility
+    // duplicates. CPAL devices stay as a direct-device fallback.
     // ------------------------------------------------------------------
     fn enumerate_input_options() -> Vec<AudioInputOption> {
+        let pulse_available = pulse_input_available();
+        let mut seen = HashSet::new();
+        let mut options: Vec<AudioInputOption> = Vec::new();
+
+        if pulse_available {
+            push_unique_input(
+                &mut options,
+                &mut seen,
+                AudioInputOption {
+                    id:    PULSE_DEFAULT_SOURCE_ID.to_owned(),
+                    label: "Mic • Default microphone (Pulse/PipeWire)".to_owned(),
+                    kind:  AudioInputKind::Microphone,
+                },
+            );
+
+            for option in pulse_source_input_options() {
+                push_unique_input(&mut options, &mut seen, option);
+            }
+
+            push_unique_input(
+                &mut options,
+                &mut seen,
+                AudioInputOption {
+                    id:    PULSE_DEFAULT_MONITOR_ID.to_owned(),
+                    label: "System • Default monitor (Pulse/PipeWire)".to_owned(),
+                    kind:  AudioInputKind::System,
+                },
+            );
+        }
+
         let host = cpal::default_host();
         let default_device = host.default_input_device();
         let default_name = default_device.as_ref().map(cpal_device_display_name);
         let default_id = default_device.as_ref().map(cpal_device_route_id);
         let Ok(devices) = host.input_devices() else {
-            return Vec::new();
+            options.sort_by_key(input_option_sort_key);
+            return options;
         };
 
         let mut entries: Vec<(String, String, AudioInputKind, bool)> = devices
-            .map(|device| {
+            .filter_map(|device| {
                 let id = cpal_device_route_id(&device);
                 let name = cpal_device_display_name(&device);
+                if pulse_available && is_cpal_audio_server_proxy(&id, &name) {
+                    return None;
+                }
                 let kind = classify_input_kind(&name, default_name.as_deref());
                 let is_default = default_id.as_deref() == Some(id.as_str());
-                (id, name, kind, is_default)
+                Some((id, name, kind, is_default))
             })
             .collect();
 
@@ -1162,33 +1200,100 @@ mod native {
             }
         }
 
-        let mut options: Vec<AudioInputOption> = entries
-            .into_iter()
-            .map(|(id, name, kind, is_default)| {
+        for (id, name, kind, is_default) in entries {
+            push_unique_input(
+                &mut options,
+                &mut seen,
                 AudioInputOption {
                     id,
                     label: format_input_label(&name, kind, is_default),
                     kind,
-                }
-            })
-            .collect();
-
-        if pulse_monitor_input_available() {
-            options.push(AudioInputOption {
-                id:    PULSE_DEFAULT_MONITOR_ID.to_owned(),
-                label: "System • Default monitor (Pulse/PipeWire)".to_owned(),
-                kind:  AudioInputKind::System,
-            });
+                },
+            );
         }
 
-        options.sort_by_key(|o| {
-            match o.kind {
-                AudioInputKind::Microphone => 0,
-                AudioInputKind::System => 1,
-                AudioInputKind::Other => 2,
-            }
-        });
+        options.sort_by_key(input_option_sort_key);
         options
+    }
+
+    fn push_unique_input(
+        options: &mut Vec<AudioInputOption>,
+        seen: &mut HashSet<String>,
+        option: AudioInputOption,
+    ) {
+        if seen.insert(option.id.clone()) {
+            options.push(option);
+        }
+    }
+
+    fn pulse_source_input_options() -> Vec<AudioInputOption> {
+        let Ok(output) = ProcessCommand::new("pactl").args(["list", "sources"]).output() else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        parse_pulse_source_input_options(&text)
+    }
+
+    fn parse_pulse_source_input_options(text: &str) -> Vec<AudioInputOption> {
+        let mut options = Vec::new();
+        let mut name: Option<String> = None;
+        let mut description: Option<String> = None;
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Source #") {
+                push_pulse_source_option(&mut options, name.take(), description.take());
+                continue;
+            }
+            if let Some(value) = trimmed.strip_prefix("Name:") {
+                name = Some(value.trim().to_owned());
+            } else if let Some(value) = trimmed.strip_prefix("Description:") {
+                description = Some(value.trim().to_owned());
+            }
+        }
+        push_pulse_source_option(&mut options, name, description);
+        options
+    }
+
+    fn push_pulse_source_option(
+        options: &mut Vec<AudioInputOption>,
+        name: Option<String>,
+        description: Option<String>,
+    ) {
+        let Some(name) = name else {
+            return;
+        };
+        if name == "@DEFAULT_SOURCE@" || name == "@DEFAULT_MONITOR@" {
+            return;
+        }
+        let label_name = description
+            .filter(|desc| !desc.trim().is_empty())
+            .unwrap_or_else(|| name.clone());
+        let kind = classify_input_kind(&format!("{name} {label_name}"), None);
+        options.push(AudioInputOption {
+            id: format!("{PULSE_INPUT_ID_PREFIX}{name}"),
+            label: format_input_label(&label_name, kind, false),
+            kind,
+        });
+    }
+
+    fn input_option_sort_key(option: &AudioInputOption) -> (u8, u8, String) {
+        let kind_rank = match option.kind {
+            AudioInputKind::Microphone => 0,
+            AudioInputKind::System => 1,
+            AudioInputKind::Other => 2,
+        };
+        let route_rank = if option.id == PULSE_DEFAULT_SOURCE_ID || option.id == PULSE_DEFAULT_MONITOR_ID {
+            0
+        } else if option.id.starts_with(PULSE_INPUT_ID_PREFIX) {
+            1
+        } else {
+            2
+        };
+        (kind_rank, route_rank, option.label.to_lowercase())
     }
 
     fn select_input_device(host: &cpal::Host, requested: Option<&str>) -> Result<cpal::Device, String> {
@@ -1224,8 +1329,18 @@ mod native {
             "blackhole",
             "soundflower",
         ];
+        let microphone_markers = [
+            "alsa_input",
+            "microphone",
+            " mic",
+            "mono-fallback",
+            "multichannel-input",
+            "capture",
+        ];
         if system_markers.iter().any(|m| lowered.contains(m)) {
             AudioInputKind::System
+        } else if microphone_markers.iter().any(|m| lowered.contains(m)) {
+            AudioInputKind::Microphone
         } else if default_name == Some(name) {
             AudioInputKind::Microphone
         } else {
@@ -1286,7 +1401,17 @@ mod native {
         ((sample_rate as usize) * 3 / 100).max(256)
     }
 
-    fn pulse_monitor_input_available() -> bool {
+    fn is_cpal_audio_server_proxy(id: &str, name: &str) -> bool {
+        let lowered = format!("{} {}", id.to_lowercase(), name.to_lowercase());
+        lowered.contains("compat::default")
+            || lowered.contains("compat::pulse")
+            || lowered.contains("compat::pipewire")
+            || lowered == format!("{CPAL_INPUT_ID_PREFIX}default default")
+            || lowered == format!("{CPAL_INPUT_ID_PREFIX}pulse pulse")
+            || lowered == format!("{CPAL_INPUT_ID_PREFIX}pipewire pipewire")
+    }
+
+    fn pulse_input_available() -> bool {
         ProcessCommand::new("parec")
             .arg("--version")
             .stdout(Stdio::null())
@@ -1880,6 +2005,7 @@ mod native {
             detect_pitch_yin,
             note_bucket_labels,
             parabolic_tau,
+            parse_pulse_source_input_options,
             spectrum_bucket_index,
         };
 
@@ -1936,6 +2062,47 @@ mod native {
             assert_eq!(labels.first().map(String::as_str), Some("C0"));
             assert!(labels.iter().any(|label| label == "C1"));
             assert!(labels.iter().any(|label| label == "C2"));
+        }
+
+        #[test]
+        fn pulse_source_parser_keeps_mics_and_monitors_classified() {
+            let sources = parse_pulse_source_input_options(
+                r#"
+Source #42
+    State: RUNNING
+    Name: alsa_input.usb-Focusrite_Scarlett_Solo-00.mono-fallback
+    Description: Scarlett Solo Analog Mono
+Source #43
+    State: IDLE
+    Name: alsa_output.pci-0000_00_1f.3.analog-stereo.monitor
+    Description: Built-in Audio Analog Stereo Monitor
+"#,
+            );
+
+            assert_eq!(sources.len(), 2);
+            assert_eq!(
+                sources[0].id,
+                "pulse::alsa_input.usb-Focusrite_Scarlett_Solo-00.mono-fallback"
+            );
+            assert_eq!(sources[0].kind, super::AudioInputKind::Microphone);
+            assert!(sources[0].label.contains("Scarlett Solo"));
+            assert_eq!(sources[1].kind, super::AudioInputKind::System);
+        }
+
+        #[test]
+        fn pulse_source_parser_ignores_virtual_default_aliases() {
+            let sources = parse_pulse_source_input_options(
+                r#"
+Source #1
+    Name: @DEFAULT_SOURCE@
+    Description: Default Source
+Source #2
+    Name: @DEFAULT_MONITOR@
+    Description: Default Monitor
+"#,
+            );
+
+            assert!(sources.is_empty());
         }
 
         #[test]

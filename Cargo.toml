@@ -2,6 +2,7 @@
 name = "fretboard"
 version = "0.1.0"
 edition = "2024"
+default-run = "fretboard"
 
 [dependencies]
 egui_tiles = "0.15"
