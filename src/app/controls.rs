@@ -66,68 +66,6 @@ impl App {
 
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        RichText::new("Tuning")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
-                    egui::ComboBox::from_id_salt("tuning")
-                        .selected_text(self.tuning_kind.label())
-                        .show_ui(ui, |ui| {
-                            for tuning in ALL_TUNINGS {
-                                ui.selectable_value(&mut self.tuning_kind, tuning, tuning.label());
-                            }
-                        });
-
-                    ui.separator();
-
-                    ui.label(
-                        RichText::new("Root")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
-                    for (note, label) in ALL_ROOTS {
-                        let selected = self.root_note == note;
-                        let button = egui::Button::new(label)
-                            .min_size(vec2(30.0, 28.0))
-                            .fill(if selected {
-                                Color32::from_rgb(112, 86, 72)
-                            } else {
-                                Color32::from_rgb(42, 46, 52)
-                            })
-                            .stroke(Stroke::new(
-                                1.0_f32,
-                                if selected {
-                                    Color32::from_rgb(207, 187, 166)
-                                } else {
-                                    Color32::from_rgb(84, 89, 97)
-                                },
-                            ))
-                            .corner_radius(CornerRadius::same(14));
-
-                        if ui.add(button).clicked() {
-                            self.root_note = note;
-                        }
-                    }
-
-                    ui.separator();
-
-                    ui.label(
-                        RichText::new("Scale")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
-                    egui::ComboBox::from_id_salt("scale")
-                        .selected_text(self.scale_kind.label())
-                        .show_ui(ui, |ui| {
-                            for scale in ALL_SCALES {
-                                ui.selectable_value(&mut self.scale_kind, scale, scale.label());
-                            }
-                        });
-                });
-
-                ui.add_space(14.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
                         RichText::new("Source")
                             .color(Color32::from_rgb(205, 194, 176))
                             .strong(),
@@ -413,6 +351,80 @@ impl App {
                             );
                         }
                     });
+            });
+    }
+
+    pub(super) fn draw_fretboard_controls(&mut self, ui: &mut Ui) {
+        let frame_width = ui.available_width();
+
+        Frame::new()
+            .fill(PANEL_FILL)
+            .corner_radius(CornerRadius::same(18))
+            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .inner_margin(Margin::same(16))
+            .show(ui, |ui| {
+                ui.set_min_width(frame_width - 32.0);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new("Tuning")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    egui::ComboBox::from_id_salt("tuning")
+                        .selected_text(self.tuning_kind.label())
+                        .show_ui(ui, |ui| {
+                            for tuning in ALL_TUNINGS {
+                                ui.selectable_value(&mut self.tuning_kind, tuning, tuning.label());
+                            }
+                        });
+
+                    ui.separator();
+
+                    ui.label(
+                        RichText::new("Root")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    for (note, label) in ALL_ROOTS {
+                        let selected = self.root_note == note;
+                        let button = egui::Button::new(label)
+                            .min_size(vec2(30.0, 28.0))
+                            .fill(if selected {
+                                Color32::from_rgb(112, 86, 72)
+                            } else {
+                                Color32::from_rgb(42, 46, 52)
+                            })
+                            .stroke(Stroke::new(
+                                1.0_f32,
+                                if selected {
+                                    Color32::from_rgb(207, 187, 166)
+                                } else {
+                                    Color32::from_rgb(84, 89, 97)
+                                },
+                            ))
+                            .corner_radius(CornerRadius::same(14));
+
+                        if ui.add(button).clicked() {
+                            self.root_note = note;
+                        }
+                    }
+
+                    ui.separator();
+
+                    ui.label(
+                        RichText::new("Scale")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    egui::ComboBox::from_id_salt("scale")
+                        .selected_text(self.scale_kind.label())
+                        .show_ui(ui, |ui| {
+                            for scale in ALL_SCALES {
+                                ui.selectable_value(&mut self.scale_kind, scale, scale.label());
+                            }
+                        });
+                });
             });
     }
 

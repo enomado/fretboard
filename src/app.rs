@@ -160,6 +160,7 @@ impl LiveChartKind {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WorkspaceTab {
     Controls,
+    FretboardControls,
     InputScope,
     ConfigGeneral,
     ConfigFft1,
@@ -175,6 +176,7 @@ impl WorkspaceTab {
     fn label(self) -> &'static str {
         match self {
             Self::Controls => "Controls",
+            Self::FretboardControls => "Fretboard Controls",
             Self::InputScope => "Input Scope",
             Self::ConfigGeneral => "Config General",
             Self::ConfigFft1 => "Config FFT1",
