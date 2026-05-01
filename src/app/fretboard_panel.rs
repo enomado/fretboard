@@ -112,10 +112,10 @@ impl App {
                 if !tuner_targets.is_empty() {
                     self.draw_tuner_targets(&painter, &fretboard, &tuner_targets);
                 }
-                if let Some(pointer_pos) = response.hover_pos() {
-                    if let Some(hovered) = self.hovered_note(pointer_pos, &fretboard, &scale) {
-                        self.draw_hovered_note(&painter, component_rect, &hovered);
-                    }
+                if let Some(pointer_pos) = response.hover_pos()
+                    && let Some(hovered) = self.hovered_note(pointer_pos, &fretboard, &scale)
+                {
+                    self.draw_hovered_note(&painter, component_rect, &hovered);
                 }
 
                 self.draw_footer_note(ui, component_rect);

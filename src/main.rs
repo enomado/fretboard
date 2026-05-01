@@ -38,14 +38,12 @@ fn connect_subsecond() {
         };
 
         while let Ok(msg) = websocket.read() {
-            if let tungstenite::Message::Text(text) = msg {
-                if let Ok(DevserverMsg::HotReload(msg)) = serde_json::from_str(&text) {
-                    if msg.for_pid == Some(std::process::id()) {
-                        if let Some(jump_table) = msg.jump_table {
-                            unsafe { subsecond::apply_patch(jump_table).unwrap() };
-                        }
-                    }
-                }
+            if let tungstenite::Message::Text(text) = msg
+                && let Ok(DevserverMsg::HotReload(msg)) = serde_json::from_str(&text)
+                && msg.for_pid == Some(std::process::id())
+                && let Some(jump_table) = msg.jump_table
+            {
+                unsafe { subsecond::apply_patch(jump_table).unwrap() };
             }
         }
     });

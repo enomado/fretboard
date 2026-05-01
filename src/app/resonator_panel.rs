@@ -13,6 +13,7 @@ use eframe::egui::{
     vec2,
 };
 
+use super::live_analysis::SpiralChart;
 use super::{
     App,
     pill,
@@ -69,15 +70,19 @@ impl App {
                 ui.add_space(12.0);
                 self.draw_spiral_chart(
                     ui,
-                    "Resonator spiral",
-                    "same snail, but driven by the resonator bank instead of FFT bins",
-                    reading_ref.map(|value| value.resonator_spectrum.as_slice()),
-                    reading_ref.map_or(&[][..], |value| value.resonator_waterfall.as_slice()),
-                    reading_ref.map_or(&[][..], |value| value.resonator_note_labels.as_slice()),
-                    None,
-                    "Play a sustained note to charge the resonator bank",
-                    "The resonator bank is empty",
-                    "bank focus",
+                    SpiralChart {
+                        title:             "Resonator spiral",
+                        subtitle:          "same snail, but driven by the resonator bank instead of FFT bins",
+                        spectrum:          reading_ref.map(|value| value.resonator_spectrum.as_slice()),
+                        waterfall:         reading_ref
+                            .map_or(&[][..], |value| value.resonator_waterfall.as_slice()),
+                        note_labels:       reading_ref
+                            .map_or(&[][..], |value| value.resonator_note_labels.as_slice()),
+                        active_note:       None,
+                        waiting_message:   "Play a sustained note to charge the resonator bank",
+                        empty_message:     "The resonator bank is empty",
+                        active_note_label: "bank focus",
+                    },
                 );
             });
     }

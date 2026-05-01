@@ -43,6 +43,18 @@ use crate::core_types::note::Accidental;
 use crate::core_types::pitch::PCNote;
 use crate::ui::theme::PANEL_FILL;
 
+pub(crate) struct SpiralChart<'a> {
+    pub title:             &'a str,
+    pub subtitle:          &'a str,
+    pub spectrum:          Option<&'a [f32]>,
+    pub waterfall:         &'a [Vec<f32>],
+    pub note_labels:       &'a [String],
+    pub active_note:       Option<&'a str>,
+    pub waiting_message:   &'a str,
+    pub empty_message:     &'a str,
+    pub active_note_label: &'a str,
+}
+
 impl App {
     pub(super) fn draw_input_scope_card(&mut self, ui: &mut Ui) {
         let status = self.audio.status();
@@ -473,31 +485,21 @@ impl App {
     fn draw_spiral_spectrogram(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
         self.draw_spiral_chart(
             ui,
-            "Spiral spectrogram",
-            "octaves wrap onto the same pitch angle",
-            reading.map(|value| value.spiral_spectrum.as_slice()),
-            reading.map_or(&[][..], |value| value.spiral_waterfall.as_slice()),
-            reading.map_or(&[][..], |value| value.note_labels.as_slice()),
-            None,
-            "Play a sustained note to light up the spiral",
-            "The note spectrum is empty",
-            "active note",
+            SpiralChart {
+                title:             "Spiral spectrogram",
+                subtitle:          "octaves wrap onto the same pitch angle",
+                spectrum:          reading.map(|value| value.spiral_spectrum.as_slice()),
+                waterfall:         reading.map_or(&[][..], |value| value.spiral_waterfall.as_slice()),
+                note_labels:       reading.map_or(&[][..], |value| value.note_labels.as_slice()),
+                active_note:       None,
+                waiting_message:   "Play a sustained note to light up the spiral",
+                empty_message:     "The note spectrum is empty",
+                active_note_label: "active note",
+            },
         );
     }
 
-    pub(super) fn draw_spiral_chart(
-        &self,
-        ui: &mut Ui,
-        title: &str,
-        subtitle: &str,
-        spectrum: Option<&[f32]>,
-        waterfall: &[Vec<f32>],
-        note_labels: &[String],
-        active_note: Option<&str>,
-        waiting_message: &str,
-        empty_message: &str,
-        active_note_label: &str,
-    ) {
+    pub(super) fn draw_spiral_chart(&self, ui: &mut Ui, chart: SpiralChart<'_>) {
         let desired_size = vec2(ui.available_width(), 376.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
@@ -513,14 +515,14 @@ impl App {
         painter.text(
             pos2(rect.left() + 14.0, rect.top() + 12.0),
             egui::Align2::LEFT_TOP,
-            title,
+            chart.title,
             FontId::proportional(15.0),
             Color32::from_rgb(201, 195, 184),
         );
         painter.text(
             pos2(rect.right() - 14.0, rect.top() + 12.0),
             egui::Align2::RIGHT_TOP,
-            subtitle,
+            chart.subtitle,
             FontId::proportional(12.0),
             Color32::from_rgb(152, 158, 165),
         );
@@ -530,11 +532,11 @@ impl App {
             pos2(rect.right() - 20.0, rect.bottom() - 20.0),
         );
 
-        let Some(spectrum) = spectrum else {
+        let Some(spectrum) = chart.spectrum else {
             painter.text(
                 viz_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                waiting_message,
+                chart.waiting_message,
                 FontId::proportional(13.0),
                 Color32::from_rgb(139, 143, 149),
             );
@@ -542,11 +544,11 @@ impl App {
         };
 
         let settings: AnalysisSettings = self.audio.analysis_settings();
-        if spectrum.is_empty() || note_labels.is_empty() {
+        if spectrum.is_empty() || chart.note_labels.is_empty() {
             painter.text(
                 viz_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                empty_message,
+                chart.empty_message,
                 FontId::proportional(13.0),
                 Color32::from_rgb(139, 143, 149),
             );
@@ -558,14 +560,15 @@ impl App {
         let center = chart_rect.center();
         let inner_radius = square * 0.12;
         let outer_radius = square * 0.47;
-        let semitone_count = note_labels.len().max(1);
+        let semitone_count = chart.note_labels.len().max(1);
         let spiral_bin_count = spectrum.len().max(1);
         let bins_per_semitone = if semitone_count > 1 {
             (spiral_bin_count.saturating_sub(1) as f32 / (semitone_count - 1) as f32).max(1.0)
         } else {
             1.0
         };
-        let pitch_class_offset = note_labels
+        let pitch_class_offset = chart
+            .note_labels
             .first()
             .and_then(|label| note_label_pitch_class(label))
             .unwrap_or(0);
@@ -574,7 +577,9 @@ impl App {
         } else {
             0.0
         };
-        let active_index = active_note.and_then(|note| note_labels.iter().position(|label| label == note));
+        let active_index = chart
+            .active_note
+            .and_then(|note| chart.note_labels.iter().position(|label| label == note));
 
         painter.circle_filled(
             center,
@@ -591,7 +596,7 @@ impl App {
             );
         }
 
-        for pitch_class in 0..12 {
+        for (pitch_class, pitch_label) in SPIRAL_PITCH_LABELS.iter().enumerate() {
             let angle = pitch_class_angle(pitch_class);
             let direction = vec2(angle.cos(), angle.sin());
             let label_pos = center + direction * (outer_radius + 20.0);
@@ -613,7 +618,7 @@ impl App {
             painter.text(
                 label_pos,
                 egui::Align2::CENTER_CENTER,
-                SPIRAL_PITCH_LABELS[pitch_class],
+                *pitch_label,
                 FontId::proportional(18.0),
                 spoke_color,
             );
@@ -635,8 +640,8 @@ impl App {
             Stroke::new(1.1_f32, Color32::from_rgb(76, 82, 90)),
         ));
 
-        for (history_index, row) in waterfall.iter().enumerate() {
-            let age = history_index as f32 / waterfall.len().max(1) as f32;
+        for (history_index, row) in chart.waterfall.iter().enumerate() {
+            let age = history_index as f32 / chart.waterfall.len().max(1) as f32;
             let strengths = spiral_contrast_strengths(row, &settings);
             for (note_index, intensity) in strengths.iter().copied().enumerate() {
                 if intensity <= 0.0 {
@@ -716,7 +721,7 @@ impl App {
             painter.text(
                 pos2(rect.left() + 14.0, rect.bottom() - 14.0),
                 egui::Align2::LEFT_BOTTOM,
-                format!("{active_note_label} {}", note_labels[active_index]),
+                format!("{} {}", chart.active_note_label, chart.note_labels[active_index]),
                 FontId::proportional(12.0),
                 Color32::from_rgb(214, 206, 192),
             );
