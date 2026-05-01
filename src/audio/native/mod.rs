@@ -38,12 +38,7 @@ pub(super) mod imp {
         FromSample,
         Sample,
     };
-    use resonators::{
-        ResonatorBank,
-        ResonatorConfig,
-        heuristic_alpha,
-        midi_to_hz,
-    };
+    use resonators::midi_to_hz;
     use ringbuf::HeapRb;
     use ringbuf::traits::{
         Consumer,
@@ -62,15 +57,14 @@ pub(super) mod imp {
     mod analysis_math;
     mod devices;
     mod pitch;
+    mod resonator;
     mod spectrum;
 
     use analysis_math::{
         NOTE_BUCKET_MAX_MIDI,
         NOTE_BUCKET_MIN_MIDI,
         frequency_to_note,
-        normalize_bars,
         note_bucket_labels,
-        resonator_note_labels,
         smooth_frequency,
     };
     use devices::{
@@ -84,6 +78,11 @@ pub(super) mod imp {
     use pitch::{
         LOWEST_TRACKED_FREQUENCY,
         detect_pitch_yin,
+    };
+    use resonator::{
+        ResonatorSnapshot,
+        ResonatorViewSettings,
+        resonator_snapshot_for_window,
     };
     use spectrum::spectrum_bars_for_window;
 
@@ -102,9 +101,6 @@ pub(super) mod imp {
     const MAX_WINDOW_SIZE: usize = 16384;
     const WATERFALL_HISTORY: usize = 52;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
-    const RESONATOR_MIN_MIDI: usize = NOTE_BUCKET_MIN_MIDI;
-    const RESONATOR_MAX_MIDI: usize = NOTE_BUCKET_MAX_MIDI;
-    const RESONATOR_DEFAULT_BINS_PER_SEMITONE: usize = 5;
     const SILENCE_RMS_THRESHOLD: f32 = 0.0;
     const INPUT_WAVEFORM_HISTORY: usize = 2048;
 
@@ -1000,22 +996,6 @@ pub(super) mod imp {
         sample_rate:    f32,
     }
 
-    #[derive(Clone, Debug, PartialEq)]
-    struct ResonatorViewSettings {
-        min_midi:          usize,
-        max_midi:          usize,
-        bins_per_semitone: usize,
-        alpha_scale:       f32,
-        beta_scale:        f32,
-        gamma:             f32,
-    }
-
-    #[derive(Clone, Debug)]
-    struct ResonatorSnapshot {
-        spectrum:    Vec<f32>,
-        note_labels: Vec<String>,
-    }
-
     #[derive(Clone, Copy, Debug)]
     struct PitchEstimate {
         frequency_hz: f32,
@@ -1107,35 +1087,8 @@ pub(super) mod imp {
                 if let Some(reading) = state.reading.as_mut() {
                     reading.resonator_spectrum.clear();
                     reading.resonator_waterfall.clear();
-                    reading.resonator_note_labels =
-                        resonator_note_labels(self.resonator_view.min_midi, self.resonator_view.max_midi);
+                    reading.resonator_note_labels = self.resonator_view.note_labels();
                 }
-            }
-        }
-    }
-
-    impl Default for ResonatorViewSettings {
-        fn default() -> Self {
-            Self {
-                min_midi:          RESONATOR_MIN_MIDI,
-                max_midi:          RESONATOR_MAX_MIDI,
-                bins_per_semitone: RESONATOR_DEFAULT_BINS_PER_SEMITONE,
-                alpha_scale:       1.0,
-                beta_scale:        1.0,
-                gamma:             0.72,
-            }
-        }
-    }
-
-    impl From<&AnalysisSettings> for ResonatorViewSettings {
-        fn from(s: &AnalysisSettings) -> Self {
-            Self {
-                min_midi:          s.resonator_min_midi,
-                max_midi:          s.resonator_max_midi,
-                bins_per_semitone: s.resonator_bins,
-                alpha_scale:       s.resonator_alpha,
-                beta_scale:        s.resonator_beta,
-                gamma:             s.resonator_gamma,
             }
         }
     }
@@ -1188,42 +1141,6 @@ pub(super) mod imp {
             resonator_spectrum: resonator_snapshot.spectrum,
             resonator_note_labels: resonator_snapshot.note_labels,
         }
-    }
-
-    fn build_resonator_bank(sample_rate: f32, settings: &ResonatorViewSettings) -> ResonatorBank {
-        let bin_count = (settings.max_midi - settings.min_midi) * settings.bins_per_semitone + 1;
-        let configs: Vec<ResonatorConfig> = (0..bin_count)
-            .map(|i| {
-                let midi = settings.min_midi as f32 + i as f32 / settings.bins_per_semitone as f32;
-                let frequency = midi_to_hz(midi, 440.0);
-                let alpha =
-                    (heuristic_alpha(frequency, sample_rate) * settings.alpha_scale).clamp(0.0001, 1.0);
-                let beta = (heuristic_alpha(frequency, sample_rate) * settings.beta_scale).clamp(0.0001, 1.0);
-                ResonatorConfig::new(frequency, alpha, beta)
-            })
-            .collect();
-        ResonatorBank::new(&configs, sample_rate)
-    }
-
-    fn resonator_snapshot(bank: &ResonatorBank, settings: &ResonatorViewSettings) -> ResonatorSnapshot {
-        let mut spectrum = bank.magnitudes();
-        normalize_bars(&mut spectrum, settings.gamma);
-        ResonatorSnapshot {
-            spectrum,
-            note_labels: resonator_note_labels(settings.min_midi, settings.max_midi),
-        }
-    }
-
-    fn resonator_snapshot_for_window(
-        window: &[f32],
-        sample_rate: f32,
-        settings: &ResonatorViewSettings,
-    ) -> ResonatorSnapshot {
-        let mut bank = build_resonator_bank(sample_rate, settings);
-        for sample in window.iter().copied() {
-            bank.process_sample(sample);
-        }
-        resonator_snapshot(&bank, settings)
     }
 
     fn append_input_waveform(shared: &Arc<Mutex<SharedState>>, samples: &[f32]) {
