@@ -1,3 +1,6 @@
+## Memory
+- используй папку репозитория для хранения своей memory.
+
 ## Coding Style
 
 ### Error Handling
@@ -41,4 +44,5 @@
 - Расширяй существующие структуры и функции, а не копируй с вариацией.
 
 ### Tools
-- target directory is overriden: /tmp/rust_target. sometimes needs to do cargo clean when full
+- target directory: default (in-project `target/`)
+- Formatting follows `rustfmt.toml` from `/home/sc/t/bur/rust_app`.
