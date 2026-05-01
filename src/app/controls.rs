@@ -429,96 +429,63 @@ impl App {
     }
 
     pub(super) fn draw_general_config_card(&mut self, ui: &mut Ui) {
-        let defaults = AnalysisSettings::default();
-        let mut settings = self.audio.analysis_settings();
-        let mut changed = false;
-
-        Frame::new()
-            .fill(Color32::from_rgb(25, 29, 34))
-            .corner_radius(CornerRadius::same(16))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(52, 58, 66)))
-            .inner_margin(Margin::same(14))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Config: General")
-                                .color(Color32::from_rgb(226, 216, 201))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Window, smoothing, and analysis range")
-                                .color(Color32::from_rgb(145, 151, 160))
-                                .size(12.0),
-                        );
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Reset").clicked() {
-                            settings.window_size = defaults.window_size;
-                            settings.spectrum_smoothing = defaults.spectrum_smoothing;
-                            settings.min_frequency = defaults.min_frequency;
-                            settings.max_frequency = defaults.max_frequency;
-                            changed = true;
-                        }
-                    });
-                });
-
-                ui.add_space(10.0);
-                self.draw_general_config_tab(ui, &mut settings, &mut changed);
-            });
-
-        if changed {
-            self.audio.set_analysis_settings(settings);
-        }
+        self.draw_config_card(
+            ui,
+            "Config: General",
+            "Window, smoothing, and analysis range",
+            |settings, defaults| {
+                settings.window_size = defaults.window_size;
+                settings.spectrum_smoothing = defaults.spectrum_smoothing;
+                settings.min_frequency = defaults.min_frequency;
+                settings.max_frequency = defaults.max_frequency;
+            },
+            Self::draw_general_config_tab,
+        );
     }
 
     pub(super) fn draw_fft1_config_card(&mut self, ui: &mut Ui) {
-        let defaults = AnalysisSettings::default();
-        let mut settings = self.audio.analysis_settings();
-        let mut changed = false;
-
-        Frame::new()
-            .fill(Color32::from_rgb(25, 29, 34))
-            .corner_radius(CornerRadius::same(16))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(52, 58, 66)))
-            .inner_margin(Margin::same(14))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Config: FFT1")
-                                .color(Color32::from_rgb(226, 216, 201))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new("Primary FFT size and display shaping")
-                                .color(Color32::from_rgb(145, 151, 160))
-                                .size(12.0),
-                        );
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Reset").clicked() {
-                            settings.fft_size = defaults.fft_size;
-                            settings.note_spread = defaults.note_spread;
-                            settings.spectrum_gamma = defaults.spectrum_gamma;
-                            settings.note_gamma = defaults.note_gamma;
-                            changed = true;
-                        }
-                    });
-                });
-
-                ui.add_space(10.0);
-                self.draw_fft1_config_tab(ui, &mut settings, &mut changed);
-            });
-
-        if changed {
-            self.audio.set_analysis_settings(settings);
-        }
+        self.draw_config_card(
+            ui,
+            "Config: FFT1",
+            "Primary FFT size and display shaping",
+            |settings, defaults| {
+                settings.fft_size = defaults.fft_size;
+                settings.note_spread = defaults.note_spread;
+                settings.spectrum_gamma = defaults.spectrum_gamma;
+                settings.note_gamma = defaults.note_gamma;
+            },
+            Self::draw_fft1_config_tab,
+        );
     }
 
     pub(super) fn draw_resonator_fft_config_card(&mut self, ui: &mut Ui) {
+        self.draw_config_card(
+            ui,
+            "Config: Resonator FFT",
+            "Resonator bank range, density, and response",
+            |settings, defaults| {
+                settings.resonator_min_midi = defaults.resonator_min_midi;
+                settings.resonator_max_midi = defaults.resonator_max_midi;
+                settings.resonator_bins = defaults.resonator_bins;
+                settings.resonator_alpha = defaults.resonator_alpha;
+                settings.resonator_beta = defaults.resonator_beta;
+                settings.resonator_gamma = defaults.resonator_gamma;
+            },
+            Self::draw_resonator_fft_config_tab,
+        );
+    }
+
+    fn draw_config_card<Reset, Body>(
+        &mut self,
+        ui: &mut Ui,
+        title: &str,
+        subtitle: &str,
+        reset: Reset,
+        body: Body,
+    ) where
+        Reset: FnOnce(&mut AnalysisSettings, &AnalysisSettings),
+        Body: FnOnce(&mut Self, &mut Ui, &mut AnalysisSettings, &mut bool),
+    {
         let defaults = AnalysisSettings::default();
         let mut settings = self.audio.analysis_settings();
         let mut changed = false;
@@ -532,12 +499,12 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("Config: Resonator FFT")
+                            RichText::new(title)
                                 .color(Color32::from_rgb(226, 216, 201))
                                 .strong(),
                         );
                         ui.label(
-                            RichText::new("Resonator bank range, density, and response")
+                            RichText::new(subtitle)
                                 .color(Color32::from_rgb(145, 151, 160))
                                 .size(12.0),
                         );
@@ -545,19 +512,14 @@ impl App {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Reset").clicked() {
-                            settings.resonator_min_midi = defaults.resonator_min_midi;
-                            settings.resonator_max_midi = defaults.resonator_max_midi;
-                            settings.resonator_bins = defaults.resonator_bins;
-                            settings.resonator_alpha = defaults.resonator_alpha;
-                            settings.resonator_beta = defaults.resonator_beta;
-                            settings.resonator_gamma = defaults.resonator_gamma;
+                            reset(&mut settings, &defaults);
                             changed = true;
                         }
                     });
                 });
 
                 ui.add_space(10.0);
-                self.draw_resonator_fft_config_tab(ui, &mut settings, &mut changed);
+                body(self, ui, &mut settings, &mut changed);
             });
 
         if changed {
