@@ -58,6 +58,14 @@ pub(super) mod imp {
     use rustfft::FftPlanner;
     use rustfft::num_complex::Complex32;
 
+    use super::super::types::{
+        AnalysisSettings,
+        AudioInputKind,
+        AudioInputOption,
+        AudioStatus,
+        TunerReading,
+    };
+
     const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
     const PULSE_INPUT_ID_PREFIX: &str = "pulse::";
     const PULSE_DEFAULT_SOURCE_ID: &str = "pulse::@DEFAULT_SOURCE@";
@@ -70,10 +78,8 @@ pub(super) mod imp {
     // ------------------------------------------------------------------
     // Конфигурация анализа
     // ------------------------------------------------------------------
-    const DEFAULT_WINDOW_SIZE: usize = 6144;
     const MIN_WINDOW_SIZE: usize = 2048;
     const MAX_WINDOW_SIZE: usize = 16384;
-    const DEFAULT_FFT_SIZE: usize = 16384;
     const MIN_FFT_SIZE: usize = 4096;
     const MAX_FFT_SIZE: usize = 32768;
     const SPECTRUM_BINS: usize = 72;
@@ -85,9 +91,6 @@ pub(super) mod imp {
     const SPIRAL_BIN_COUNT: usize =
         (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
-    const SPECTRUM_MIN_FREQUENCY: f32 = LOWEST_TRACKED_FREQUENCY;
-    const SPECTRUM_MAX_FREQUENCY: f32 = 2_000.0;
-    const NOTE_BUCKET_SPREAD: f32 = 0.35;
     const RESONATOR_MIN_MIDI: usize = NOTE_BUCKET_MIN_MIDI;
     const RESONATOR_MAX_MIDI: usize = NOTE_BUCKET_MAX_MIDI;
     const RESONATOR_DEFAULT_BINS_PER_SEMITONE: usize = 5;
@@ -105,87 +108,6 @@ pub(super) mod imp {
 
     // Время паузы воркера, когда в кольце нет свежих сэмплов
     const ANALYSIS_IDLE_SLEEP: Duration = Duration::from_millis(5);
-
-    // ------------------------------------------------------------------
-    // Публичные типы (стабильный API для UI)
-    // ------------------------------------------------------------------
-    #[derive(Clone, Debug)]
-    pub struct TunerReading {
-        pub frequency_hz:          f32,
-        pub note_name:             String,
-        pub cents:                 f32,
-        pub clarity:               f32,
-        pub spectrum:              Vec<f32>,
-        pub waterfall:             Vec<Vec<f32>>,
-        pub note_spectrum:         Vec<f32>,
-        pub note_waterfall:        Vec<Vec<f32>>,
-        pub spiral_spectrum:       Vec<f32>,
-        pub spiral_waterfall:      Vec<Vec<f32>>,
-        pub resonator_spectrum:    Vec<f32>,
-        pub resonator_waterfall:   Vec<Vec<f32>>,
-        pub resonator_note_labels: Vec<String>,
-        pub note_labels:           Vec<String>,
-    }
-
-    #[derive(Clone, Debug)]
-    pub enum AudioStatus {
-        Idle,
-        Listening,
-        Error(String),
-    }
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum AudioInputKind {
-        Microphone,
-        System,
-        Other,
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct AudioInputOption {
-        pub id:    String,
-        pub label: String,
-        pub kind:  AudioInputKind,
-    }
-
-    #[derive(Clone, Debug)]
-    pub struct AnalysisSettings {
-        pub window_size:        usize,
-        pub fft_size:           usize,
-        pub min_frequency:      f32,
-        pub max_frequency:      f32,
-        pub spectrum_smoothing: usize,
-        pub note_spread:        f32,
-        pub spectrum_gamma:     f32,
-        pub note_gamma:         f32,
-        pub resonator_min_midi: usize,
-        pub resonator_max_midi: usize,
-        pub resonator_bins:     usize,
-        pub resonator_alpha:    f32,
-        pub resonator_beta:     f32,
-        pub resonator_gamma:    f32,
-    }
-
-    impl Default for AnalysisSettings {
-        fn default() -> Self {
-            Self {
-                window_size:        DEFAULT_WINDOW_SIZE,
-                fft_size:           DEFAULT_FFT_SIZE,
-                min_frequency:      SPECTRUM_MIN_FREQUENCY,
-                max_frequency:      SPECTRUM_MAX_FREQUENCY,
-                spectrum_smoothing: 1,
-                note_spread:        NOTE_BUCKET_SPREAD,
-                spectrum_gamma:     0.58,
-                note_gamma:         0.72,
-                resonator_min_midi: RESONATOR_MIN_MIDI,
-                resonator_max_midi: RESONATOR_MAX_MIDI,
-                resonator_bins:     RESONATOR_DEFAULT_BINS_PER_SEMITONE,
-                resonator_alpha:    1.0,
-                resonator_beta:     1.0,
-                resonator_gamma:    0.72,
-            }
-        }
-    }
 
     impl AnalysisSettings {
         fn sanitized(mut self) -> Self {
@@ -2000,7 +1922,6 @@ pub(super) mod imp {
             MIN_WINDOW_SIZE,
             NOTE_BUCKET_MAX_MIDI,
             NOTE_BUCKET_MIN_MIDI,
-            NOTE_BUCKET_SPREAD,
             SPIRAL_BIN_COUNT,
             accumulate_note_energy,
             accumulate_spiral_energy,
@@ -2043,7 +1964,7 @@ pub(super) mod imp {
         #[test]
         fn note_energy_prefers_the_closest_semitone() {
             let mut bars = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
-            accumulate_note_energy(&mut bars, 440.0, 1.0, NOTE_BUCKET_SPREAD);
+            accumulate_note_energy(&mut bars, 440.0, 1.0, AnalysisSettings::default().note_spread);
             let a4_index = 69 - NOTE_BUCKET_MIN_MIDI;
 
             let strongest = bars
@@ -2110,7 +2031,12 @@ Source #2
         #[test]
         fn low_octave_energy_lands_in_note_and_spiral_buckets() {
             let mut note_bars = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
-            accumulate_note_energy(&mut note_bars, 16.3516, 1.0, NOTE_BUCKET_SPREAD);
+            accumulate_note_energy(
+                &mut note_bars,
+                16.3516,
+                1.0,
+                AnalysisSettings::default().note_spread,
+            );
             assert!(note_bars[0] > 0.9);
 
             let mut spiral_bars = vec![0.0; SPIRAL_BIN_COUNT];

@@ -1,23 +1,17 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+mod types;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::imp::{
+pub use native::imp::AudioEngine;
+pub use types::{
     AnalysisSettings,
-    AudioEngine,
     AudioInputKind,
     AudioInputOption,
     AudioStatus,
     TunerReading,
 };
 #[cfg(target_arch = "wasm32")]
-pub use wasm::{
-    AnalysisSettings,
-    AudioEngine,
-    AudioInputKind,
-    AudioInputOption,
-    AudioStatus,
-    TunerReading,
-};
+pub use wasm::AudioEngine;
