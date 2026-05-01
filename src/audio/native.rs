@@ -109,6 +109,9 @@ pub(super) mod imp {
     // Время паузы воркера, когда в кольце нет свежих сэмплов
     const ANALYSIS_IDLE_SLEEP: Duration = Duration::from_millis(5);
 
+    type SampleProducer = <HeapRb<f32> as Split>::Prod;
+    type SampleConsumer = <HeapRb<f32> as Split>::Cons;
+
     impl AnalysisSettings {
         fn sanitized(mut self) -> Self {
             self.window_size = self.window_size.clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE);
@@ -460,19 +463,15 @@ pub(super) mod imp {
         }
 
         fn reset_shared_for_new_capture(&self) {
-            if let Ok(mut s) = self.shared.lock() {
-                s.reading = None;
-                s.input_waveform.clear();
-                s.waterfall.clear();
-                s.note_waterfall.clear();
-                s.spiral_waterfall.clear();
-                s.resonator_waterfall.clear();
-                s.smoothed_frequency = None;
-                s.status = AudioStatus::Listening;
-            }
+            self.reset_shared_state();
         }
 
         fn reset_shared_for_test_tone(&self) {
+            self.reset_shared_state();
+            self.input_level.store(0.0f32.to_bits(), Ordering::Relaxed);
+        }
+
+        fn reset_shared_state(&self) {
             if let Ok(mut s) = self.shared.lock() {
                 s.reading = None;
                 s.input_waveform.clear();
@@ -483,7 +482,6 @@ pub(super) mod imp {
                 s.smoothed_frequency = None;
                 s.status = AudioStatus::Listening;
             }
-            self.input_level.store(0.0f32.to_bits(), Ordering::Relaxed);
         }
 
         fn play_test_note(&self, midi: usize) {
@@ -526,18 +524,8 @@ pub(super) mod imp {
             let mut stream_config: cpal::StreamConfig = config.into();
             stream_config.buffer_size = input_buffer_size;
 
-            // Кольцевой буфер для анализа. Размер — 0.5с при данном rate,
-            // с большим запасом на подёргивания планировщика.
-            let (analysis_prod, analysis_cons) = HeapRb::<f32>::new((sample_rate as usize) / 2).split();
-
-            // Кольцевой буфер для монитора-вывода. Создаём только если monitor on.
-            // Держим запас небольшим, чтобы монитор не копил лишнюю задержку.
-            let (monitor_prod, monitor_cons) = if self.monitor_enabled.load(Ordering::Relaxed) {
-                let (p, c) = HeapRb::<f32>::new(low_latency_monitor_ring_len(sample_rate)).split();
-                (Some(p), Some(c))
-            } else {
-                (None, None)
-            };
+            let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
+            let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
 
             // Входной stream: callback тупо пушит в кольца, без блокировок и паник.
             let input_stream = match sample_format {
@@ -556,34 +544,9 @@ pub(super) mod imp {
                 .play()
                 .map_err(|e| format!("Failed to start input stream: {e}"))?;
 
-            // Монитор-выход, если нужен. Ошибку запуска не считаем фатальной —
-            // без монитора запись и анализ всё равно работают.
-            let (output_stream, output_rate) = match monitor_cons {
-                Some(cons) => {
-                    match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
-                        Ok((stream, rate)) => (Some(stream), rate),
-                        Err(_) => (None, 0),
-                    }
-                }
-                None => (None, 0),
-            };
-
-            // Анализ-воркер читает из кольца, крутит FFT/YIN, кладёт в shared.
-            let analysis = start_analysis_worker(
-                sample_rate as f32,
-                analysis_cons,
-                self.shared.clone(),
-                self.settings.clone(),
-                self.input_gain.clone(),
-                self.input_level.clone(),
-            );
-
-            self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
-            self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
-            self.reset_shared_for_new_capture();
-            if let Ok(mut sel) = self.selected_input_id.lock() {
-                *sel = Some(selected_id.clone());
-            }
+            let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
+            let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
+            self.finish_capture_start(sample_rate, output_rate, &selected_id);
 
             Ok(ActiveCapture {
                 input: ActiveInput::Cpal(input_stream),
@@ -597,13 +560,8 @@ pub(super) mod imp {
             let sample_rate = PULSE_CAPTURE_RATE;
             let selected_id = id.to_owned();
 
-            let (analysis_prod, analysis_cons) = HeapRb::<f32>::new((sample_rate as usize) / 2).split();
-            let (monitor_prod, monitor_cons) = if self.monitor_enabled.load(Ordering::Relaxed) {
-                let (p, c) = HeapRb::<f32>::new(low_latency_monitor_ring_len(sample_rate)).split();
-                (Some(p), Some(c))
-            } else {
-                (None, None)
-            };
+            let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
+            let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
 
             let input = ActiveInput::Pulse(build_pulse_input(
                 id,
@@ -613,31 +571,9 @@ pub(super) mod imp {
                 self.shared.clone(),
             )?);
 
-            let (output_stream, output_rate) = match monitor_cons {
-                Some(cons) => {
-                    match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
-                        Ok((stream, rate)) => (Some(stream), rate),
-                        Err(_) => (None, 0),
-                    }
-                }
-                None => (None, 0),
-            };
-
-            let analysis = start_analysis_worker(
-                sample_rate as f32,
-                analysis_cons,
-                self.shared.clone(),
-                self.settings.clone(),
-                self.input_gain.clone(),
-                self.input_level.clone(),
-            );
-
-            self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
-            self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
-            self.reset_shared_for_new_capture();
-            if let Ok(mut sel) = self.selected_input_id.lock() {
-                *sel = Some(selected_id.clone());
-            }
+            let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
+            let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
+            self.finish_capture_start(sample_rate, output_rate, &selected_id);
 
             Ok(ActiveCapture {
                 input,
@@ -645,6 +581,55 @@ pub(super) mod imp {
                 analysis,
                 selected_id,
             })
+        }
+
+        // Кольцевой буфер для монитора-вывода. Создаём только если monitor on.
+        // Держим запас небольшим, чтобы монитор не копил лишнюю задержку.
+        fn monitor_ring(&self, sample_rate: u32) -> (Option<SampleProducer>, Option<SampleConsumer>) {
+            if self.monitor_enabled.load(Ordering::Relaxed) {
+                let (prod, cons) = HeapRb::<f32>::new(low_latency_monitor_ring_len(sample_rate)).split();
+                (Some(prod), Some(cons))
+            } else {
+                (None, None)
+            }
+        }
+
+        // Ошибку запуска монитора не считаем фатальной: запись и анализ
+        // должны продолжать работать без playback monitoring.
+        fn start_monitor_output(
+            &self,
+            sample_rate: u32,
+            monitor_cons: Option<SampleConsumer>,
+        ) -> (Option<cpal::Stream>, u32) {
+            match monitor_cons {
+                Some(cons) => {
+                    match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
+                        Ok((stream, rate)) => (Some(stream), rate),
+                        Err(_) => (None, 0),
+                    }
+                }
+                None => (None, 0),
+            }
+        }
+
+        fn start_analysis_worker(&self, sample_rate: u32, analysis_cons: SampleConsumer) -> AnalysisWorker {
+            start_analysis_worker(
+                sample_rate as f32,
+                analysis_cons,
+                self.shared.clone(),
+                self.settings.clone(),
+                self.input_gain.clone(),
+                self.input_level.clone(),
+            )
+        }
+
+        fn finish_capture_start(&self, sample_rate: u32, output_rate: u32, selected_id: &str) {
+            self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
+            self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
+            self.reset_shared_for_new_capture();
+            if let Ok(mut sel) = self.selected_input_id.lock() {
+                *sel = Some(selected_id.to_owned());
+            }
         }
     }
 
@@ -719,7 +704,7 @@ pub(super) mod imp {
 
     fn start_analysis_worker(
         sample_rate: f32,
-        mut cons: <HeapRb<f32> as Split>::Cons,
+        mut cons: SampleConsumer,
         shared: Arc<Mutex<SharedState>>,
         settings: Arc<Mutex<AnalysisSettings>>,
         input_gain: Arc<AtomicU32>,
@@ -756,12 +741,18 @@ pub(super) mod imp {
     // ------------------------------------------------------------------
     // Построение cpal streams
     // ------------------------------------------------------------------
+    // Кольцевой буфер для анализа. Размер — 0.5с при данном rate,
+    // с большим запасом на подёргивания планировщика.
+    fn analysis_ring(sample_rate: u32) -> (SampleProducer, SampleConsumer) {
+        HeapRb::<f32>::new((sample_rate as usize) / 2).split()
+    }
+
     fn build_input<T>(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         channels: usize,
-        mut an_prod: <HeapRb<f32> as Split>::Prod,
-        mut mon_prod: Option<<HeapRb<f32> as Split>::Prod>,
+        mut an_prod: SampleProducer,
+        mut mon_prod: Option<SampleProducer>,
     ) -> Result<cpal::Stream, String>
     where
         T: Sample + cpal::SizedSample,
@@ -794,8 +785,8 @@ pub(super) mod imp {
     fn build_pulse_input(
         input_id: &str,
         sample_rate: u32,
-        mut an_prod: <HeapRb<f32> as Split>::Prod,
-        mut mon_prod: Option<<HeapRb<f32> as Split>::Prod>,
+        mut an_prod: SampleProducer,
+        mut mon_prod: Option<SampleProducer>,
         shared: Arc<Mutex<SharedState>>,
     ) -> Result<PulseInputCapture, String> {
         let pulse_device = input_id.strip_prefix(PULSE_INPUT_ID_PREFIX).unwrap_or(input_id);
@@ -890,7 +881,7 @@ pub(super) mod imp {
 
     fn build_monitor_output(
         input_rate: u32,
-        mut cons: <HeapRb<f32> as Split>::Cons,
+        mut cons: SampleConsumer,
         monitor_gain: Arc<AtomicU32>,
     ) -> Result<(cpal::Stream, u32), String> {
         let host = cpal::default_host();
