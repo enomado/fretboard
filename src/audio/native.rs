@@ -216,28 +216,19 @@ pub(super) mod imp {
             // Запускаем audio-тред: он единственный владеет cpal::Stream.
             // UI шлёт команды через канал и мгновенно возвращается.
             let audio_thread = thread::spawn({
-                let shared = shared.clone();
-                let settings = settings.clone();
-                let input_gain = input_gain.clone();
-                let input_level = input_level.clone();
-                let monitor_enabled = monitor_enabled.clone();
-                let monitor_gain = monitor_gain.clone();
-                let input_sample_rate = input_sample_rate.clone();
-                let monitor_output_rate = monitor_output_rate.clone();
-                let selected_input_id = selected_input_id.clone();
+                let ctx = AudioContext {
+                    shared:              shared.clone(),
+                    settings:            settings.clone(),
+                    input_gain:          input_gain.clone(),
+                    input_level:         input_level.clone(),
+                    monitor_enabled:     monitor_enabled.clone(),
+                    monitor_gain:        monitor_gain.clone(),
+                    input_sample_rate:   input_sample_rate.clone(),
+                    monitor_output_rate: monitor_output_rate.clone(),
+                    selected_input_id:   selected_input_id.clone(),
+                };
                 move || {
-                    audio_thread_main(
-                        command_rx,
-                        shared,
-                        settings,
-                        input_gain,
-                        input_level,
-                        monitor_enabled,
-                        monitor_gain,
-                        input_sample_rate,
-                        monitor_output_rate,
-                        selected_input_id,
-                    );
+                    audio_thread_main(command_rx, ctx);
                 }
             });
 
@@ -374,31 +365,7 @@ pub(super) mod imp {
     // ------------------------------------------------------------------
     // Audio-тред: единственный владелец cpal::Stream.
     // ------------------------------------------------------------------
-    #[allow(clippy::too_many_arguments)]
-    fn audio_thread_main(
-        rx: Receiver<Command>,
-        shared: Arc<Mutex<SharedState>>,
-        settings: Arc<Mutex<AnalysisSettings>>,
-        input_gain: Arc<AtomicU32>,
-        input_level: Arc<AtomicU32>,
-        monitor_enabled: Arc<AtomicBool>,
-        monitor_gain: Arc<AtomicU32>,
-        input_sample_rate: Arc<AtomicU32>,
-        monitor_output_rate: Arc<AtomicU32>,
-        selected_input_id: Arc<Mutex<Option<String>>>,
-    ) {
-        let ctx = AudioContext {
-            shared,
-            settings,
-            input_gain,
-            input_level,
-            monitor_enabled,
-            monitor_gain,
-            input_sample_rate,
-            monitor_output_rate,
-            selected_input_id,
-        };
-
+    fn audio_thread_main(rx: Receiver<Command>, ctx: AudioContext) {
         // Стартовый capture: берём дефолтный input.
         // Если не поднялся — оставляем в состоянии Error, UI покажет.
         let mut current = ctx.build_capture(None).ok();
