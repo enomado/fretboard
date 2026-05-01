@@ -324,3 +324,50 @@ fn pulse_input_available() -> bool {
         .status()
         .is_ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_pulse_source_input_options;
+    use crate::audio::AudioInputKind;
+
+    #[test]
+    fn pulse_source_parser_keeps_mics_and_monitors_classified() {
+        let sources = parse_pulse_source_input_options(
+            r#"
+Source #42
+    State: RUNNING
+    Name: alsa_input.usb-Focusrite_Scarlett_Solo-00.mono-fallback
+    Description: Scarlett Solo Analog Mono
+Source #43
+    State: IDLE
+    Name: alsa_output.pci-0000_00_1f.3.analog-stereo.monitor
+    Description: Built-in Audio Analog Stereo Monitor
+"#,
+        );
+
+        assert_eq!(sources.len(), 2);
+        assert_eq!(
+            sources[0].id,
+            "pulse::alsa_input.usb-Focusrite_Scarlett_Solo-00.mono-fallback"
+        );
+        assert_eq!(sources[0].kind, AudioInputKind::Microphone);
+        assert!(sources[0].label.contains("Scarlett Solo"));
+        assert_eq!(sources[1].kind, AudioInputKind::System);
+    }
+
+    #[test]
+    fn pulse_source_parser_ignores_virtual_default_aliases() {
+        let sources = parse_pulse_source_input_options(
+            r#"
+Source #1
+    Name: @DEFAULT_SOURCE@
+    Description: Default Source
+Source #2
+    Name: @DEFAULT_MONITOR@
+    Description: Default Monitor
+"#,
+        );
+
+        assert!(sources.is_empty());
+    }
+}

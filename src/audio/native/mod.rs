@@ -1581,7 +1581,6 @@ pub(super) mod imp {
 
     #[cfg(test)]
     mod tests {
-        use super::devices::parse_pulse_source_input_options;
         use super::{
             AnalysisSettings,
             MIN_WINDOW_SIZE,
@@ -1595,7 +1594,6 @@ pub(super) mod imp {
             parabolic_tau,
             spectrum_bucket_index,
         };
-        use crate::audio::AudioInputKind;
 
         fn sine_wave(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
             (0..len)
@@ -1650,47 +1648,6 @@ pub(super) mod imp {
             assert_eq!(labels.first().map(String::as_str), Some("C0"));
             assert!(labels.iter().any(|label| label == "C1"));
             assert!(labels.iter().any(|label| label == "C2"));
-        }
-
-        #[test]
-        fn pulse_source_parser_keeps_mics_and_monitors_classified() {
-            let sources = parse_pulse_source_input_options(
-                r#"
-Source #42
-    State: RUNNING
-    Name: alsa_input.usb-Focusrite_Scarlett_Solo-00.mono-fallback
-    Description: Scarlett Solo Analog Mono
-Source #43
-    State: IDLE
-    Name: alsa_output.pci-0000_00_1f.3.analog-stereo.monitor
-    Description: Built-in Audio Analog Stereo Monitor
-"#,
-            );
-
-            assert_eq!(sources.len(), 2);
-            assert_eq!(
-                sources[0].id,
-                "pulse::alsa_input.usb-Focusrite_Scarlett_Solo-00.mono-fallback"
-            );
-            assert_eq!(sources[0].kind, AudioInputKind::Microphone);
-            assert!(sources[0].label.contains("Scarlett Solo"));
-            assert_eq!(sources[1].kind, AudioInputKind::System);
-        }
-
-        #[test]
-        fn pulse_source_parser_ignores_virtual_default_aliases() {
-            let sources = parse_pulse_source_input_options(
-                r#"
-Source #1
-    Name: @DEFAULT_SOURCE@
-    Description: Default Source
-Source #2
-    Name: @DEFAULT_MONITOR@
-    Description: Default Monitor
-"#,
-            );
-
-            assert!(sources.is_empty());
         }
 
         #[test]
