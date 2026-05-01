@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "android", allow(dead_code))]
+
 mod controls;
 mod fretboard_panel;
 mod live_analysis;
@@ -269,6 +271,17 @@ impl App {
             .or_else(|| self.audio_inputs.first())
             .map(|option| option.id.clone())
     }
+}
+
+pub fn create_app(cc: &CreationContext) -> App {
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        let ctx = cc.egui_ctx.clone();
+        ctx.set_pixels_per_point(1.75);
+        subsecond::register_handler(std::sync::Arc::new(move || ctx.request_repaint()));
+    }
+
+    App::new(cc)
 }
 
 fn pill(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
@@ -581,10 +594,10 @@ pub fn rangef_to_range(range: Rangef) -> Range<f32> {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut AppFrame) {
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         subsecond::call(|| self.render(ui));
 
-        #[cfg(target_arch = "wasm32")]
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         self.render(ui);
     }
 }

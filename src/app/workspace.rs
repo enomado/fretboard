@@ -133,6 +133,18 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
 }
 
 impl App {
+    #[cfg(target_os = "android")]
+    pub(super) fn render(&mut self, ui: &mut Ui) {
+        egui::CentralPanel::default()
+            .frame(Frame::new().inner_margin(Margin::same(8)))
+            .show_inside(ui, |ui| {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(33));
+                self.draw_resonator_snail_card(ui);
+            });
+    }
+
+    #[cfg(not(target_os = "android"))]
     pub(super) fn render(&mut self, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin::same(8)))

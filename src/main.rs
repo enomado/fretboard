@@ -1,19 +1,16 @@
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
-
-use eframe::CreationContext;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 use eframe::NativeOptions;
-use fretboard::app::App;
+#[cfg(not(target_os = "android"))]
+use fretboard::app::create_app;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 #[derive(serde::Deserialize)]
 struct HotReloadMsg {
     jump_table: Option<subsecond::JumpTable>,
     for_pid:    Option<u32>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 #[derive(serde::Deserialize)]
 enum DevserverMsg {
     HotReload(HotReloadMsg),
@@ -21,7 +18,7 @@ enum DevserverMsg {
     Other,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn connect_subsecond() {
     let Some(endpoint) = dioxus_cli_config::devserver_ws_endpoint() else {
         return;
@@ -54,18 +51,7 @@ fn connect_subsecond() {
     });
 }
 
-fn create_app(cc: &CreationContext) -> App {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let ctx = cc.egui_ctx.clone();
-        ctx.set_pixels_per_point(1.75);
-        subsecond::register_handler(Arc::new(move || ctx.request_repaint()));
-    }
-
-    App::new(cc)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn main() -> eframe::Result {
     connect_subsecond();
 
@@ -96,4 +82,8 @@ fn main() {
             .await
             .unwrap();
     });
+}
+
+#[cfg(target_os = "android")]
+fn main() {
 }

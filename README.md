@@ -17,6 +17,14 @@ Interactive fretboard visualizer built with [egui](https://github.com/emilk/egui
 cargo run
 ```
 
+## Android snail build
+
+```sh
+ANDROID_NDK_ROOT=/opt/android-sdk/android-ndk-r27c cargo apk build --lib
+```
+
+The debug APK is written to `target/debug/apk/fretboard.apk`.
+
 ## Screenshot
 
 ![screenshot](screenshot.png)
