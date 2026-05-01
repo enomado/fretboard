@@ -110,10 +110,10 @@ fn main() {
 fn probe_duration() -> Duration {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--duration-ms" {
-            if let Some(value) = args.next().and_then(|value| value.parse::<u64>().ok()) {
-                return Duration::from_millis(value.clamp(150, 5_000));
-            }
+        if arg == "--duration-ms"
+            && let Some(value) = args.next().and_then(|value| value.parse::<u64>().ok())
+        {
+            return Duration::from_millis(value.clamp(150, 5_000));
         }
     }
     DEFAULT_DURATION

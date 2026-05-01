@@ -87,10 +87,10 @@ impl App {
                             },
                         ))
                         .corner_radius(CornerRadius::same(14));
-                    if ui.add_enabled(has_microphone_input, mic_button).clicked() {
-                        if let Some(input_id) = self.preferred_input_id(AudioInputKind::Microphone) {
-                            self.audio.set_selected_input_id(Some(input_id));
-                        }
+                    if ui.add_enabled(has_microphone_input, mic_button).clicked()
+                        && let Some(input_id) = self.preferred_input_id(AudioInputKind::Microphone)
+                    {
+                        self.audio.set_selected_input_id(Some(input_id));
                     }
 
                     let system_button = egui::Button::new("System")
@@ -109,10 +109,10 @@ impl App {
                             },
                         ))
                         .corner_radius(CornerRadius::same(14));
-                    if ui.add_enabled(has_system_input, system_button).clicked() {
-                        if let Some(input_id) = self.preferred_input_id(AudioInputKind::System) {
-                            self.audio.set_selected_input_id(Some(input_id));
-                        }
+                    if ui.add_enabled(has_system_input, system_button).clicked()
+                        && let Some(input_id) = self.preferred_input_id(AudioInputKind::System)
+                    {
+                        self.audio.set_selected_input_id(Some(input_id));
                     }
 
                     ui.separator();
