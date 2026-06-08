@@ -401,10 +401,6 @@ pub(super) mod imp {
             }
         }
 
-        fn reset_shared_for_new_capture(&self) {
-            self.reset_shared_state();
-        }
-
         fn reset_shared_for_test_tone(&self) {
             self.reset_shared_state();
             self.input_level.store(0.0f32.to_bits(), Ordering::Relaxed);
@@ -565,7 +561,7 @@ pub(super) mod imp {
         fn finish_capture_start(&self, sample_rate: u32, output_rate: u32, selected_id: &str) {
             self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
             self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
-            self.reset_shared_for_new_capture();
+            self.reset_shared_state();
             if let Ok(mut sel) = self.selected_input_id.lock() {
                 *sel = Some(selected_id.to_owned());
             }
@@ -699,7 +695,7 @@ pub(super) mod imp {
     {
         device
             .build_input_stream(
-                config,
+                *config,
                 move |data: &[T], _| {
                     // Даункаст в моно: первый канал каждого фрейма.
                     // Нет unwrap/panic — при пустом фрейме просто пропускаем.
@@ -865,7 +861,7 @@ pub(super) mod imp {
 
         let stream = device
             .build_output_stream(
-                &config,
+                config,
                 move |data: &mut [f32], _| {
                     let gain = f32::from_bits(monitor_gain.load(Ordering::Relaxed)).clamp(0.0, 1.0);
                     for frame in data.chunks_mut(channels) {
@@ -923,7 +919,7 @@ pub(super) mod imp {
 
         let stream = device
             .build_output_stream(
-                &config,
+                config,
                 move |data: &mut [f32], _| {
                     for frame in data.chunks_mut(channels) {
                         let index = playback_position.fetch_add(1, Ordering::Relaxed) as usize;
@@ -1155,6 +1151,13 @@ pub(super) mod imp {
         }
     }
 
+    fn push_limited_history<T>(history: &mut VecDeque<T>, item: T, max_len: usize) {
+        history.push_back(item);
+        while history.len() > max_len {
+            history.pop_front();
+        }
+    }
+
     fn publish_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFrame) {
         if let Ok(mut state) = shared.lock() {
             let (smoothed_frequency, clarity) = match frame.pitch {
@@ -1172,24 +1175,22 @@ pub(super) mod imp {
             };
 
             let (note_name, cents) = frequency_to_note(smoothed_frequency);
-            state.waterfall.push_back(frame.spectrum.clone());
-            state.note_waterfall.push_back(frame.note_spectrum.clone());
-            state.spiral_waterfall.push_back(frame.spiral_spectrum.clone());
-            state
-                .resonator_waterfall
-                .push_back(frame.resonator_spectrum.clone());
-            while state.waterfall.len() > WATERFALL_HISTORY {
-                state.waterfall.pop_front();
-            }
-            while state.note_waterfall.len() > WATERFALL_HISTORY {
-                state.note_waterfall.pop_front();
-            }
-            while state.spiral_waterfall.len() > WATERFALL_HISTORY {
-                state.spiral_waterfall.pop_front();
-            }
-            while state.resonator_waterfall.len() > WATERFALL_HISTORY {
-                state.resonator_waterfall.pop_front();
-            }
+            push_limited_history(&mut state.waterfall, frame.spectrum.clone(), WATERFALL_HISTORY);
+            push_limited_history(
+                &mut state.note_waterfall,
+                frame.note_spectrum.clone(),
+                WATERFALL_HISTORY,
+            );
+            push_limited_history(
+                &mut state.spiral_waterfall,
+                frame.spiral_spectrum.clone(),
+                WATERFALL_HISTORY,
+            );
+            push_limited_history(
+                &mut state.resonator_waterfall,
+                frame.resonator_spectrum.clone(),
+                WATERFALL_HISTORY,
+            );
 
             state.reading = Some(TunerReading {
                 frequency_hz: smoothed_frequency,

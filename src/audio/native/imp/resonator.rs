@@ -71,9 +71,7 @@ pub(super) fn resonator_snapshot_for_window(
     settings: &ResonatorViewSettings,
 ) -> ResonatorSnapshot {
     let mut bank = build_resonator_bank(sample_rate, settings);
-    for sample in window.iter().copied() {
-        bank.process_sample(sample);
-    }
+    bank.process_samples(window);
     resonator_snapshot(&bank, settings)
 }
 
