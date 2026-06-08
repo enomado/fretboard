@@ -51,6 +51,7 @@ pub(super) mod imp {
         AnalysisSettings,
         AudioInputOption,
         AudioStatus,
+        ResonatorReading,
         TunerReading,
     };
 
@@ -80,9 +81,9 @@ pub(super) mod imp {
         detect_pitch_yin,
     };
     use resonator::{
+        ResonatorAnalyzer,
         ResonatorSnapshot,
         ResonatorViewSettings,
-        resonator_snapshot_for_window,
     };
     use spectrum::spectrum_bars_for_window;
 
@@ -101,6 +102,7 @@ pub(super) mod imp {
     const MAX_WINDOW_SIZE: usize = 16384;
     const WATERFALL_HISTORY: usize = 52;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
+    const RESONATOR_INTERVAL: Duration = Duration::from_millis(16);
     const SILENCE_RMS_THRESHOLD: f32 = 0.0;
     const INPUT_WAVEFORM_HISTORY: usize = 2048;
 
@@ -128,7 +130,9 @@ pub(super) mod imp {
         waterfall:           VecDeque<Vec<f32>>,
         note_waterfall:      VecDeque<Vec<f32>>,
         spiral_waterfall:    VecDeque<Vec<f32>>,
+        resonator_spectrum:  Vec<f32>,
         resonator_waterfall: VecDeque<Vec<f32>>,
+        resonator_labels:    Vec<String>,
         smoothed_frequency:  Option<f32>,
     }
 
@@ -171,7 +175,9 @@ pub(super) mod imp {
                 waterfall:           VecDeque::with_capacity(WATERFALL_HISTORY),
                 note_waterfall:      VecDeque::with_capacity(WATERFALL_HISTORY),
                 spiral_waterfall:    VecDeque::with_capacity(WATERFALL_HISTORY),
+                resonator_spectrum:  Vec::new(),
                 resonator_waterfall: VecDeque::with_capacity(WATERFALL_HISTORY),
+                resonator_labels:    Vec::new(),
                 smoothed_frequency:  None,
             }));
             let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
@@ -228,6 +234,18 @@ pub(super) mod imp {
 
         pub fn reading(&self) -> Option<TunerReading> {
             self.shared.lock().ok().and_then(|g| g.reading.clone())
+        }
+
+        pub fn resonator_reading(&self) -> Option<ResonatorReading> {
+            self.shared.lock().ok().and_then(|g| {
+                (!g.resonator_spectrum.is_empty()).then(|| {
+                    ResonatorReading {
+                        spectrum:    g.resonator_spectrum.clone(),
+                        waterfall:   g.resonator_waterfall.iter().cloned().collect(),
+                        note_labels: g.resonator_labels.clone(),
+                    }
+                })
+            })
         }
 
         pub fn analysis_settings(&self) -> AnalysisSettings {
@@ -413,7 +431,9 @@ pub(super) mod imp {
                 s.waterfall.clear();
                 s.note_waterfall.clear();
                 s.spiral_waterfall.clear();
+                s.resonator_spectrum.clear();
                 s.resonator_waterfall.clear();
+                s.resonator_labels.clear();
                 s.smoothed_frequency = None;
                 s.status = AudioStatus::Listening;
             }
@@ -460,18 +480,40 @@ pub(super) mod imp {
             stream_config.buffer_size = input_buffer_size;
 
             let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
+            let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
             let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
 
             // Входной stream: callback тупо пушит в кольца, без блокировок и паник.
             let input_stream = match sample_format {
                 cpal::SampleFormat::F32 => {
-                    build_input::<f32>(&device, &stream_config, channels, analysis_prod, monitor_prod)?
+                    build_input::<f32>(
+                        &device,
+                        &stream_config,
+                        channels,
+                        analysis_prod,
+                        resonator_prod,
+                        monitor_prod,
+                    )?
                 }
                 cpal::SampleFormat::I16 => {
-                    build_input::<i16>(&device, &stream_config, channels, analysis_prod, monitor_prod)?
+                    build_input::<i16>(
+                        &device,
+                        &stream_config,
+                        channels,
+                        analysis_prod,
+                        resonator_prod,
+                        monitor_prod,
+                    )?
                 }
                 cpal::SampleFormat::U16 => {
-                    build_input::<u16>(&device, &stream_config, channels, analysis_prod, monitor_prod)?
+                    build_input::<u16>(
+                        &device,
+                        &stream_config,
+                        channels,
+                        analysis_prod,
+                        resonator_prod,
+                        monitor_prod,
+                    )?
                 }
                 other => return Err(format!("Unsupported sample format: {other:?}")),
             };
@@ -481,12 +523,14 @@ pub(super) mod imp {
 
             let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
             let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
+            let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
             self.finish_capture_start(sample_rate, output_rate, &selected_id);
 
             Ok(ActiveCapture {
                 input: ActiveInput::Cpal(input_stream),
                 output_stream,
                 analysis,
+                resonator,
                 selected_id,
             })
         }
@@ -496,24 +540,28 @@ pub(super) mod imp {
             let selected_id = id.to_owned();
 
             let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
+            let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
             let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
 
             let input = ActiveInput::Pulse(build_pulse_input(
                 id,
                 sample_rate,
                 analysis_prod,
+                resonator_prod,
                 monitor_prod,
                 self.shared.clone(),
             )?);
 
             let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
             let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
+            let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
             self.finish_capture_start(sample_rate, output_rate, &selected_id);
 
             Ok(ActiveCapture {
                 input,
                 output_stream,
                 analysis,
+                resonator,
                 selected_id,
             })
         }
@@ -558,6 +606,16 @@ pub(super) mod imp {
             )
         }
 
+        fn start_resonator_worker(&self, sample_rate: u32, resonator_cons: SampleConsumer) -> AnalysisWorker {
+            start_resonator_worker(
+                sample_rate as f32,
+                resonator_cons,
+                self.shared.clone(),
+                self.settings.clone(),
+                self.input_gain.clone(),
+            )
+        }
+
         fn finish_capture_start(&self, sample_rate: u32, output_rate: u32, selected_id: &str) {
             self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
             self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
@@ -597,6 +655,7 @@ pub(super) mod imp {
         input:         ActiveInput,
         output_stream: Option<cpal::Stream>,
         analysis:      AnalysisWorker,
+        resonator:     AnalysisWorker,
         selected_id:   String,
     }
 
@@ -619,6 +678,7 @@ pub(super) mod imp {
             // Анализ останавливаем после stream'а: callback больше не пишет
             // в кольцо, воркер додренит остатки и выйдет.
             self.analysis.stop();
+            self.resonator.stop();
         }
     }
 
@@ -673,6 +733,39 @@ pub(super) mod imp {
         AnalysisWorker { stop, thread }
     }
 
+    fn start_resonator_worker(
+        sample_rate: f32,
+        mut cons: SampleConsumer,
+        shared: Arc<Mutex<SharedState>>,
+        settings: Arc<Mutex<AnalysisSettings>>,
+        input_gain: Arc<AtomicU32>,
+    ) -> AnalysisWorker {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = stop.clone();
+
+        let thread = thread::spawn(move || {
+            let mut pipeline = ResonatorPipeline::new(sample_rate);
+            let mut batch: Vec<f32> = Vec::with_capacity(4096);
+
+            while !stop_flag.load(Ordering::Relaxed) {
+                batch.clear();
+                for _ in 0..4096 {
+                    match cons.try_pop() {
+                        Some(s) => batch.push(s),
+                        None => break,
+                    }
+                }
+                if batch.is_empty() {
+                    thread::sleep(ANALYSIS_IDLE_SLEEP);
+                    continue;
+                }
+                pipeline.push_samples(batch.drain(..), &shared, &settings, &input_gain);
+            }
+        });
+
+        AnalysisWorker { stop, thread }
+    }
+
     // ------------------------------------------------------------------
     // Построение cpal streams
     // ------------------------------------------------------------------
@@ -687,6 +780,7 @@ pub(super) mod imp {
         config: &cpal::StreamConfig,
         channels: usize,
         mut an_prod: SampleProducer,
+        mut res_prod: SampleProducer,
         mut mon_prod: Option<SampleProducer>,
     ) -> Result<cpal::Stream, String>
     where
@@ -705,6 +799,7 @@ pub(super) mod imp {
                             // try_push: если анализ отстал и кольцо забито,
                             // теряем сэмпл — не блокируем аудио-callback.
                             let _ = an_prod.try_push(sample);
+                            let _ = res_prod.try_push(sample);
                             if let Some(p) = mon_prod.as_mut() {
                                 let _ = p.try_push(sample);
                             }
@@ -721,6 +816,7 @@ pub(super) mod imp {
         input_id: &str,
         sample_rate: u32,
         mut an_prod: SampleProducer,
+        mut res_prod: SampleProducer,
         mut mon_prod: Option<SampleProducer>,
         shared: Arc<Mutex<SharedState>>,
     ) -> Result<PulseInputCapture, String> {
@@ -778,6 +874,7 @@ pub(super) mod imp {
                             if let Some(&hi) = buf.first() {
                                 let sample = pulse_i16_to_f32([lo, hi]);
                                 let _ = an_prod.try_push(sample);
+                                let _ = res_prod.try_push(sample);
                                 if let Some(p) = mon_prod.as_mut() {
                                     let _ = p.try_push(sample);
                                 }
@@ -791,6 +888,7 @@ pub(super) mod imp {
                         while idx + 1 < n {
                             let sample = pulse_i16_to_f32([buf[idx], buf[idx + 1]]);
                             let _ = an_prod.try_push(sample);
+                            let _ = res_prod.try_push(sample);
                             if let Some(p) = mon_prod.as_mut() {
                                 let _ = p.try_push(sample);
                             }
@@ -984,12 +1082,16 @@ pub(super) mod imp {
     // ------------------------------------------------------------------
     // AnalysisPipeline: чистые функции, ничего аудио-специфичного.
     // ------------------------------------------------------------------
+    struct ResonatorPipeline {
+        analyzer:     ResonatorAnalyzer,
+        last_publish: Instant,
+    }
+
     struct AnalysisPipeline {
-        buffer:         VecDeque<f32>,
-        last_analysis:  Instant,
-        planner:        FftPlanner<f32>,
-        resonator_view: ResonatorViewSettings,
-        sample_rate:    f32,
+        buffer:        VecDeque<f32>,
+        last_analysis: Instant,
+        planner:       FftPlanner<f32>,
+        sample_rate:   f32,
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -1000,12 +1102,58 @@ pub(super) mod imp {
 
     #[derive(Clone, Debug)]
     struct AnalysisFrame {
-        pitch:                 Option<PitchEstimate>,
-        spectrum:              Vec<f32>,
-        note_spectrum:         Vec<f32>,
-        spiral_spectrum:       Vec<f32>,
-        resonator_spectrum:    Vec<f32>,
-        resonator_note_labels: Vec<String>,
+        pitch:           Option<PitchEstimate>,
+        spectrum:        Vec<f32>,
+        note_spectrum:   Vec<f32>,
+        spiral_spectrum: Vec<f32>,
+    }
+
+    impl ResonatorPipeline {
+        fn new(sample_rate: f32) -> Self {
+            Self {
+                analyzer:     ResonatorAnalyzer::new(sample_rate),
+                last_publish: Instant::now() - RESONATOR_INTERVAL,
+            }
+        }
+
+        fn push_samples(
+            &mut self,
+            samples: impl IntoIterator<Item = f32>,
+            shared: &Arc<Mutex<SharedState>>,
+            settings: &Arc<Mutex<AnalysisSettings>>,
+            input_gain: &Arc<AtomicU32>,
+        ) {
+            let analysis_settings = settings.lock().map(|g| g.clone()).unwrap_or_default().sanitized();
+            self.sync_settings(&analysis_settings, shared);
+
+            let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
+            let samples: Vec<f32> = samples.into_iter().map(|sample| sample * gain).collect();
+            self.analyzer.process_samples(&samples);
+
+            if self.last_publish.elapsed() < RESONATOR_INTERVAL {
+                return;
+            }
+            self.last_publish = Instant::now();
+            publish_resonator_snapshot(shared, self.analyzer.snapshot());
+        }
+
+        fn sync_settings(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
+            let requested = ResonatorViewSettings::from(settings);
+            if !self.analyzer.sync_settings(requested) {
+                return;
+            }
+            if let Ok(mut state) = shared.lock() {
+                state.resonator_spectrum.clear();
+                state.resonator_waterfall.clear();
+                state.resonator_labels = self.analyzer.note_labels();
+                let resonator_labels = state.resonator_labels.clone();
+                if let Some(reading) = state.reading.as_mut() {
+                    reading.resonator_spectrum.clear();
+                    reading.resonator_waterfall.clear();
+                    reading.resonator_note_labels = resonator_labels;
+                }
+            }
+        }
     }
 
     impl AnalysisPipeline {
@@ -1014,7 +1162,6 @@ pub(super) mod imp {
                 buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
                 last_analysis: Instant::now() - ANALYSIS_INTERVAL,
                 planner: FftPlanner::new(),
-                resonator_view: ResonatorViewSettings::default(),
                 sample_rate,
             }
         }
@@ -1028,7 +1175,6 @@ pub(super) mod imp {
             input_level: &Arc<AtomicU32>,
         ) {
             let analysis_settings = settings.lock().map(|g| g.clone()).unwrap_or_default().sanitized();
-            self.sync_resonator_view(&analysis_settings, shared);
             let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
             let mut recent: Vec<f32> = Vec::new();
 
@@ -1059,33 +1205,8 @@ pub(super) mod imp {
             let previous_level = f32::from_bits(input_level.load(Ordering::Relaxed));
             let smoothed_level_value = smoothed_level(previous_level, level);
             input_level.store(smoothed_level_value.to_bits(), Ordering::Relaxed);
-            let resonator_snap =
-                resonator_snapshot_for_window(&window, self.sample_rate, &self.resonator_view);
-
-            let frame = analyze_window(
-                &window,
-                self.sample_rate,
-                &analysis_settings,
-                &mut self.planner,
-                resonator_snap,
-            );
-            publish_reading(shared, frame);
-        }
-
-        fn sync_resonator_view(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
-            let requested = ResonatorViewSettings::from(settings);
-            if requested == self.resonator_view {
-                return;
-            }
-            self.resonator_view = requested;
-            if let Ok(mut state) = shared.lock() {
-                state.resonator_waterfall.clear();
-                if let Some(reading) = state.reading.as_mut() {
-                    reading.resonator_spectrum.clear();
-                    reading.resonator_waterfall.clear();
-                    reading.resonator_note_labels = self.resonator_view.note_labels();
-                }
-            }
+            let frame = analyze_window(&window, self.sample_rate, &analysis_settings, &mut self.planner);
+            publish_analysis_reading(shared, frame);
         }
     }
 
@@ -1111,7 +1232,6 @@ pub(super) mod imp {
         sample_rate: f32,
         settings: &AnalysisSettings,
         planner: &mut FftPlanner<f32>,
-        resonator_snapshot: ResonatorSnapshot,
     ) -> AnalysisFrame {
         let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
         let (spectrum, note_spectrum, spiral_spectrum) =
@@ -1134,8 +1254,6 @@ pub(super) mod imp {
             spectrum,
             note_spectrum,
             spiral_spectrum,
-            resonator_spectrum: resonator_snapshot.spectrum,
-            resonator_note_labels: resonator_snapshot.note_labels,
         }
     }
 
@@ -1158,7 +1276,7 @@ pub(super) mod imp {
         }
     }
 
-    fn publish_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFrame) {
+    fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFrame) {
         if let Ok(mut state) = shared.lock() {
             let (smoothed_frequency, clarity) = match frame.pitch {
                 Some(pitch) => {
@@ -1186,12 +1304,6 @@ pub(super) mod imp {
                 frame.spiral_spectrum.clone(),
                 WATERFALL_HISTORY,
             );
-            push_limited_history(
-                &mut state.resonator_waterfall,
-                frame.resonator_spectrum.clone(),
-                WATERFALL_HISTORY,
-            );
-
             state.reading = Some(TunerReading {
                 frequency_hz: smoothed_frequency,
                 note_name,
@@ -1203,12 +1315,33 @@ pub(super) mod imp {
                 note_waterfall: state.note_waterfall.iter().cloned().collect(),
                 spiral_spectrum: frame.spiral_spectrum,
                 spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
-                resonator_spectrum: frame.resonator_spectrum,
+                resonator_spectrum: state.resonator_spectrum.clone(),
                 resonator_waterfall: state.resonator_waterfall.iter().cloned().collect(),
-                resonator_note_labels: frame.resonator_note_labels,
+                resonator_note_labels: state.resonator_labels.clone(),
                 note_labels: note_bucket_labels(),
             });
             state.status = AudioStatus::Listening;
+        }
+    }
+
+    fn publish_resonator_snapshot(shared: &Arc<Mutex<SharedState>>, snapshot: ResonatorSnapshot) {
+        if let Ok(mut state) = shared.lock() {
+            state.resonator_spectrum = snapshot.spectrum;
+            state.resonator_labels = snapshot.note_labels;
+            let resonator_spectrum = state.resonator_spectrum.clone();
+            let resonator_labels = state.resonator_labels.clone();
+            push_limited_history(
+                &mut state.resonator_waterfall,
+                resonator_spectrum.clone(),
+                WATERFALL_HISTORY,
+            );
+            let resonator_waterfall: Vec<Vec<f32>> = state.resonator_waterfall.iter().cloned().collect();
+
+            if let Some(reading) = state.reading.as_mut() {
+                reading.resonator_spectrum = resonator_spectrum;
+                reading.resonator_waterfall = resonator_waterfall;
+                reading.resonator_note_labels = resonator_labels;
+            }
         }
     }
 }

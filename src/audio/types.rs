@@ -17,6 +17,13 @@ pub struct TunerReading {
 }
 
 #[derive(Clone, Debug)]
+pub struct ResonatorReading {
+    pub spectrum:    Vec<f32>,
+    pub waterfall:   Vec<Vec<f32>>,
+    pub note_labels: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
 pub enum AudioStatus {
     Idle,
     Listening,
