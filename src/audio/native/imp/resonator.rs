@@ -33,6 +33,13 @@ pub(super) struct ResonatorSnapshot {
     pub(super) note_labels: Vec<String>,
 }
 
+#[derive(Debug)]
+pub(super) struct ResonatorAnalyzer {
+    settings:    ResonatorViewSettings,
+    sample_rate: f32,
+    bank:        ResonatorBank,
+}
+
 impl ResonatorViewSettings {
     pub(super) fn note_labels(&self) -> Vec<String> {
         resonator_note_labels(self.min_midi, self.max_midi)
@@ -65,14 +72,37 @@ impl From<&AnalysisSettings> for ResonatorViewSettings {
     }
 }
 
-pub(super) fn resonator_snapshot_for_window(
-    window: &[f32],
-    sample_rate: f32,
-    settings: &ResonatorViewSettings,
-) -> ResonatorSnapshot {
-    let mut bank = build_resonator_bank(sample_rate, settings);
-    bank.process_samples(window);
-    resonator_snapshot(&bank, settings)
+impl ResonatorAnalyzer {
+    pub(super) fn new(sample_rate: f32) -> Self {
+        let settings = ResonatorViewSettings::default();
+        let bank = build_resonator_bank(sample_rate, &settings);
+        Self {
+            settings,
+            sample_rate,
+            bank,
+        }
+    }
+
+    pub(super) fn sync_settings(&mut self, requested: ResonatorViewSettings) -> bool {
+        if requested == self.settings {
+            return false;
+        }
+        self.settings = requested;
+        self.bank = build_resonator_bank(self.sample_rate, &self.settings);
+        true
+    }
+
+    pub(super) fn process_samples(&mut self, samples: &[f32]) {
+        self.bank.process_samples(samples);
+    }
+
+    pub(super) fn snapshot(&self) -> ResonatorSnapshot {
+        resonator_snapshot(&self.bank, &self.settings)
+    }
+
+    pub(super) fn note_labels(&self) -> Vec<String> {
+        self.settings.note_labels()
+    }
 }
 
 fn build_resonator_bank(sample_rate: f32, settings: &ResonatorViewSettings) -> ResonatorBank {

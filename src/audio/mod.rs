@@ -11,6 +11,7 @@ pub use types::{
     AudioInputKind,
     AudioInputOption,
     AudioStatus,
+    ResonatorReading,
     TunerReading,
 };
 #[cfg(target_arch = "wasm32")]

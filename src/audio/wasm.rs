@@ -2,6 +2,7 @@ use super::types::{
     AnalysisSettings,
     AudioInputOption,
     AudioStatus,
+    ResonatorReading,
     TunerReading,
 };
 
@@ -23,6 +24,10 @@ impl AudioEngine {
     }
 
     pub fn reading(&self) -> Option<TunerReading> {
+        None
+    }
+
+    pub fn resonator_reading(&self) -> Option<ResonatorReading> {
         None
     }
 

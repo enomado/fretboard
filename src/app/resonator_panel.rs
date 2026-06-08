@@ -19,12 +19,12 @@ use super::{
     pill,
     spectrum_color,
 };
-use crate::audio::TunerReading;
+use crate::audio::ResonatorReading;
 use crate::ui::theme::PANEL_FILL;
 
 impl App {
     pub(super) fn draw_resonator_snail_card(&mut self, ui: &mut Ui) {
-        let reading = self.audio.reading();
+        let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
 
         Frame::new()
@@ -52,7 +52,7 @@ impl App {
                         if let Some(reading) = reading_ref {
                             pill(
                                 ui,
-                                &format!("{} bins", reading.resonator_spectrum.len()),
+                                &format!("{} bins", reading.spectrum.len()),
                                 Color32::from_rgb(201, 195, 184),
                                 Color32::from_rgb(64, 68, 73),
                             );
@@ -73,11 +73,9 @@ impl App {
                     SpiralChart {
                         title:             "Resonator spiral",
                         subtitle:          "same snail, but driven by the resonator bank instead of FFT bins",
-                        spectrum:          reading_ref.map(|value| value.resonator_spectrum.as_slice()),
-                        waterfall:         reading_ref
-                            .map_or(&[][..], |value| value.resonator_waterfall.as_slice()),
-                        note_labels:       reading_ref
-                            .map_or(&[][..], |value| value.resonator_note_labels.as_slice()),
+                        spectrum:          reading_ref.map(|value| value.spectrum.as_slice()),
+                        waterfall:         reading_ref.map_or(&[][..], |value| value.waterfall.as_slice()),
+                        note_labels:       reading_ref.map_or(&[][..], |value| value.note_labels.as_slice()),
                         active_note:       None,
                         waiting_message:   "Play a sustained note to charge the resonator bank",
                         empty_message:     "The resonator bank is empty",
@@ -88,7 +86,7 @@ impl App {
     }
 
     pub(super) fn draw_resonator_bank_card(&mut self, ui: &mut Ui) {
-        let reading = self.audio.reading();
+        let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
 
         Frame::new()
@@ -114,7 +112,7 @@ impl App {
                         if let Some(reading) = reading_ref {
                             pill(
                                 ui,
-                                &format!("{} bins", reading.resonator_spectrum.len()),
+                                &format!("{} bins", reading.spectrum.len()),
                                 Color32::from_rgb(201, 195, 184),
                                 Color32::from_rgb(64, 68, 73),
                             );
@@ -134,7 +132,7 @@ impl App {
             });
     }
 
-    fn draw_resonator_bank_panel(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
+    fn draw_resonator_bank_panel(&self, ui: &mut Ui, reading: Option<&ResonatorReading>) {
         let available_size = ui.available_size_before_wrap();
         let desired_size = vec2(available_size.x, available_size.y.max(244.0));
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
@@ -181,14 +179,14 @@ impl App {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                "The resonator bank starts filling as soon as the tuner locks onto audio",
+                "The resonator bank starts filling as soon as audio reaches the input",
                 FontId::proportional(13.0),
                 Color32::from_rgb(139, 143, 149),
             );
             return;
         };
 
-        if reading.resonator_spectrum.is_empty() || reading.resonator_note_labels.is_empty() {
+        if reading.spectrum.is_empty() || reading.note_labels.is_empty() {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -199,9 +197,8 @@ impl App {
             return;
         }
 
-        let bins_per_label = if reading.resonator_note_labels.len() > 1 {
-            (reading.resonator_spectrum.len().saturating_sub(1) as f32
-                / (reading.resonator_note_labels.len() - 1) as f32)
+        let bins_per_label = if reading.note_labels.len() > 1 {
+            (reading.spectrum.len().saturating_sub(1) as f32 / (reading.note_labels.len() - 1) as f32)
                 .max(1.0)
         } else {
             1.0
@@ -209,14 +206,14 @@ impl App {
         self.draw_pitch_labeled_waterfall(
             &painter,
             waterfall_rect,
-            &reading.resonator_waterfall,
-            &reading.resonator_note_labels,
+            &reading.waterfall,
+            &reading.note_labels,
             bins_per_label,
             None,
         );
 
-        let bar_width = bars_rect.width() / reading.resonator_spectrum.len().max(1) as f32;
-        for (index, value) in reading.resonator_spectrum.iter().enumerate() {
+        let bar_width = bars_rect.width() / reading.spectrum.len().max(1) as f32;
+        for (index, value) in reading.spectrum.iter().enumerate() {
             let x0 = bars_rect.left() + index as f32 * bar_width;
             let x1 = x0 + bar_width.max(1.0);
             let height = bars_rect.height() * value.clamp(0.0, 1.0);
@@ -237,7 +234,7 @@ impl App {
     }
 
     pub(super) fn draw_resonator_waterfall_card(&mut self, ui: &mut Ui) {
-        let reading = self.audio.reading();
+        let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
 
         Frame::new()
@@ -263,7 +260,7 @@ impl App {
                         if let Some(reading) = reading_ref {
                             pill(
                                 ui,
-                                &format!("{} frames", reading.resonator_waterfall.len()),
+                                &format!("{} frames", reading.waterfall.len()),
                                 Color32::from_rgb(201, 195, 184),
                                 Color32::from_rgb(64, 68, 73),
                             );
@@ -283,7 +280,7 @@ impl App {
             });
     }
 
-    fn draw_resonator_waterfall_panel(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
+    fn draw_resonator_waterfall_panel(&self, ui: &mut Ui, reading: Option<&ResonatorReading>) {
         let available_size = ui.available_size_before_wrap();
         let desired_size = vec2(available_size.x, available_size.y.max(260.0));
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
@@ -308,7 +305,7 @@ impl App {
             return;
         };
 
-        if reading.resonator_waterfall.is_empty() || reading.resonator_note_labels.is_empty() {
+        if reading.waterfall.is_empty() || reading.note_labels.is_empty() {
             painter.text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
@@ -324,9 +321,8 @@ impl App {
             pos2(rect.right() - 16.0, rect.bottom() - 44.0),
         );
 
-        let bins_per_label = if reading.resonator_note_labels.len() > 1 {
-            (reading.resonator_spectrum.len().saturating_sub(1) as f32
-                / (reading.resonator_note_labels.len() - 1) as f32)
+        let bins_per_label = if reading.note_labels.len() > 1 {
+            (reading.spectrum.len().saturating_sub(1) as f32 / (reading.note_labels.len() - 1) as f32)
                 .max(1.0)
         } else {
             1.0
@@ -334,8 +330,8 @@ impl App {
         self.draw_pitch_labeled_waterfall(
             &painter,
             chart_rect,
-            &reading.resonator_waterfall,
-            &reading.resonator_note_labels,
+            &reading.waterfall,
+            &reading.note_labels,
             bins_per_label,
             None,
         );
@@ -350,7 +346,7 @@ impl App {
         painter.text(
             pos2(rect.right() - 18.0, rect.bottom() - 14.0),
             egui::Align2::RIGHT_BOTTOM,
-            format!("{} active bins", reading.resonator_spectrum.len()),
+            format!("{} active bins", reading.spectrum.len()),
             FontId::proportional(12.0),
             Color32::from_rgb(166, 170, 176),
         );
