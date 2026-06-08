@@ -17,10 +17,10 @@ nom = { version = "8.0" }
 eframe.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-cpal = "0.17.3"
+cpal = "0.18.1"
 rustfft = "6.4"
-resonators = "0.1.0"
-ringbuf = "0.4"
+resonators = "0.1.1"
+ringbuf = "0.5"
 
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 eframe = { workspace = true, features = ["accesskit", "wayland", "wgpu", "x11"] }
@@ -71,10 +71,10 @@ inherits = "dev"
 
 
 [workspace.dependencies]
-egui = "0.34.1"
-eframe = { version = "0.34.1", default-features = false, features = ["default_fonts", "persistence"] }
-subsecond = "0.7.6"
-dioxus-cli-config = "0.7.6"
+egui = "0.34.3"
+eframe = { version = "0.34.3", default-features = false, features = ["default_fonts", "persistence"] }
+subsecond = "0.7.9"
+dioxus-cli-config = "0.7.9"
 tungstenite = { version = "0.29", features = ["native-tls"] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }

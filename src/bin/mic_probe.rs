@@ -286,7 +286,7 @@ mod native {
         let rate = config.sample_rate();
         let channels = usize::from(config.channels());
         let stats = Arc::new(Mutex::new(LevelStats::default()));
-        let stream_config = config.clone().into();
+        let stream_config = config.into();
 
         let stream = match config.sample_format() {
             cpal::SampleFormat::F32 => {
@@ -334,7 +334,7 @@ mod native {
     {
         device
             .build_input_stream(
-                config,
+                *config,
                 move |data: &[T], _| {
                     if let Ok(mut stats) = stats.lock() {
                         for frame in data.chunks(channels) {
