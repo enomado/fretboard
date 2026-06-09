@@ -21,15 +21,30 @@ fn test_major_chord_notes() {
 fn test_chord_degree() {
     let root = PCNote::from_note(Note::C, Accidental::Natural);
     let chord = Chord::major(root);
-    assert_eq!(chord.degree(PCNote::from_note(Note::C, Accidental::Natural)), Some(1));
-    assert_eq!(chord.degree(PCNote::from_note(Note::E, Accidental::Natural)), Some(3));
-    assert_eq!(chord.degree(PCNote::from_note(Note::G, Accidental::Natural)), Some(5));
-    assert_eq!(chord.degree(PCNote::from_note(Note::D, Accidental::Natural)), None);
+    assert_eq!(
+        chord.degree(PCNote::from_note(Note::C, Accidental::Natural)),
+        Some(1)
+    );
+    assert_eq!(
+        chord.degree(PCNote::from_note(Note::E, Accidental::Natural)),
+        Some(3)
+    );
+    assert_eq!(
+        chord.degree(PCNote::from_note(Note::G, Accidental::Natural)),
+        Some(5)
+    );
+    assert_eq!(
+        chord.degree(PCNote::from_note(Note::D, Accidental::Natural)),
+        None
+    );
 }
 
 #[test]
 fn test_seventh_chord_degree() {
     let root = PCNote::from_note(Note::C, Accidental::Natural);
     let chord = Chord::dominant7(root);
-    assert_eq!(chord.degree(PCNote::from_note(Note::B, Accidental::Flat)), Some(7));
+    assert_eq!(
+        chord.degree(PCNote::from_note(Note::B, Accidental::Flat)),
+        Some(7)
+    );
 }

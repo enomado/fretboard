@@ -18,8 +18,7 @@ use eframe::egui::{
 use crate::audio::AnalysisSettings;
 
 /// Labels for the 12 pitch-class spokes, starting at C at the top (-π/2).
-pub const SPIRAL_PITCH_LABELS: [&str; 12] =
-    ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+pub const SPIRAL_PITCH_LABELS: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 
 /// One frame's worth of data to render on the spiral, plus the cosmetic strings.
 /// Borrows everything — the caller owns the audio reading it is sliced from.
@@ -140,12 +139,12 @@ pub fn draw_spiral_chart(ui: &mut Ui, chart: SpiralChart<'_>, settings: &Analysi
         let direction = vec2(angle.cos(), angle.sin());
         let label_pos = center + direction * (outer_radius + 20.0);
         let spoke_color = pitch_class_color(pitch_class);
-        let spoke_stroke =
-            if Some(pitch_class) == active_index.map(|index| (pitch_class_offset + index) % 12) {
-                Stroke::new(1.6_f32, spoke_color)
-            } else {
-                Stroke::new(1.0_f32, Color32::from_rgb(55, 60, 67))
-            };
+        let spoke_stroke = if Some(pitch_class) == active_index.map(|index| (pitch_class_offset + index) % 12)
+        {
+            Stroke::new(1.6_f32, spoke_color)
+        } else {
+            Stroke::new(1.0_f32, Color32::from_rgb(55, 60, 67))
+        };
 
         painter.line_segment(
             [
@@ -249,12 +248,7 @@ pub fn draw_spiral_chart(ui: &mut Ui, chart: SpiralChart<'_>, settings: &Analysi
             17.0,
             Stroke::new(
                 1.0_f32,
-                Color32::from_rgba_unmultiplied(
-                    active_color.r(),
-                    active_color.g(),
-                    active_color.b(),
-                    100,
-                ),
+                Color32::from_rgba_unmultiplied(active_color.r(), active_color.g(), active_color.b(), 100),
             ),
         );
         painter.text(

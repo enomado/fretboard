@@ -20,8 +20,8 @@ use super::{
     TuningKind,
     WorkspaceTab,
 };
-use crate::core_types::note::Note;
 use crate::audio::AnalysisSettings;
+use crate::core_types::note::Note;
 
 /// Everything we carry across sessions. Owns a snapshot of the audio engine's
 /// settings (the engine itself is rebuilt fresh each launch) plus the UI
@@ -125,7 +125,10 @@ mod tests {
         assert_eq!(back.root_note, Note::G);
         assert_eq!(back.selected_input_id.as_deref(), Some("pulse::@DEFAULT_SOURCE@"));
         assert!(back.monitor_enabled);
-        assert_eq!(back.analysis_settings.resonator.min_midi, AnalysisSettings::default().resonator.min_midi);
+        assert_eq!(
+            back.analysis_settings.resonator.min_midi,
+            AnalysisSettings::default().resonator.min_midi
+        );
 
         // The docking layout must survive too: same tile count and same set of
         // panes after the round-trip, not just a syntactically valid tree.

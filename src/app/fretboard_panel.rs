@@ -371,9 +371,7 @@ fn resonator_note_strengths(spectrum: &[f32], note_count: usize) -> Vec<f32> {
     (0..note_count)
         .map(|note_index| {
             let center = note_index as f32 * bins_per_note;
-            let start = (center - bins_per_note * 0.5)
-                .floor()
-                .max(0.0) as usize;
+            let start = (center - bins_per_note * 0.5).floor().max(0.0) as usize;
             let end = (center + bins_per_note * 0.5)
                 .ceil()
                 .min(spectrum.len().saturating_sub(1) as f32) as usize;
