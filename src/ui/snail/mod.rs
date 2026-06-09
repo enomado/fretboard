@@ -263,7 +263,7 @@ pub fn draw_spiral_chart(ui: &mut Ui, chart: SpiralChart<'_>, settings: &Analysi
 
 /// Angle of a pitch-class spoke. C sits at the top (-π/2) and the circle runs
 /// clockwise through the 12 classes.
-fn pitch_class_angle(pitch_class: usize) -> f32 {
+pub(crate) fn pitch_class_angle(pitch_class: usize) -> f32 {
     -std::f32::consts::FRAC_PI_2 + pitch_class as f32 * std::f32::consts::TAU / 12.0
 }
 
@@ -304,7 +304,7 @@ fn spiral_point_fractional(
     center + vec2(angle.cos(), angle.sin()) * radius
 }
 
-fn pitch_class_color(pitch_class: usize) -> Color32 {
+pub(crate) fn pitch_class_color(pitch_class: usize) -> Color32 {
     match pitch_class % 12 {
         0 => Color32::from_rgb(92, 230, 105),
         1 => Color32::from_rgb(104, 222, 170),

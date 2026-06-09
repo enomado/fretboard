@@ -5,6 +5,7 @@ mod fretboard_panel;
 mod live_analysis;
 mod persist;
 mod resonator_panel;
+mod scale_finder;
 mod workspace;
 
 use std::ops::Range;
@@ -44,6 +45,7 @@ use crate::core_types::scale::{
     Degree,
     Scale,
 };
+use crate::core_types::scale_detect::MethodWeights;
 use crate::core_types::tuning::{
     Fret,
     GString,
@@ -180,6 +182,7 @@ enum WorkspaceTab {
     ConfigFft1,
     ConfigResonatorFft,
     LiveAnalysis,
+    ScaleFinder,
     ResonatorBank,
     ResonatorSnail,
     ResonatorWaterfall,
@@ -196,6 +199,7 @@ impl WorkspaceTab {
             Self::ConfigFft1 => "Config FFT1",
             Self::ConfigResonatorFft => "Config Resonator FFT",
             Self::LiveAnalysis => "Live analysis",
+            Self::ScaleFinder => "Scale Finder",
             Self::ResonatorBank => "Resonator Bank",
             Self::ResonatorSnail => "Resonator Snail",
             Self::ResonatorWaterfall => "Resonator Waterfall",
@@ -213,6 +217,8 @@ pub struct App {
     root_note: Note,
     live_chart: LiveChartKind,
     test_note_midi: PNote,
+    /// Баланс трёх методов в Scale Finder (конфиг, не compute-состояние детектора).
+    scale_finder_weights: MethodWeights,
     workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
@@ -256,6 +262,7 @@ impl App {
             root_note: Note::A,
             live_chart: LiveChartKind::Spiral,
             test_note_midi: PNote::new(24).unwrap(),
+            scale_finder_weights: MethodWeights::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
         };
 

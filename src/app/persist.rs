@@ -23,23 +23,26 @@ use super::{
 use crate::audio::AnalysisSettings;
 use crate::core_types::note::Note;
 use crate::core_types::pitch::PNote;
+use crate::core_types::scale_detect::MethodWeights;
 
 /// Everything we carry across sessions. Owns a snapshot of the audio engine's
 /// settings (the engine itself is rebuilt fresh each launch) plus the UI
 /// selections and the docking layout.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct PersistentState {
-    tuning_kind:       TuningKind,
-    scale_kind:        ScaleKind,
-    root_note:         Note,
-    live_chart:        LiveChartKind,
-    test_note_midi:    usize,
-    analysis_settings: AnalysisSettings,
-    input_gain:        f32,
-    monitor_enabled:   bool,
-    monitor_gain:      f32,
-    selected_input_id: Option<String>,
-    workspace_tree:    egui_tiles::Tree<WorkspaceTab>,
+    tuning_kind:          TuningKind,
+    scale_kind:           ScaleKind,
+    root_note:            Note,
+    live_chart:           LiveChartKind,
+    test_note_midi:       usize,
+    #[serde(default)]
+    scale_finder_weights: MethodWeights,
+    analysis_settings:    AnalysisSettings,
+    input_gain:           f32,
+    monitor_enabled:      bool,
+    monitor_gain:         f32,
+    selected_input_id:    Option<String>,
+    workspace_tree:       egui_tiles::Tree<WorkspaceTab>,
 }
 
 impl App {
@@ -58,6 +61,7 @@ impl App {
         self.scale_kind = state.scale_kind;
         self.root_note = state.root_note;
         self.live_chart = state.live_chart;
+        self.scale_finder_weights = state.scale_finder_weights;
         // Wire format stays a raw MIDI number; rebuild the newtype at the boundary.
         // A corrupt out-of-range value can't survive the contract — fail fast.
         self.test_note_midi = PNote::new(state.test_note_midi as u8).unwrap();
@@ -80,17 +84,18 @@ impl App {
     /// back after each frame), so `unwrap` is the contract, not a fallback.
     pub(super) fn snapshot_persistent(&self) -> PersistentState {
         PersistentState {
-            tuning_kind:       self.tuning_kind,
-            scale_kind:        self.scale_kind,
-            root_note:         self.root_note,
-            live_chart:        self.live_chart,
-            test_note_midi:    self.test_note_midi.as_u8() as usize,
-            analysis_settings: self.audio.analysis_settings(),
-            input_gain:        self.audio.input_gain(),
-            monitor_enabled:   self.audio.monitor_enabled(),
-            monitor_gain:      self.audio.monitor_gain(),
-            selected_input_id: self.audio.selected_input_id(),
-            workspace_tree:    self.workspace_tree.clone().unwrap(),
+            tuning_kind:          self.tuning_kind,
+            scale_kind:           self.scale_kind,
+            root_note:            self.root_note,
+            live_chart:           self.live_chart,
+            test_note_midi:       self.test_note_midi.as_u8() as usize,
+            scale_finder_weights: self.scale_finder_weights,
+            analysis_settings:    self.audio.analysis_settings(),
+            input_gain:           self.audio.input_gain(),
+            monitor_enabled:      self.audio.monitor_enabled(),
+            monitor_gain:         self.audio.monitor_gain(),
+            selected_input_id:    self.audio.selected_input_id(),
+            workspace_tree:       self.workspace_tree.clone().unwrap(),
         }
     }
 }
@@ -108,17 +113,18 @@ mod tests {
     #[test]
     fn persistent_state_round_trips_through_ron() {
         let state = PersistentState {
-            tuning_kind:       super::TuningKind::MinorThirds,
-            scale_kind:        super::ScaleKind::Dorian,
-            root_note:         Note::G,
-            live_chart:        super::LiveChartKind::Fft,
-            test_note_midi:    37,
-            analysis_settings: AnalysisSettings::default(),
-            input_gain:        1.5,
-            monitor_enabled:   true,
-            monitor_gain:      0.25,
-            selected_input_id: Some("pulse::@DEFAULT_SOURCE@".to_owned()),
-            workspace_tree:    default_workspace_tree(),
+            tuning_kind:          super::TuningKind::MinorThirds,
+            scale_kind:           super::ScaleKind::Dorian,
+            root_note:            Note::G,
+            live_chart:           super::LiveChartKind::Fft,
+            test_note_midi:       37,
+            scale_finder_weights: crate::core_types::scale_detect::MethodWeights::default(),
+            analysis_settings:    AnalysisSettings::default(),
+            input_gain:           1.5,
+            monitor_enabled:      true,
+            monitor_gain:         0.25,
+            selected_input_id:    Some("pulse::@DEFAULT_SOURCE@".to_owned()),
+            workspace_tree:       default_workspace_tree(),
         };
 
         let ron = ron::ser::to_string(&state).unwrap();

@@ -35,16 +35,16 @@ use crate::core_types::tuning::{
     Fret,
     Tuning,
 };
-use crate::ui::fretboard::{
-    FretConfig,
-    Fretboard,
-};
 use crate::ui::fretboard::draw::{
     draw_fret_lines,
     draw_fretboard_scale,
     draw_string_lines_scale,
 };
 use crate::ui::fretboard::positions::draw_positions;
+use crate::ui::fretboard::{
+    FretConfig,
+    Fretboard,
+};
 use crate::ui::theme::{
     PANEL_FILL,
     fretboard_fill,
