@@ -54,6 +54,7 @@ pub(super) mod imp {
         ResonatorReading,
         TunerReading,
     };
+    use crate::core_types::pitch::PNote;
 
     mod analysis_math;
     mod devices;
@@ -156,7 +157,7 @@ pub(super) mod imp {
     enum Command {
         SwitchInput(Option<String>),
         SetMonitorEnabled(bool),
-        PlayTestNote(usize),
+        PlayTestNote(PNote),
     }
 
     impl Default for AudioEngine {
@@ -331,7 +332,7 @@ pub(super) mod imp {
             }
         }
 
-        pub fn play_test_note(&self, midi: usize) {
+        pub fn play_test_note(&self, midi: PNote) {
             if let Some(tx) = self.command_tx.as_ref() {
                 let _ = tx.send(Command::PlayTestNote(midi));
             }
@@ -435,8 +436,11 @@ pub(super) mod imp {
             }
         }
 
-        fn play_test_note(&self, midi: usize) {
-            let midi = midi.clamp(NOTE_BUCKET_MIN_MIDI, NOTE_BUCKET_MAX_MIDI);
+        fn play_test_note(&self, midi: PNote) {
+            // Restrict to the audible test-tone bucket range; both bounds are in
+            // 0..=127, so rebuilding the validated `PNote` can't fail.
+            let clamped = (midi.as_u8() as usize).clamp(NOTE_BUCKET_MIN_MIDI, NOTE_BUCKET_MAX_MIDI);
+            let midi = PNote::new(clamped as u8).unwrap();
             self.reset_shared_for_test_tone();
             let shared = self.shared.clone();
             let settings = self.settings.clone();
@@ -983,7 +987,7 @@ pub(super) mod imp {
     }
 
     fn play_test_note_thread(
-        midi: usize,
+        midi: PNote,
         shared: Arc<Mutex<SharedState>>,
         settings: Arc<Mutex<AnalysisSettings>>,
         input_level: Arc<AtomicU32>,
@@ -1003,7 +1007,7 @@ pub(super) mod imp {
         config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
         let sample_rate = config.sample_rate as f32;
         let channels = usize::from(config.channels);
-        let frequency = midi_to_hz(midi as f32, 440.0);
+        let frequency = midi_to_hz(midi.as_u8() as f32, 440.0);
         let total_samples = (sample_rate * TEST_TONE_DURATION.as_secs_f32()) as usize;
         let samples = Arc::new(test_tone_samples(frequency, sample_rate, total_samples));
         let playback_samples = samples.clone();

@@ -1,3 +1,7 @@
+//! Overlay that brackets the classic cello hand positions (1st–4th) above the
+//! neck, so a cellist can read which frets each position covers. A pure painter
+//! over a borrowed [`Fretboard`].
+
 use eframe::egui::{
     self,
     Color32,
@@ -8,7 +12,7 @@ use eframe::egui::{
 };
 
 use crate::core_types::tuning::Fret;
-use crate::fretboard::Fretboard;
+use crate::ui::fretboard::Fretboard;
 
 struct Position {
     name:      &'static str,

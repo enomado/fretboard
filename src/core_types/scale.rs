@@ -6,7 +6,7 @@ use crate::core_types::pitch::{
     Interval,
     PCNote,
 };
-use crate::ui::fretboard::Mark;
+use crate::ui::fretboard::draw::Mark;
 
 #[derive(Debug, Clone)]
 pub struct Scale {
@@ -111,4 +111,5 @@ impl Scale {
 }
 
 // ступень лада
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Degree(pub u8);

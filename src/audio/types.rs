@@ -1,3 +1,5 @@
+use crate::core_types::pitch::PNote;
+
 #[derive(Clone, Debug)]
 pub struct TunerReading {
     pub frequency_hz:          f32,
@@ -59,8 +61,8 @@ pub struct AnalysisSettings {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResonatorSettings {
-    pub min_midi:  usize,
-    pub max_midi:  usize,
+    pub min_midi:  PNote,
+    pub max_midi:  PNote,
     pub bins:      usize,
     pub alpha:     f32,
     pub beta:      f32,
@@ -100,8 +102,8 @@ impl Default for AnalysisSettings {
 impl Default for ResonatorSettings {
     fn default() -> Self {
         Self {
-            min_midi:  12,
-            max_midi:  84,
+            min_midi:  PNote::new(12).unwrap(),
+            max_midi:  PNote::new(84).unwrap(),
             bins:      5,
             alpha:     1.0,
             beta:      1.0,
@@ -143,11 +145,16 @@ impl AnalysisSettings {
 #[cfg(not(target_arch = "wasm32"))]
 impl ResonatorSettings {
     pub(crate) fn sanitized(mut self) -> Self {
-        self.min_midi = self.min_midi.clamp(12, 84);
-        self.max_midi = self.max_midi.clamp(24, 108);
-        if self.max_midi <= self.min_midi + 6 {
-            self.max_midi = (self.min_midi + 6).clamp(24, 108);
+        // Clamp in raw-MIDI space (the newtype has no arithmetic), keeping the
+        // invariant max ≥ min + 6, then rebuild the validated `PNote`s. The
+        // bounds stay inside 0..=127, so `new` can't fail here.
+        let min = self.min_midi.as_u8().clamp(12, 84);
+        let mut max = self.max_midi.as_u8().clamp(24, 108);
+        if max <= min + 6 {
+            max = (min + 6).clamp(24, 108);
         }
+        self.min_midi = PNote::new(min).unwrap();
+        self.max_midi = PNote::new(max).unwrap();
         self.bins = self.bins.clamp(1, 12);
         self.alpha = self.alpha.clamp(0.05, 12.0);
         self.beta = self.beta.clamp(0.05, 12.0);
@@ -174,8 +181,8 @@ mod tests {
             spectrum_gamma:     0.01,
             note_gamma:         9.0,
             resonator:          ResonatorSettings {
-                min_midi:  10,
-                max_midi:  11,
+                min_midi:  PNote::new(10).unwrap(),
+                max_midi:  PNote::new(11).unwrap(),
                 bins:      99,
                 alpha:     0.01,
                 beta:      9.0,

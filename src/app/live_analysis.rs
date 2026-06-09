@@ -326,7 +326,7 @@ impl App {
                 painter.text(
                     pos2(rect.left() + 18.0, rect.top() + 18.0),
                     egui::Align2::LEFT_TOP,
-                    reading.note_name.as_str(),
+                    reading.note_name.name(),
                     FontId::proportional(30.0),
                     Color32::from_rgb(230, 223, 210),
                 );
@@ -355,7 +355,7 @@ impl App {
                 painter.text(
                     pos2(rect.right() - 18.0, rect.top() + 40.0),
                     egui::Align2::RIGHT_TOP,
-                    format!("S{} • F{}", reading.string, reading.fret),
+                    format!("S{} • F{}", reading.string.0, reading.fret.0),
                     FontId::proportional(12.0),
                     Color32::from_rgb(160, 165, 171),
                 );

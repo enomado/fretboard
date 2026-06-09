@@ -94,6 +94,6 @@ impl AudioEngine {
     pub fn set_selected_input_id(&self, _input_id: Option<String>) {
     }
 
-    pub fn play_test_note(&self, _midi: usize) {
+    pub fn play_test_note(&self, _midi: crate::core_types::pitch::PNote) {
     }
 }
