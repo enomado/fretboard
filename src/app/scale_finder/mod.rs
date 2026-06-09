@@ -165,7 +165,7 @@ fn rank(chroma_frames: &[Chroma], bass_frames: &[Chroma], config: ScaleFinderCon
 
     let mut candidates = Vec::with_capacity(PITCH_CLASS_COUNT * ALL_SCALES.len());
     let mut blended_scores = Vec::with_capacity(PITCH_CLASS_COUNT * ALL_SCALES.len());
-    for root_pc in 0..PITCH_CLASS_COUNT {
+    for (root_pc, &root_ev_pc) in root_ev.iter().enumerate() {
         let root = PCNote(root_pc as u8);
         for &kind in &ALL_SCALES {
             let scale = kind.to_scale(root);
@@ -175,7 +175,7 @@ fn rank(chroma_frames: &[Chroma], bass_frames: &[Chroma], config: ScaleFinderCon
             let scores = MethodScores {
                 set,
                 profile,
-                root: root_ev[root_pc],
+                root: root_ev_pc,
                 spiral,
             };
             let blended = scores.blended(weights);

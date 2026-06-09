@@ -36,11 +36,11 @@ pub fn center_of_effect(chroma: &Chroma) -> [f32; 2] {
     let mut x = 0.0;
     let mut y = 0.0;
     let mut sum = 0.0;
-    for pc in 0..PITCH_CLASS_COUNT {
+    for (pc, &weight) in chroma.iter().enumerate() {
         let p = fifths_point(pc);
-        x += chroma[pc] * p[0];
-        y += chroma[pc] * p[1];
-        sum += chroma[pc];
+        x += weight * p[0];
+        y += weight * p[1];
+        sum += weight;
     }
     if sum <= f32::EPSILON {
         return [0.0, 0.0];
