@@ -195,15 +195,15 @@ impl WorkspaceTab {
 }
 
 pub struct App {
-    audio:                    AudioEngine,
-    audio_inputs:             Vec<AudioInputOption>,
+    audio: AudioEngine,
+    audio_inputs: Vec<AudioInputOption>,
     last_audio_input_refresh: Instant,
-    tuning_kind:              TuningKind,
-    scale_kind:               ScaleKind,
-    root_note:                Note,
-    live_chart:               LiveChartKind,
-    test_note_midi:           usize,
-    workspace_tree:           Option<egui_tiles::Tree<WorkspaceTab>>,
+    tuning_kind: TuningKind,
+    scale_kind: ScaleKind,
+    root_note: Note,
+    live_chart: LiveChartKind,
+    test_note_midi: usize,
+    workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
 struct HoveredNote {
@@ -260,7 +260,10 @@ impl App {
 
     fn selected_input_kind(&self, selected_input_id: Option<&str>) -> AudioInputKind {
         if let Some(id) = selected_input_id {
-            if id.starts_with("cpal-loopback::") || id.ends_with("@DEFAULT_MONITOR@") || id.ends_with(".monitor") {
+            if id.starts_with("cpal-loopback::")
+                || id.ends_with("@DEFAULT_MONITOR@")
+                || id.ends_with(".monitor")
+            {
                 return AudioInputKind::System;
             }
         }

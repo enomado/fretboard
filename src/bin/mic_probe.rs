@@ -27,10 +27,10 @@ mod native {
 
     #[derive(Clone)]
     struct Candidate {
-        backend: String,
-        route:   String,
-        label:   String,
-        device:  Option<cpal::Device>,
+        backend:  String,
+        route:    String,
+        label:    String,
+        device:   Option<cpal::Device>,
         loopback: bool,
     }
 
@@ -125,10 +125,10 @@ mod native {
 
         if command_ok("parec", "--version") {
             candidates.push(Candidate {
-                backend: "pulse".to_owned(),
-                route:   "@DEFAULT_SOURCE@".to_owned(),
-                label:   "Default microphone (Pulse/PipeWire)".to_owned(),
-                device:  None,
+                backend:  "pulse".to_owned(),
+                route:    "@DEFAULT_SOURCE@".to_owned(),
+                label:    "Default microphone (Pulse/PipeWire)".to_owned(),
+                device:   None,
                 loopback: false,
             });
             candidates.extend(pulse_source_candidates());
@@ -139,10 +139,10 @@ mod native {
         if let Some(device) = host.default_output_device() {
             let name = cpal_device_display_name(&device);
             candidates.push(Candidate {
-                backend: "wasapi".to_owned(),
-                route:   "@DEFAULT_OUTPUT_LOOPBACK@".to_owned(),
-                label:   format!("{name} (default output loopback)"),
-                device:  Some(device),
+                backend:  "wasapi".to_owned(),
+                route:    "@DEFAULT_OUTPUT_LOOPBACK@".to_owned(),
+                label:    format!("{name} (default output loopback)"),
+                device:   Some(device),
                 loopback: true,
             });
         }
@@ -159,10 +159,10 @@ mod native {
                     ""
                 };
                 candidates.push(Candidate {
-                    backend: "cpal".to_owned(),
-                    route:   name.clone(),
-                    label:   format!("{name}{default_tag}"),
-                    device:  Some(device),
+                    backend:  "cpal".to_owned(),
+                    route:    name.clone(),
+                    label:    format!("{name}{default_tag}"),
+                    device:   Some(device),
                     loopback: false,
                 });
             }

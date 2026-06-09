@@ -220,7 +220,10 @@ pub(super) struct SelectedCpalCapture {
     pub config:      SupportedStreamConfig,
 }
 
-pub(super) fn select_cpal_capture(host: &cpal::Host, requested: Option<&str>) -> Result<SelectedCpalCapture, String> {
+pub(super) fn select_cpal_capture(
+    host: &cpal::Host,
+    requested: Option<&str>,
+) -> Result<SelectedCpalCapture, String> {
     #[cfg(target_os = "windows")]
     if requested == Some(CPAL_DEFAULT_OUTPUT_LOOPBACK_ID) {
         let device = host
