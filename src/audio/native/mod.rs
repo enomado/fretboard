@@ -1048,7 +1048,9 @@ pub(super) mod imp {
         config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
         let sample_rate = config.sample_rate as f32;
         let channels = usize::from(config.channels);
-        let frequency = midi_to_hz(midi.as_u8() as f32, 440.0);
+        // Тест-нота звучит по текущему камертону, чтобы совпадать с анализом.
+        let reference_hz = settings.lock().map(|g| g.concert_pitch_hz).unwrap_or(440.0);
+        let frequency = midi_to_hz(midi.as_u8() as f32, reference_hz);
         let total_samples = (sample_rate * TEST_TONE_DURATION.as_secs_f32()) as usize;
         let samples = Arc::new(test_tone_samples(frequency, sample_rate, total_samples));
         let playback_samples = samples.clone();
@@ -1142,10 +1144,13 @@ pub(super) mod imp {
 
     #[derive(Clone, Debug)]
     struct AnalysisFrame {
-        pitch:           Option<PitchEstimate>,
-        spectrum:        Vec<f32>,
-        note_spectrum:   Vec<f32>,
-        spiral_spectrum: Vec<f32>,
+        pitch:            Option<PitchEstimate>,
+        spectrum:         Vec<f32>,
+        note_spectrum:    Vec<f32>,
+        spiral_spectrum:  Vec<f32>,
+        // Камертон момента анализа: нота считается после сглаживания частоты
+        // (в publish_*), а settings туда не доходят — несём значение во фрейме.
+        concert_pitch_hz: f32,
     }
 
     impl ResonatorPipeline {
@@ -1299,6 +1304,7 @@ pub(super) mod imp {
             spectrum,
             note_spectrum,
             spiral_spectrum,
+            concert_pitch_hz: settings.concert_pitch_hz,
         }
     }
 
@@ -1337,7 +1343,7 @@ pub(super) mod imp {
                 }
             };
 
-            let (note_name, cents) = frequency_to_note(smoothed_frequency);
+            let (note_name, cents) = frequency_to_note(smoothed_frequency, frame.concert_pitch_hz);
             push_limited_history(&mut state.waterfall, frame.spectrum.clone(), WATERFALL_HISTORY);
             push_limited_history(
                 &mut state.note_waterfall,
