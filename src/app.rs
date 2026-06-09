@@ -45,7 +45,7 @@ use crate::core_types::scale::{
     Degree,
     Scale,
 };
-use crate::core_types::scale_detect::MethodWeights;
+use crate::core_types::scale_detect::ScaleFinderConfig;
 use crate::core_types::tuning::{
     Fret,
     GString,
@@ -217,8 +217,8 @@ pub struct App {
     root_note: Note,
     live_chart: LiveChartKind,
     test_note_midi: PNote,
-    /// Баланс трёх методов в Scale Finder (конфиг, не compute-состояние детектора).
-    scale_finder_weights: MethodWeights,
+    /// Конфиг Scale Finder: баланс методов + ширина окна (не compute-состояние).
+    scale_finder: ScaleFinderConfig,
     workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
@@ -262,7 +262,7 @@ impl App {
             root_note: Note::A,
             live_chart: LiveChartKind::Spiral,
             test_note_midi: PNote::new(24).unwrap(),
-            scale_finder_weights: MethodWeights::default(),
+            scale_finder: ScaleFinderConfig::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
         };
 
