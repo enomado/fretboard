@@ -69,7 +69,10 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         _tiles: &egui_tiles::Tiles<WorkspaceTab>,
         _tile_id: egui_tiles::TileId,
     ) -> bool {
-        false
+        // Каждая вкладка несёт «крестик». Закрытие = `tiles.remove(id)`
+        // (так же делает встроенная кнопка egui_tiles); снова открыть —
+        // через меню «Panels» в верхней панели. См. `open_workspace_tab`.
+        true
     }
 
     fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
@@ -147,6 +150,39 @@ impl App {
 
     #[cfg(not(target_os = "android"))]
     pub(super) fn render(&mut self, ui: &mut Ui) {
+        // Верхняя полоса-меню: реестр всех панелей (открыть/закрыть/сфокусировать)
+        // + сброс раскладки. Закрывать можно и «крестиком» на самой вкладке.
+        egui::Panel::top("workspace_menu_bar")
+            .frame(
+                Frame::new()
+                    .fill(Color32::from_rgb(18, 22, 27))
+                    .inner_margin(Margin::symmetric(8, 4)),
+            )
+            .show_inside(ui, |ui| {
+                let tree = self.workspace_tree.get_or_insert_with(default_workspace_tree);
+                egui::MenuBar::new().ui(ui, |ui| {
+                    ui.menu_button("Panels", |ui| {
+                        for tab in WorkspaceTab::ALL {
+                            // Галочка = панель сейчас в дереве. Клик переключает:
+                            // снять → закрыть, поставить → открыть (или сфокусировать).
+                            let mut open = tree.tiles.find_pane(&tab).is_some();
+                            if ui.checkbox(&mut open, tab.label()).changed() {
+                                if open {
+                                    open_workspace_tab(tree, tab);
+                                } else {
+                                    close_workspace_tab(tree, tab);
+                                }
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Reset layout").clicked() {
+                            *tree = default_workspace_tree();
+                            ui.close();
+                        }
+                    });
+                });
+            });
+
         egui::CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin::same(8)))
             .show_inside(ui, |ui| {
@@ -160,22 +196,43 @@ impl App {
     }
 }
 
+/// Открыть панель `tab`. Если она уже в дереве — просто делаем её активной
+/// (фокус), не создавая дубликат. Иначе вставляем новую вкладку в корневой
+/// контейнер; на пустом/вырожденном дереве заворачиваем в свежий tabs-контейнер.
+fn open_workspace_tab(tree: &mut egui_tiles::Tree<WorkspaceTab>, tab: WorkspaceTab) {
+    if let Some(existing) = tree.tiles.find_pane(&tab) {
+        tree.make_active(|id, _| id == existing);
+        return;
+    }
+
+    let new_id = tree.tiles.insert_pane(tab);
+    match tree.root {
+        // Корень — контейнер: дописываем вкладку в конец (индекс клампится).
+        Some(root) if matches!(tree.tiles.get(root), Some(egui_tiles::Tile::Container(_))) => {
+            tree.move_tile_to_container(new_id, root, usize::MAX, false);
+            tree.make_active(|id, _| id == new_id);
+        }
+        // Пустое дерево или «голая» панель в корне: собираем tabs-контейнер.
+        _ => {
+            let children = match tree.root {
+                Some(root) => vec![root, new_id],
+                None => vec![new_id],
+            };
+            tree.root = Some(tree.tiles.insert_tab_tile(children));
+        }
+    }
+}
+
+/// Закрыть панель `tab`: убираем её tile из дерева ровно как встроенный
+/// «крестик» egui_tiles (`tiles.remove`); висячую ссылку в контейнере чистит
+/// gc на следующем `ui()`.
+fn close_workspace_tab(tree: &mut egui_tiles::Tree<WorkspaceTab>, tab: WorkspaceTab) {
+    if let Some(id) = tree.tiles.find_pane(&tab) {
+        tree.tiles.remove(id);
+    }
+}
+
 pub(super) fn default_workspace_tree() -> egui_tiles::Tree<WorkspaceTab> {
-    egui_tiles::Tree::new_tabs(
-        "fretboard_workspace_tree",
-        vec![
-            WorkspaceTab::Controls,
-            WorkspaceTab::FretboardControls,
-            WorkspaceTab::InputScope,
-            WorkspaceTab::ConfigGeneral,
-            WorkspaceTab::ConfigFft1,
-            WorkspaceTab::ConfigResonatorFft,
-            WorkspaceTab::Fretboard,
-            WorkspaceTab::LiveAnalysis,
-            WorkspaceTab::ScaleFinder,
-            WorkspaceTab::ResonatorBank,
-            WorkspaceTab::ResonatorSnail,
-            WorkspaceTab::ResonatorWaterfall,
-        ],
-    )
+    // Дефолт = все панели в одной полосе вкладок. Реестр панелей — `WorkspaceTab::ALL`.
+    egui_tiles::Tree::new_tabs("fretboard_workspace_tree", WorkspaceTab::ALL.to_vec())
 }
