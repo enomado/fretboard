@@ -28,6 +28,25 @@ use crate::ui::waterfall;
 
 impl App {
     pub(super) fn draw_resonator_snail_card(&mut self, ui: &mut Ui) {
+        self.draw_resonator_snail_card_inner(ui, snail::SPIRAL_MIN_HEIGHT, false);
+    }
+
+    /// Mobile (Android) entry: the same snail card, but it sizes the spiral to
+    /// the leftover screen height (small floor) and grows a compact settings
+    /// strip in the dead space the round snail leaves. The phone shows only this
+    /// one card, so it doubles as the settings surface.
+    #[cfg(target_os = "android")]
+    pub(super) fn draw_mobile_snail_card(&mut self, ui: &mut Ui) {
+        // Floor of 240 keeps the spiral usable on a short (landscape) phone while
+        // a tall portrait screen just fills the remaining height; the outer
+        // scroll area (see `render`) is the safety net if even 240 doesn't fit.
+        self.draw_resonator_snail_card_inner(ui, 240.0_f32.min(snail::SPIRAL_MIN_HEIGHT), true);
+    }
+
+    /// Shared body for both the desktop tab and the mobile card. `min_height` is
+    /// the spiral's height floor; `with_settings` injects the mobile knob strip
+    /// (only ever set on Android).
+    fn draw_resonator_snail_card_inner(&mut self, ui: &mut Ui, min_height: f32, with_settings: bool) {
         self.audio.request_resonator(); // потребитель банка → держим его «нужным»
         let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
@@ -42,15 +61,20 @@ impl App {
                     ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new("Resonators")
-                                .size(20.0)
+                                .size(if with_settings { 19.0 } else { 20.0 })
                                 .color(Color32::from_rgb(228, 220, 208)),
                         );
-                        ui.label(
-                            egui::RichText::new(
-                                "Alexandre Francois's Resonate bank, streamed into our pitch spiral",
-                            )
-                            .color(Color32::from_rgb(152, 158, 165)),
-                        );
+                        // The long subtitle is a single non-wrapping line — on the
+                        // phone it would distend the frame past the screen's right
+                        // edge, so the compact (mobile) header drops it.
+                        if !with_settings {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Alexandre Francois's Resonate bank, streamed into our pitch spiral",
+                                )
+                                .color(Color32::from_rgb(152, 158, 165)),
+                            );
+                        }
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -72,12 +96,25 @@ impl App {
                     });
                 });
 
-                ui.add_space(12.0);
-                snail::draw_spiral_chart(
+                ui.add_space(if with_settings { 6.0 } else { 12.0 });
+                #[cfg(target_os = "android")]
+                if with_settings {
+                    self.draw_mobile_snail_settings(ui);
+                    ui.add_space(8.0);
+                }
+
+                // Mobile caps the snail's height to the available width so the
+                // round chart stays inside the narrow screen instead of filling
+                // (possibly unbounded) leftover height. Desktop stays rubbery.
+                let max_height = if with_settings { ui.available_width() } else { f32::INFINITY };
+                snail::draw_spiral_chart_sized(
                     ui,
                     SpiralChart {
                         title:             "Resonator spiral",
-                        subtitle:          "same snail, but driven by the resonator bank instead of FFT bins",
+                        // The chart paints title (left) and subtitle (right) on one
+                        // line; on the narrow phone they collide, so mobile drops
+                        // the subtitle just like the card header above.
+                        subtitle:          if with_settings { "" } else { "same snail, but driven by the resonator bank instead of FFT bins" },
                         spectrum:          reading_ref.map(|value| value.spectrum.as_slice()),
                         waterfall:         reading_ref.map_or(&[][..], |value| value.waterfall.as_slice()),
                         note_labels:       reading_ref.map_or(&[][..], |value| value.note_labels.as_slice()),
@@ -87,8 +124,55 @@ impl App {
                         active_note_label: "bank focus",
                     },
                     &self.audio.analysis_settings(),
+                    min_height,
+                    max_height,
                 );
             });
+    }
+
+    /// Compact, touch-friendly knobs that shape the snail. One knob per row,
+    /// stacked by the ambient vertical layout. Sliders mutate a cloned
+    /// `AnalysisSettings` and only push it back when something changed.
+    ///
+    /// NB: do NOT wrap these in `horizontal_wrapped`. Each knob is itself a fixed
+    /// `horizontal` (label+slider+readout); nesting a non-wrapping `horizontal`
+    /// inside a wrapped row makes egui reserve a full row's width per knob and
+    /// keep measuring additively, which **doubled the card's `max_rect`** (376→813
+    /// dp here) and floated the round snail clean off the screen's right edge.
+    /// A plain vertical stack sizes to the real content width.
+    #[cfg(target_os = "android")]
+    fn draw_mobile_snail_settings(&mut self, ui: &mut Ui) {
+        let mut settings = self.audio.analysis_settings();
+        let mut changed = false;
+
+        mobile_slider(ui, "Spread", &mut changed, |ui, c| {
+            *c |= ui
+                .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.note_spread, 0.15..=0.8).show_value(false))
+                .changed();
+            format!("{:.2}", settings.note_spread)
+        });
+        mobile_slider(ui, "Glow", &mut changed, |ui, c| {
+            *c |= ui
+                .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.note_gamma, 0.35..=1.2).show_value(false))
+                .changed();
+            format!("{:.2}", settings.note_gamma)
+        });
+        mobile_slider(ui, "Trail", &mut changed, |ui, c| {
+            *c |= ui
+                .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.resonator.history, 8..=240).show_value(false))
+                .changed();
+            settings.resonator.history.to_string()
+        });
+        mobile_slider(ui, "Bins", &mut changed, |ui, c| {
+            *c |= ui
+                .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.resonator.bins, 1..=12).show_value(false))
+                .changed();
+            settings.resonator.bins.to_string()
+        });
+
+        if changed {
+            self.audio.set_analysis_settings(settings);
+        }
     }
 
     pub(super) fn draw_resonator_bank_card(&mut self, ui: &mut Ui) {
@@ -359,4 +443,26 @@ impl App {
             Color32::from_rgb(166, 170, 176),
         );
     }
+}
+
+/// One labelled knob row for the mobile settings strip: a caption, the slider
+/// drawn by `body`, and the numeric readout `body` returns. `body` flips
+/// `changed` via its `&mut bool` when the user moved the control. The trio sits
+/// on one fixed `horizontal` row; rows are stacked by the caller's vertical
+/// layout (see `draw_mobile_snail_settings` for why we don't wrap them).
+#[cfg(target_os = "android")]
+fn mobile_slider(ui: &mut Ui, label: &str, changed: &mut bool, body: impl FnOnce(&mut Ui, &mut bool) -> String) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(label)
+                .color(Color32::from_rgb(205, 194, 176))
+                .strong(),
+        );
+        let value = body(ui, changed);
+        ui.label(
+            egui::RichText::new(value)
+                .color(Color32::from_rgb(226, 216, 201))
+                .monospace(),
+        );
+    });
 }

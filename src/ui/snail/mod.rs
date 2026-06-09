@@ -34,12 +34,34 @@ pub struct SpiralChart<'a> {
     pub active_note_label: &'a str,
 }
 
+/// Default min-height floor below which the desktop spiral viz gets cramped
+/// (matches bank/waterfall). Mobile passes a smaller floor so the snail fits
+/// the leftover screen height instead of overflowing past the bottom edge.
+pub const SPIRAL_MIN_HEIGHT: f32 = 376.0;
+
 pub fn draw_spiral_chart(ui: &mut Ui, chart: SpiralChart<'_>, settings: &AnalysisSettings) {
-    // Rubbery: fill the pane's remaining height so egui_tiles divider drags
-    // stretch the snail instead of leaving it at a fixed height. 376 is the
-    // floor below which the spiral viz gets cramped (matches bank/waterfall).
+    // Desktop tiles are "rubbery": no upper bound, so a divider drag stretches
+    // the snail to fill the pane.
+    draw_spiral_chart_sized(ui, chart, settings, SPIRAL_MIN_HEIGHT, f32::INFINITY);
+}
+
+/// Draw the spiral, clamping its allocated height to `[min_height, max_height]`.
+///
+/// The snail is a circle, so on a width-constrained surface (a phone) the height
+/// must be capped to the available width — otherwise filling the leftover screen
+/// height (which can be unbounded in some host uis) blows the circle far past the
+/// bottom edge. Desktop passes `INFINITY` for `max_height` to stay rubbery.
+pub fn draw_spiral_chart_sized(
+    ui: &mut Ui,
+    chart: SpiralChart<'_>,
+    settings: &AnalysisSettings,
+    min_height: f32,
+    max_height: f32,
+) {
     let available_size = ui.available_size_before_wrap();
-    let desired_size = vec2(available_size.x, available_size.y.max(376.0));
+    // clamp() requires min <= max; guard the (degenerate) very-narrow case.
+    let height = available_size.y.clamp(min_height, max_height.max(min_height));
+    let desired_size = vec2(available_size.x, height);
     let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
     let painter = ui.painter_at(rect);
 

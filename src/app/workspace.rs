@@ -167,7 +167,12 @@ impl App {
             .show_inside(ui, |ui| {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
-                self.draw_resonator_snail_card(ui);
+                // No scroll area here on purpose: a vertical ScrollArea hands its
+                // content unbounded height, and the snail fills available height —
+                // so it would inflate without limit. The CentralPanel's ui is
+                // already bounded to the screen, so the snail takes exactly the
+                // height left under the settings strip.
+                self.draw_mobile_snail_card(ui);
             });
     }
 
