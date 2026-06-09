@@ -225,6 +225,12 @@ struct TunerTarget {
     cents:        f32,
 }
 
+struct ResonatorTarget {
+    string:   usize,
+    fret:     usize,
+    strength: f32,
+}
+
 impl App {
     pub fn new(cc: &CreationContext) -> Self {
         crate::ui::theme::apply_theme(&cc.egui_ctx);
