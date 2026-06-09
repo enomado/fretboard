@@ -22,7 +22,7 @@ impl App {
     /// Слайдеры прямо в панели (конфиг живёт с панелью — панель самодостаточна):
     /// баланс четырёх методов + ширина окна интеграции. `blended()` нормирует на
     /// сумму весов, поэтому каждый вес — относительный вклад, сумма к 1 не обязана.
-    pub(super) fn draw_scale_finder_controls(&mut self, ui: &mut Ui, frame_ms: u64) {
+    pub(super) fn draw_scale_finder_controls(&mut self, ui: &mut Ui, captured_secs: f32) {
         let config = &mut self.scale_finder;
         ui.horizontal_wrapped(|ui| {
             ui.label(
@@ -46,19 +46,26 @@ impl App {
                     .color(Color32::from_rgb(205, 194, 176))
                     .strong(),
             );
+            // Окно интеграции В СЕКУНДАХ (решалка копит свой буфер по времени).
+            // Логарифмический, чтобы и доли секунды, и 20 c были под рукой.
             ui.add_sized(
                 [200.0, 18.0],
-                egui::Slider::new(&mut config.window_frames, 1..=120)
+                egui::Slider::new(&mut config.window_seconds, 0.3..=20.0)
+                    .logarithmic(true)
                     .clamping(egui::SliderClamping::Always)
                     .trailing_fill(true)
                     .show_value(false),
             );
-            // Кадры → секунды по интервалу обновления банка (resonator.update_ms).
-            let seconds = config.window_frames as f32 * frame_ms as f32 / 1000.0;
             ui.label(
-                RichText::new(format!("{} fr · ~{:.1}s", config.window_frames, seconds))
+                RichText::new(format!("{:.1}s", config.window_seconds))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
+            );
+            // Сколько реально накоплено: окно наполняется с открытия панели.
+            ui.label(
+                RichText::new(format!("· have {captured_secs:.1}s"))
+                    .color(Color32::from_rgb(150, 156, 164))
+                    .size(12.0),
             );
         });
     }

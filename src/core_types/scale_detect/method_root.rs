@@ -7,7 +7,6 @@
 use super::{
     Chroma,
     PITCH_CLASS_COUNT,
-    fold_chroma,
     fold_chroma_with,
 };
 
@@ -29,24 +28,18 @@ pub fn fold_bass_chroma(spectrum: &[f32], min_midi: usize, bins_per_semitone: us
     fold_chroma_with(spectrum, min_midi, bins_per_semitone, bass_weight)
 }
 
-/// Устойчивость pitch-классов во времени: доля кадров истории, где данный класс
-/// был «заметен» (энергия ≥ `prominence_ratio` от пика кадра). Тоника и опорные
-/// тоны возвращаются из кадра в кадр → высокая устойчивость.
-pub fn persistence(
-    history: &[Vec<f32>],
-    min_midi: usize,
-    bins_per_semitone: usize,
-    prominence_ratio: f32,
-) -> Chroma {
+/// Устойчивость pitch-классов во времени по уже свёрнутым chroma-кадрам окна: доля
+/// кадров, где данный класс был «заметен» (энергия ≥ `prominence_ratio` от пика
+/// кадра). Тоника и опорные тоны возвращаются из кадра в кадр → высокая устойчивость.
+pub fn persistence_chroma(frames: &[Chroma], prominence_ratio: f32) -> Chroma {
     let mut present = [0.0f32; PITCH_CLASS_COUNT];
-    let mut frames = 0.0f32;
-    for row in history {
-        let frame = fold_chroma(row, min_midi, bins_per_semitone);
+    let mut counted = 0.0f32;
+    for frame in frames {
         let peak = frame.iter().copied().fold(0.0, f32::max);
         if peak <= 0.0 {
             continue;
         }
-        frames += 1.0;
+        counted += 1.0;
         let threshold = peak * prominence_ratio;
         for pc in 0..PITCH_CLASS_COUNT {
             if frame[pc] >= threshold {
@@ -54,10 +47,10 @@ pub fn persistence(
             }
         }
     }
-    if frames <= 0.0 {
+    if counted <= 0.0 {
         return present;
     }
-    let inv = 1.0 / frames;
+    let inv = 1.0 / counted;
     for p in &mut present {
         *p *= inv;
     }
