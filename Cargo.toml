@@ -16,6 +16,10 @@ nom = { version = "8.0" }
 
 eframe.workspace = true
 
+[dev-dependencies]
+# Direct handle on the same RON used by eframe storage, for the persistence round-trip test.
+ron = "0.12"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "0.18.1"
 rustfft = "6.4"

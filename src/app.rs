@@ -3,6 +3,7 @@
 mod controls;
 mod fretboard_panel;
 mod live_analysis;
+mod persist;
 mod resonator_panel;
 mod workspace;
 
@@ -50,7 +51,7 @@ const SPIRAL_PITCH_LABELS: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "
 const WINDOW_SIZE_PRESETS: [usize; 6] = [2048, 4096, 6144, 8192, 12288, 16384];
 const FFT_SIZE_PRESETS: [usize; 4] = [4096, 8192, 16384, 32768];
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum TuningKind {
     Cello,
     StandardE,
@@ -77,7 +78,7 @@ impl TuningKind {
 
 const ALL_TUNINGS: [TuningKind; 3] = [TuningKind::Cello, TuningKind::StandardE, TuningKind::MinorThirds];
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 enum ScaleKind {
     Major,
     Minor,
@@ -146,7 +147,7 @@ const ALL_ROOTS: [(Note, &str); 7] = [
     (Note::B, "B"),
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum LiveChartKind {
     Tuner,
     Fft,
@@ -163,7 +164,7 @@ impl LiveChartKind {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum WorkspaceTab {
     Controls,
     FretboardControls,
@@ -237,7 +238,9 @@ impl App {
         let audio = AudioEngine::new();
         let audio_inputs = audio.available_inputs();
 
-        Self {
+        let persisted = Self::load_persistent(cc);
+
+        let mut app = Self {
             audio,
             audio_inputs,
             last_audio_input_refresh: Instant::now(),
@@ -247,7 +250,15 @@ impl App {
             live_chart: LiveChartKind::Spiral,
             test_note_midi: 24,
             workspace_tree: Some(workspace::default_workspace_tree()),
+        };
+
+        // Restore last session's preferences over the defaults built above.
+        // Defaults stay intact for any field a stale RON file is missing.
+        if let Some(state) = persisted {
+            app.apply_persistent(state);
         }
+
+        app
     }
 
     fn selected_input_kind(&self, selected_input_id: Option<&str>) -> AudioInputKind {
@@ -644,6 +655,12 @@ impl eframe::App for App {
 
         #[cfg(any(target_arch = "wasm32", target_os = "android"))]
         self.render(ui);
+    }
+
+    /// Called by eframe on its auto-save interval and on shutdown. Serializes a
+    /// snapshot of preferences to RON (eframe's `set_value` uses `ron::ser`).
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, eframe::APP_KEY, &self.snapshot_persistent());
     }
 }
 

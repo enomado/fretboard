@@ -44,7 +44,7 @@ pub struct AudioInputOption {
     pub kind:  AudioInputKind,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AnalysisSettings {
     pub window_size:        usize,
     pub fft_size:           usize,
@@ -57,7 +57,7 @@ pub struct AnalysisSettings {
     pub resonator:          ResonatorSettings,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResonatorSettings {
     pub min_midi:  usize,
     pub max_midi:  usize,

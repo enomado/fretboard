@@ -1292,6 +1292,7 @@ dependencies = [
  "nom",
  "resonators",
  "ringbuf",
+ "ron",
  "rustfft",
  "serde",
  "serde_json",

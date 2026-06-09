@@ -273,7 +273,7 @@ impl App {
 
         let mean = note_strengths.iter().copied().sum::<f32>() / note_strengths.len().max(1) as f32;
         let threshold = (mean * 1.75 + 0.06).clamp(0.18, 0.52).min(peak * 0.92);
-        let min_midi = self.audio.analysis_settings().resonator_min_midi;
+        let min_midi = self.audio.analysis_settings().resonator.min_midi;
         let mut matches = Vec::new();
 
         for string in 1..=tuning.string_count() {
