@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 default-run = "fretboard"
 
+# rlib: consumed by the desktop/wasm `fretboard` bin (src/main.rs).
+# cdylib: NativeActivity dlopen's `libfretboard.so` on Android — without it
+# cargo-apk silently packages a stale leftover .so and your changes never ship.
 [lib]
-crate-type = ["rlib"]
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 egui_tiles = "0.15"
@@ -35,6 +38,10 @@ tungstenite.workspace = true
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6.1", features = ["native-activity"] }
 eframe = { workspace = true, features = ["android-native-activity", "wgpu"] }
+# Runtime RECORD_AUDIO request (see src/android_perm.rs). jni/ndk-context are
+# already in the tree transitively via cpal/android-activity.
+jni = "0.22"
+ndk-context = "0.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 eframe = { workspace = true, features = ["glow", "persistence"] }
@@ -56,10 +63,16 @@ theme = "@style/AppTheme"
 min_sdk_version = 26
 target_sdk_version = 34
 
+# Снейл питается с микрофона → без RECORD_AUDIO банк резонаторов молчит.
+# Это dangerous-permission: на minSdk 26 / target 34 манифестной декларации мало,
+# нужен ещё runtime-запрос (см. android_main), иначе AAudio отдаёт тишину.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
 [package.metadata.android.application.activity]
 config_changes = "orientation|screenSize|keyboardHidden"
 exported = true
-screen_orientation = "sensorLandscape"
+orientation = "sensorLandscape"
 
 [profile]
 
