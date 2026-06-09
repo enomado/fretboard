@@ -11,9 +11,12 @@ use eframe::egui::{
     self,
     Color32,
     FontId,
+    Mesh,
     Painter,
     Rect,
+    Shape,
     Stroke,
+    epaint::Vertex,
     pos2,
 };
 
@@ -35,21 +38,38 @@ pub fn draw_waterfall(painter: &Painter, rect: Rect, waterfall: &[Vec<f32>]) {
     let cell_h = rect.height() / rows as f32;
     let cell_w = rect.width() / cols as f32;
 
+    // Все ячейки сетки сливаются в ОДИН Mesh вместо rows*cols отдельных
+    // `rect_filled`. Каждый rect_filled — это отдельный Shape, который egui
+    // тесселлирует и буферизует индивидуально; на сетке 52×N это десятки тысяч
+    // шейпов за кадр при 30fps — основной источник лагов на Android. Единый меш
+    // тесселлируется один раз (4 вершины + 6 индексов на ячейку), GPU рисует его
+    // одним draw-call. UV.LEFT_TOP = белый пиксель атласа шрифта (заливка цветом).
+    let mut mesh = Mesh::default();
+    mesh.vertices.reserve(rows * cols * 4);
+    mesh.indices.reserve(rows * cols * 6);
+    let uv = egui::epaint::WHITE_UV;
+
     for (row_index, row) in waterfall.iter().enumerate() {
+        let age = row_index as f32 / rows as f32;
         for (col_index, value) in row.iter().enumerate() {
-            let min = pos2(
-                rect.left() + col_index as f32 * cell_w,
-                rect.top() + row_index as f32 * cell_h,
-            );
+            let x0 = rect.left() + col_index as f32 * cell_w;
+            let y0 = rect.top() + row_index as f32 * cell_h;
             // +0.5 overdraw stops hairline gaps between cells at fractional sizes.
-            let max = pos2(min.x + cell_w + 0.5, min.y + cell_h + 0.5);
-            painter.rect_filled(
-                Rect::from_min_max(min, max),
-                0.0,
-                waterfall_color(*value, row_index as f32 / rows as f32),
-            );
+            let x1 = x0 + cell_w + 0.5;
+            let y1 = y0 + cell_h + 0.5;
+            let color = waterfall_color(*value, age);
+
+            let base = mesh.vertices.len() as u32;
+            mesh.vertices.push(Vertex { pos: pos2(x0, y0), uv, color });
+            mesh.vertices.push(Vertex { pos: pos2(x1, y0), uv, color });
+            mesh.vertices.push(Vertex { pos: pos2(x1, y1), uv, color });
+            mesh.vertices.push(Vertex { pos: pos2(x0, y1), uv, color });
+            mesh.indices
+                .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
     }
+
+    painter.add(Shape::mesh(mesh));
 }
 
 /// Waterfall with one label per cell (FFT note grid). Every `label_stride`-th
