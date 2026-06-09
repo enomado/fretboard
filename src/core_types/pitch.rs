@@ -70,8 +70,28 @@ impl PCNote {
 }
 
 // Pitch.  абсолютная нота, с октавой
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+//
+// Сериализуется как голый `u8` (`try_from`/`into`), а на десериализации
+// проходит через `PNote::new` — выход за 0..=127 = ошибка парсинга, а не
+// тихо-битый инвариант. Для fail-soft RON-загрузки это означает откат к
+// дефолтам, что строго лучше протащенного мусорного питча.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
 pub struct PNote(u8);
+
+impl From<PNote> for u8 {
+    fn from(note: PNote) -> u8 {
+        note.0
+    }
+}
+
+impl TryFrom<u8> for PNote {
+    type Error = &'static str;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        PNote::new(value).ok_or("MIDI pitch out of range 0..=127")
+    }
+}
 
 impl PNote {
     pub const MIN: u8 = 0;

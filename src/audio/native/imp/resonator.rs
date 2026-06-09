@@ -64,8 +64,10 @@ impl Default for ResonatorViewSettings {
 impl From<&AnalysisSettings> for ResonatorViewSettings {
     fn from(s: &AnalysisSettings) -> Self {
         Self {
-            min_midi:          s.resonator.min_midi,
-            max_midi:          s.resonator.max_midi,
+            // Leave the typed-MIDI config behind here: the view-model uses these
+            // purely as bin-bucket offsets/iteration bounds (raw `usize` domain).
+            min_midi:          s.resonator.min_midi.as_u8() as usize,
+            max_midi:          s.resonator.max_midi.as_u8() as usize,
             bins_per_semitone: s.resonator.bins,
             alpha_scale:       s.resonator.alpha,
             beta_scale:        s.resonator.beta,

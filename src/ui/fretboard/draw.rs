@@ -1,3 +1,9 @@
+//! Renderers for the fretboard itself: note marks per string/fret, the open
+//! string lines and labels, fret lines with their inlay dots, and the [`Mark`]
+//! trait that lets a caller colour each note (a [`Scale`] implements it). All
+//! functions are pure painters — they read positions from a borrowed
+//! [`Fretboard`] and own no state.
+
 use eframe::egui;
 use eframe::egui::{
     Color32,
@@ -10,7 +16,7 @@ use eframe::egui::{
 
 use crate::core_types::pitch::PNote;
 use crate::core_types::scale::Scale;
-use crate::fretboard::Fretboard;
+use crate::ui::fretboard::Fretboard;
 
 pub trait Mark {
     fn mark(&self, note: &PNote) -> Color32;

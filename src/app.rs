@@ -36,9 +36,19 @@ use crate::core_types::note::{
     ANote,
     Note,
 };
-use crate::core_types::pitch::PCNote;
-use crate::core_types::scale::Scale;
-use crate::core_types::tuning::Tuning;
+use crate::core_types::pitch::{
+    PCNote,
+    PNote,
+};
+use crate::core_types::scale::{
+    Degree,
+    Scale,
+};
+use crate::core_types::tuning::{
+    Fret,
+    GString,
+    Tuning,
+};
 
 const FRETBOARD_HEIGHT: f32 = 340.0;
 const FRETBOARD_MARGIN_LEFT: f32 = 54.0;
@@ -202,30 +212,30 @@ pub struct App {
     scale_kind: ScaleKind,
     root_note: Note,
     live_chart: LiveChartKind,
-    test_note_midi: usize,
+    test_note_midi: PNote,
     workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
 struct HoveredNote {
-    string:    usize,
-    fret:      usize,
-    note_name: String,
-    degree:    Option<u8>,
+    string:    GString,
+    fret:      Fret,
+    note_name: ANote,
+    degree:    Option<Degree>,
     center:    egui::Pos2,
     rect:      egui::Rect,
 }
 
 struct TunerTarget {
-    string:       usize,
-    fret:         usize,
-    note_name:    String,
+    string:       GString,
+    fret:         Fret,
+    note_name:    ANote,
     frequency_hz: f32,
     cents:        f32,
 }
 
 struct ResonatorTarget {
-    string:   usize,
-    fret:     usize,
+    string:   GString,
+    fret:     Fret,
     strength: f32,
 }
 
@@ -245,7 +255,7 @@ impl App {
             scale_kind: ScaleKind::BluesMinor,
             root_note: Note::A,
             live_chart: LiveChartKind::Spiral,
-            test_note_midi: 24,
+            test_note_midi: PNote::new(24).unwrap(),
             workspace_tree: Some(workspace::default_workspace_tree()),
         };
 

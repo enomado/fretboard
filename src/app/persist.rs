@@ -22,6 +22,7 @@ use super::{
 };
 use crate::audio::AnalysisSettings;
 use crate::core_types::note::Note;
+use crate::core_types::pitch::PNote;
 
 /// Everything we carry across sessions. Owns a snapshot of the audio engine's
 /// settings (the engine itself is rebuilt fresh each launch) plus the UI
@@ -57,7 +58,9 @@ impl App {
         self.scale_kind = state.scale_kind;
         self.root_note = state.root_note;
         self.live_chart = state.live_chart;
-        self.test_note_midi = state.test_note_midi;
+        // Wire format stays a raw MIDI number; rebuild the newtype at the boundary.
+        // A corrupt out-of-range value can't survive the contract — fail fast.
+        self.test_note_midi = PNote::new(state.test_note_midi as u8).unwrap();
         self.workspace_tree = Some(state.workspace_tree);
 
         // The engine is the source of truth for these at runtime (the App reads
@@ -81,7 +84,7 @@ impl App {
             scale_kind:        self.scale_kind,
             root_note:         self.root_note,
             live_chart:        self.live_chart,
-            test_note_midi:    self.test_note_midi,
+            test_note_midi:    self.test_note_midi.as_u8() as usize,
             analysis_settings: self.audio.analysis_settings(),
             input_gain:        self.audio.input_gain(),
             monitor_enabled:   self.audio.monitor_enabled(),

@@ -71,14 +71,19 @@ impl Tuning {
     pub fn string_count(&self) -> usize {
         self.v.len()
     }
+
+    /// Все струны строя как `GString`, считая с 1 (см. инвариант индексации в `note`).
+    pub fn iter_strings(&self) -> impl Iterator<Item = GString> {
+        (1..=self.v.len()).map(GString)
+    }
 }
 
 /// from 1
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GString(pub usize);
 
 /// from 1
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Fret(pub usize);
 impl Fret {
     pub fn semitones(&self) -> Interval {

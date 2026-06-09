@@ -31,6 +31,7 @@ use crate::audio::{
     AnalysisSettings,
     AudioInputKind,
 };
+use crate::core_types::pitch::PNote;
 use crate::ui::theme::PANEL_FILL;
 
 impl App {
@@ -277,14 +278,17 @@ impl App {
                             .color(Color32::from_rgb(205, 194, 176))
                             .strong(),
                     );
+                    // egui's Slider binds to a raw numeric; the PNote newtype is
+                    // reconstructed (and range-validated) on change.
+                    let mut midi = self.test_note_midi.as_u8();
                     if ui
                         .add_sized(
                             [180.0, 18.0],
-                            egui::Slider::new(&mut self.test_note_midi, 12..=84).show_value(false),
+                            egui::Slider::new(&mut midi, 12..=84).show_value(false),
                         )
                         .changed()
                     {
-                        self.test_note_midi = self.test_note_midi.clamp(12, 84);
+                        self.test_note_midi = PNote::new(midi).unwrap();
                     }
                     ui.label(
                         RichText::new(midi_label(self.test_note_midi))
@@ -729,13 +733,17 @@ impl App {
                     .strong(),
             );
 
+            // Sliders bind a raw `u8` scratch; the validated `PNote` is rebuilt
+            // on change (both ranges sit inside 0..=127, so `new` can't fail).
+            let mut min_midi = settings.resonator.min_midi.as_u8();
             if ui
                 .add_sized(
                     [140.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.min_midi, 12..=84).show_value(false),
+                    egui::Slider::new(&mut min_midi, 12..=84).show_value(false),
                 )
                 .changed()
             {
+                settings.resonator.min_midi = PNote::new(min_midi).unwrap();
                 *changed = true;
             }
             ui.label(
@@ -750,13 +758,15 @@ impl App {
                     .strong(),
             );
 
+            let mut max_midi = settings.resonator.max_midi.as_u8();
             if ui
                 .add_sized(
                     [140.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.max_midi, 24..=108).show_value(false),
+                    egui::Slider::new(&mut max_midi, 24..=108).show_value(false),
                 )
                 .changed()
             {
+                settings.resonator.max_midi = PNote::new(max_midi).unwrap();
                 *changed = true;
             }
             ui.label(
@@ -933,8 +943,9 @@ impl App {
     }
 }
 
-fn midi_label(midi: usize) -> String {
+fn midi_label(midi: PNote) -> String {
     const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    let midi = midi.as_u8() as usize;
     let note_index = midi % 12;
     let octave = midi as i32 / 12 - 1;
     format!("{}{}", NOTE_NAMES[note_index], octave)

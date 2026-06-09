@@ -29,26 +29,22 @@ use super::{
     rangef_to_range,
 };
 use crate::core_types::note::Accidental;
-use crate::core_types::pitch::{
-    Interval,
-    PCNote,
-};
+use crate::core_types::pitch::PCNote;
 use crate::core_types::scale::Scale;
 use crate::core_types::tuning::{
     Fret,
-    GString,
     Tuning,
 };
-use crate::fretboard::{
+use crate::ui::fretboard::{
     FretConfig,
     Fretboard,
 };
-use crate::ui::fretboard::{
+use crate::ui::fretboard::draw::{
     draw_fret_lines,
     draw_fretboard_scale,
     draw_string_lines_scale,
 };
-use crate::ui::positions::draw_positions;
+use crate::ui::fretboard::positions::draw_positions;
 use crate::ui::theme::{
     PANEL_FILL,
     fretboard_fill,
@@ -160,12 +156,12 @@ impl App {
 
                 if rect.contains(pointer_pos) {
                     let note = fretboard.tuning.note(string).add(fret.semitones());
-                    let degree = scale.degree(note.to_pc().1).map(|value| value.0);
+                    let degree = scale.degree(note.to_pc().1);
 
                     return Some(HoveredNote {
-                        string: string.0,
-                        fret: fret.0,
-                        note_name: note.to_anote().name(),
+                        string,
+                        fret,
+                        note_name: note.to_anote(),
                         degree,
                         center,
                         rect,
@@ -188,7 +184,7 @@ impl App {
 
         let degree_label = hovered
             .degree
-            .map(|degree| format!("degree {}", degree))
+            .map(|degree| format!("degree {}", degree.0))
             .unwrap_or_else(|| "outside scale".to_owned());
 
         let tooltip_rect = Rect::from_min_size(
@@ -210,7 +206,7 @@ impl App {
         painter.text(
             pos2(tooltip_rect.left() + 12.0, tooltip_rect.top() + 11.0),
             egui::Align2::LEFT_TOP,
-            hovered.note_name.as_str(),
+            hovered.note_name.name(),
             FontId::proportional(17.0),
             Color32::from_rgb(228, 220, 208),
         );
@@ -219,7 +215,7 @@ impl App {
             egui::Align2::LEFT_TOP,
             format!(
                 "string {}  •  fret {}  •  {}",
-                hovered.string, hovered.fret, degree_label
+                hovered.string.0, hovered.fret.0, degree_label
             ),
             FontId::proportional(12.0),
             Color32::from_rgb(160, 165, 171),
@@ -235,10 +231,10 @@ impl App {
         let cents = 1200.0 * (reading.frequency_hz / detected_frequency).log2();
         let mut matches = Vec::new();
 
-        for string in 1..=tuning.string_count() {
-            let open = tuning.note(GString(string));
-            for fret in 0..=18 {
-                let note = open.add(Interval(fret as i32));
+        for string in tuning.iter_strings() {
+            let open = tuning.note(string);
+            for fret in (0..=18).map(Fret) {
+                let note = open.add(fret.semitones());
                 if note.as_u8() != detected_midi {
                     continue;
                 }
@@ -246,7 +242,7 @@ impl App {
                 matches.push(TunerTarget {
                     string,
                     fret,
-                    note_name: note.to_anote().name(),
+                    note_name: note.to_anote(),
                     frequency_hz: reading.frequency_hz,
                     cents,
                 });
@@ -273,13 +269,15 @@ impl App {
 
         let mean = note_strengths.iter().copied().sum::<f32>() / note_strengths.len().max(1) as f32;
         let threshold = (mean * 1.75 + 0.06).clamp(0.18, 0.52).min(peak * 0.92);
-        let min_midi = self.audio.analysis_settings().resonator.min_midi;
+        // Lower bound of the resonator's note buckets, as a raw index for the
+        // `checked_sub` below (the strengths Vec is indexed midi - min_midi).
+        let min_midi = self.audio.analysis_settings().resonator.min_midi.as_u8() as usize;
         let mut matches = Vec::new();
 
-        for string in 1..=tuning.string_count() {
-            let open = tuning.note(GString(string));
-            for fret in 0..=18 {
-                let note = open.add(Interval(fret as i32));
+        for string in tuning.iter_strings() {
+            let open = tuning.note(string);
+            for fret in (0..=18).map(Fret) {
+                let note = open.add(fret.semitones());
                 let midi = note.as_u8() as usize;
                 let Some(note_index) = midi.checked_sub(min_midi) else {
                     continue;
@@ -322,8 +320,8 @@ impl App {
     ) {
         for target in targets {
             let center = pos2(
-                fretboard.fret_pos(Fret(target.fret)),
-                fretboard.string_pos(GString(target.string)),
+                fretboard.fret_pos(target.fret),
+                fretboard.string_pos(target.string),
             );
             let strength = target.strength.clamp(0.0, 1.0);
             let glow_alpha = (34.0 + strength * 96.0).round() as u8;
@@ -341,8 +339,8 @@ impl App {
     fn draw_tuner_targets(&self, painter: &egui::Painter, fretboard: &Fretboard, targets: &[TunerTarget]) {
         for target in targets {
             let center = pos2(
-                fretboard.fret_pos(Fret(target.fret)),
-                fretboard.string_pos(GString(target.string)),
+                fretboard.fret_pos(target.fret),
+                fretboard.string_pos(target.string),
             );
             painter.circle_stroke(
                 center,
