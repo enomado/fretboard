@@ -20,7 +20,6 @@ use eframe::egui::{
     Rangef,
     RichText,
     Ui,
-    vec2,
 };
 use eframe::{
     CreationContext,
@@ -28,7 +27,6 @@ use eframe::{
 };
 
 use crate::audio::{
-    AnalysisSettings,
     AudioEngine,
     AudioInputKind,
     AudioInputOption,
@@ -47,7 +45,6 @@ const FRETBOARD_MARGIN_LEFT: f32 = 54.0;
 const FRETBOARD_MARGIN_RIGHT: f32 = 24.0;
 const FRETBOARD_MARGIN_TOP: f32 = 110.0;
 const FRETBOARD_MARGIN_BOTTOM: f32 = 52.0;
-const SPIRAL_PITCH_LABELS: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
 const WINDOW_SIZE_PRESETS: [usize; 6] = [2048, 4096, 6144, 8192, 12288, 16384];
 const FFT_SIZE_PRESETS: [usize; 4] = [4096, 8192, 16384, 32768];
 
@@ -498,136 +495,6 @@ fn spectrum_color(value: f32) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-fn pitch_class_angle(pitch_class: usize) -> f32 {
-    -std::f32::consts::FRAC_PI_2 + pitch_class as f32 * std::f32::consts::TAU / 12.0
-}
-
-fn note_label_pitch_class(label: &str) -> Option<usize> {
-    let note = label.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-');
-    match note {
-        "C" => Some(0),
-        "C#" | "Db" => Some(1),
-        "D" => Some(2),
-        "D#" | "Eb" => Some(3),
-        "E" => Some(4),
-        "F" => Some(5),
-        "F#" | "Gb" => Some(6),
-        "G" => Some(7),
-        "G#" | "Ab" => Some(8),
-        "A" => Some(9),
-        "A#" | "Bb" => Some(10),
-        "B" => Some(11),
-        _ => None,
-    }
-}
-
-fn spiral_point_fractional(
-    center: egui::Pos2,
-    inner_radius: f32,
-    radius_step: f32,
-    semitone_position: f32,
-    pitch_class_offset: f32,
-) -> egui::Pos2 {
-    let angle = -std::f32::consts::FRAC_PI_2
-        + (semitone_position + pitch_class_offset) * std::f32::consts::TAU / 12.0;
-    let radius = inner_radius + semitone_position * radius_step;
-    center + vec2(angle.cos(), angle.sin()) * radius
-}
-
-fn pitch_class_color(pitch_class: usize) -> Color32 {
-    match pitch_class % 12 {
-        0 => Color32::from_rgb(92, 230, 105),
-        1 => Color32::from_rgb(104, 222, 170),
-        2 => Color32::from_rgb(112, 204, 238),
-        3 => Color32::from_rgb(122, 173, 255),
-        4 => Color32::from_rgb(127, 138, 255),
-        5 => Color32::from_rgb(164, 116, 246),
-        6 => Color32::from_rgb(212, 98, 219),
-        7 => Color32::from_rgb(236, 93, 168),
-        8 => Color32::from_rgb(232, 110, 121),
-        9 => Color32::from_rgb(239, 167, 102),
-        10 => Color32::from_rgb(230, 203, 94),
-        _ => Color32::from_rgb(156, 218, 115),
-    }
-}
-
-fn spiral_note_color(pitch_class: usize, intensity: f32, alpha: u8) -> Color32 {
-    let base = pitch_class_color(pitch_class);
-    let glow = (40.0 + intensity * 120.0).round() as u8;
-    Color32::from_rgba_unmultiplied(
-        base.r().saturating_add(glow / 4),
-        base.g().saturating_add(glow / 4),
-        base.b().saturating_add(glow / 5),
-        alpha,
-    )
-}
-
-fn spiral_contrast_strengths(values: &[f32], settings: &AnalysisSettings) -> Vec<f32> {
-    if values.is_empty() {
-        return Vec::new();
-    }
-
-    let peak = values.iter().copied().fold(0.0, f32::max);
-    if peak <= 0.0 {
-        return vec![0.0; values.len()];
-    }
-
-    let mean = values.iter().copied().sum::<f32>() / values.len() as f32;
-    let gamma_norm = normalize_setting(settings.note_gamma, 0.35, 1.2);
-    let spread_norm = normalize_setting(settings.note_spread, 0.15, 0.8);
-    let threshold_floor = lerp(0.025, 0.11, gamma_norm);
-    let threshold_ceiling = lerp(0.22, 0.36, gamma_norm);
-    let threshold =
-        (mean * lerp(1.15, 1.95, spread_norm) + threshold_floor).clamp(threshold_floor, threshold_ceiling);
-    let scale = (1.0 - threshold).max(0.001);
-    let mut strengths = vec![0.0; values.len()];
-
-    for index in 0..values.len() {
-        let intensity = values[index].clamp(0.0, 1.0);
-        let normalized = ((intensity - threshold) / scale).clamp(0.0, 1.0);
-        if normalized <= 0.0 {
-            continue;
-        }
-
-        let left = values[index.saturating_sub(1)].clamp(0.0, 1.0);
-        let right = values[(index + 1).min(values.len() - 1)].clamp(0.0, 1.0);
-        let neighbor = left.max(right);
-        let is_local_peak = intensity >= left && intensity >= right;
-        let neighbor_guard = lerp(0.96, 0.84, spread_norm);
-        let ridge = ((intensity - neighbor * neighbor_guard) / scale).clamp(0.0, 1.0);
-        let focus = if is_local_peak {
-            lerp(0.48, 0.78, 1.0 - spread_norm) + ridge * lerp(0.28, 0.62, 1.0 - spread_norm)
-        } else {
-            ridge * lerp(0.04, 0.18, spread_norm)
-        };
-        let emphasis = lerp(1.55, 2.65, gamma_norm);
-        let emphasized = normalized.powf(emphasis) * focus;
-
-        if emphasized > lerp(0.012, 0.05, gamma_norm) {
-            strengths[index] = emphasized;
-        }
-    }
-
-    strengths
-}
-
-fn normalize_setting(value: f32, min: f32, max: f32) -> f32 {
-    ((value - min) / (max - min)).clamp(0.0, 1.0)
-}
-
-fn lerp(start: f32, end: f32, t: f32) -> f32 {
-    start + (end - start) * t.clamp(0.0, 1.0)
-}
-
-fn waterfall_color(value: f32, age: f32) -> Color32 {
-    let intensity = value.clamp(0.0, 1.0);
-    let fade = (0.35 + age * 0.65).clamp(0.0, 1.0);
-    let r = (34.0 + intensity * 138.0 * fade).round() as u8;
-    let g = (42.0 + intensity * 120.0 * fade).round() as u8;
-    let b = (52.0 + intensity * 92.0 * fade).round() as u8;
-    Color32::from_rgb(r, g, b)
-}
-
 fn midi_to_frequency(midi: f32) -> f32 {
     440.0 * 2.0_f32.powf((midi - 69.0) / 12.0)
 }
@@ -661,18 +528,5 @@ impl eframe::App for App {
     /// snapshot of preferences to RON (eframe's `set_value` uses `ron::ser`).
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, &self.snapshot_persistent());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::note_label_pitch_class;
-
-    #[test]
-    fn note_label_pitch_class_reads_sharp_flat_and_natural_notes() {
-        assert_eq!(note_label_pitch_class("C2"), Some(0));
-        assert_eq!(note_label_pitch_class("F3"), Some(5));
-        assert_eq!(note_label_pitch_class("G#4"), Some(8));
-        assert_eq!(note_label_pitch_class("Bb5"), Some(10));
     }
 }
