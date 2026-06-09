@@ -35,6 +35,8 @@ use crate::ui::theme::PANEL_FILL;
 
 impl App {
     pub(super) fn draw_controls(&mut self, ui: &mut Ui) {
+        self.refresh_audio_inputs_if_stale();
+
         let mut input_gain = self.audio.input_gain();
         let input_level = self.audio.input_level();
         let mut monitor_enabled = self.audio.monitor_enabled();
@@ -87,10 +89,11 @@ impl App {
                             },
                         ))
                         .corner_radius(CornerRadius::same(14));
-                    if ui.add_enabled(has_microphone_input, mic_button).clicked()
-                        && let Some(input_id) = self.preferred_input_id(AudioInputKind::Microphone)
-                    {
-                        self.audio.set_selected_input_id(Some(input_id));
+                    if ui.add_enabled(has_microphone_input, mic_button).clicked() {
+                        self.refresh_audio_inputs();
+                        if let Some(input_id) = self.preferred_input_id(AudioInputKind::Microphone) {
+                            self.audio.set_selected_input_id(Some(input_id));
+                        }
                     }
 
                     let system_button = egui::Button::new("System")
@@ -109,10 +112,11 @@ impl App {
                             },
                         ))
                         .corner_radius(CornerRadius::same(14));
-                    if ui.add_enabled(has_system_input, system_button).clicked()
-                        && let Some(input_id) = self.preferred_input_id(AudioInputKind::System)
-                    {
-                        self.audio.set_selected_input_id(Some(input_id));
+                    if ui.add_enabled(has_system_input, system_button).clicked() {
+                        self.refresh_audio_inputs();
+                        if let Some(input_id) = self.preferred_input_id(AudioInputKind::System) {
+                            self.audio.set_selected_input_id(Some(input_id));
+                        }
                     }
 
                     ui.separator();
@@ -147,7 +151,7 @@ impl App {
                         });
 
                     if ui.button("Refresh inputs").clicked() {
-                        self.audio_inputs = self.audio.available_inputs();
+                        self.refresh_audio_inputs();
                     }
                 });
 
