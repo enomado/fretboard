@@ -72,7 +72,7 @@ pub fn parse_anote(input: &str) -> IResult<&str, ANote> {
 
 /// Парсинг списка нот, разделённых длинным тире
 pub fn parse_notes(input: &str) -> IResult<&str, Vec<ANote>> {
-    separated_list1(tag("–"), parse_anote).parse(input)
+    separated_list1(alt((tag("-"), tag("–"), tag("—"))), parse_anote).parse(input)
 }
 
 #[test]
