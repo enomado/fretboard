@@ -190,6 +190,23 @@ enum WorkspaceTab {
 }
 
 impl WorkspaceTab {
+    /// Полный реестр панелей — источник для меню «Panels» (открыть/закрыть)
+    /// и для дефолтной раскладки. Порядок = порядок в меню.
+    const ALL: [Self; 12] = [
+        Self::Controls,
+        Self::FretboardControls,
+        Self::InputScope,
+        Self::ConfigGeneral,
+        Self::ConfigFft1,
+        Self::ConfigResonatorFft,
+        Self::Fretboard,
+        Self::LiveAnalysis,
+        Self::ScaleFinder,
+        Self::ResonatorBank,
+        Self::ResonatorSnail,
+        Self::ResonatorWaterfall,
+    ];
+
     fn label(self) -> &'static str {
         match self {
             Self::Controls => "Controls",
