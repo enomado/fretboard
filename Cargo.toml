@@ -63,6 +63,15 @@ theme = "@style/AppTheme"
 min_sdk_version = 26
 target_sdk_version = 34
 
+# Release-сборка (`cargo apk build --lib --release`) обязана быть подписана.
+# Для локальных perf-/dev-прогонов подписываем стандартным debug-keystore
+# (`~/.android/debug.keystore`, пароль "android" — публичный, не секрет). Это даёт
+# оптимизированный (release-profile) APK без заведения отдельного релизного ключа;
+# для публикации в стор нужен настоящий ключ — заменить path/пароль здесь.
+[package.metadata.android.signing.release]
+path = "/home/sc/.android/debug.keystore"
+keystore_password = "android"
+
 # Снейл питается с микрофона → без RECORD_AUDIO банк резонаторов молчит.
 # Это dangerous-permission: на minSdk 26 / target 34 манифестной декларации мало,
 # нужен ещё runtime-запрос (см. android_main), иначе AAudio отдаёт тишину.
@@ -72,7 +81,7 @@ name = "android.permission.RECORD_AUDIO"
 [package.metadata.android.application.activity]
 config_changes = "orientation|screenSize|keyboardHidden"
 exported = true
-orientation = "sensorLandscape"
+orientation = "portrait"
 
 [profile]
 
