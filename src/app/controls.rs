@@ -468,12 +468,15 @@ impl App {
             "Config: Resonator FFT",
             "Resonator bank range, density, and response",
             |settings, defaults| {
-                settings.resonator_min_midi = defaults.resonator_min_midi;
-                settings.resonator_max_midi = defaults.resonator_max_midi;
-                settings.resonator_bins = defaults.resonator_bins;
-                settings.resonator_alpha = defaults.resonator_alpha;
-                settings.resonator_beta = defaults.resonator_beta;
-                settings.resonator_gamma = defaults.resonator_gamma;
+                settings.resonator.min_midi = defaults.resonator.min_midi;
+                settings.resonator.max_midi = defaults.resonator.max_midi;
+                settings.resonator.bins = defaults.resonator.bins;
+                settings.resonator.alpha = defaults.resonator.alpha;
+                settings.resonator.beta = defaults.resonator.beta;
+                settings.resonator.gamma = defaults.resonator.gamma;
+                settings.resonator.history = defaults.resonator.history;
+                settings.resonator.update_ms = defaults.resonator.update_ms;
+                settings.resonator.power = defaults.resonator.power;
             },
             Self::draw_resonator_fft_config_tab,
         );
@@ -729,14 +732,14 @@ impl App {
             if ui
                 .add_sized(
                     [140.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator_min_midi, 12..=84).show_value(false),
+                    egui::Slider::new(&mut settings.resonator.min_midi, 12..=84).show_value(false),
                 )
                 .changed()
             {
                 *changed = true;
             }
             ui.label(
-                RichText::new(midi_label(settings.resonator_min_midi))
+                RichText::new(midi_label(settings.resonator.min_midi))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -750,14 +753,14 @@ impl App {
             if ui
                 .add_sized(
                     [140.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator_max_midi, 24..=108).show_value(false),
+                    egui::Slider::new(&mut settings.resonator.max_midi, 24..=108).show_value(false),
                 )
                 .changed()
             {
                 *changed = true;
             }
             ui.label(
-                RichText::new(midi_label(settings.resonator_max_midi))
+                RichText::new(midi_label(settings.resonator.max_midi))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -772,14 +775,14 @@ impl App {
             if ui
                 .add_sized(
                     [120.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator_bins, 1..=12).show_value(false),
+                    egui::Slider::new(&mut settings.resonator.bins, 1..=12).show_value(false),
                 )
                 .changed()
             {
                 *changed = true;
             }
             ui.label(
-                RichText::new(settings.resonator_bins.to_string())
+                RichText::new(settings.resonator.bins.to_string())
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -795,14 +798,14 @@ impl App {
             if ui
                 .add_sized(
                     [150.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator_alpha, 0.2..=4.0).show_value(false),
+                    egui::Slider::new(&mut settings.resonator.alpha, 0.05..=12.0).show_value(false),
                 )
                 .changed()
             {
                 *changed = true;
             }
             ui.label(
-                RichText::new(format!("{:.2}", settings.resonator_alpha))
+                RichText::new(format!("{:.2}", settings.resonator.alpha))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -817,14 +820,14 @@ impl App {
             if ui
                 .add_sized(
                     [150.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator_beta, 0.2..=4.0).show_value(false),
+                    egui::Slider::new(&mut settings.resonator.beta, 0.05..=12.0).show_value(false),
                 )
                 .changed()
             {
                 *changed = true;
             }
             ui.label(
-                RichText::new(format!("{:.2}", settings.resonator_beta))
+                RichText::new(format!("{:.2}", settings.resonator.beta))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -839,14 +842,90 @@ impl App {
             if ui
                 .add_sized(
                     [150.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator_gamma, 0.35..=1.2).show_value(false),
+                    egui::Slider::new(&mut settings.resonator.gamma, 0.15..=2.4).show_value(false),
                 )
                 .changed()
             {
                 *changed = true;
             }
             ui.label(
-                RichText::new(format!("{:.2}", settings.resonator_gamma))
+                RichText::new(format!("{:.2}", settings.resonator.gamma))
+                    .color(Color32::from_rgb(226, 216, 201))
+                    .monospace(),
+            );
+        });
+
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new("Mode")
+                    .color(Color32::from_rgb(205, 194, 176))
+                    .strong(),
+            );
+            for (label, power) in [("Magnitude", false), ("Power", true)] {
+                let selected = settings.resonator.power == power;
+                let button = egui::Button::new(label)
+                    .min_size(egui::vec2(82.0, 24.0))
+                    .fill(if selected {
+                        Color32::from_rgb(112, 86, 72)
+                    } else {
+                        Color32::from_rgb(42, 46, 52)
+                    })
+                    .stroke(egui::Stroke::new(
+                        1.0_f32,
+                        if selected {
+                            Color32::from_rgb(207, 187, 166)
+                        } else {
+                            Color32::from_rgb(84, 89, 97)
+                        },
+                    ))
+                    .corner_radius(egui::CornerRadius::same(12));
+                if ui.add(button).clicked() && settings.resonator.power != power {
+                    settings.resonator.power = power;
+                    *changed = true;
+                }
+            }
+
+            ui.add_space(10.0);
+
+            ui.label(
+                RichText::new("History")
+                    .color(Color32::from_rgb(205, 194, 176))
+                    .strong(),
+            );
+            if ui
+                .add_sized(
+                    [120.0, 18.0],
+                    egui::Slider::new(&mut settings.resonator.history, 8..=240).show_value(false),
+                )
+                .changed()
+            {
+                *changed = true;
+            }
+            ui.label(
+                RichText::new(settings.resonator.history.to_string())
+                    .color(Color32::from_rgb(226, 216, 201))
+                    .monospace(),
+            );
+
+            ui.add_space(10.0);
+
+            ui.label(
+                RichText::new("Update")
+                    .color(Color32::from_rgb(205, 194, 176))
+                    .strong(),
+            );
+            if ui
+                .add_sized(
+                    [120.0, 18.0],
+                    egui::Slider::new(&mut settings.resonator.update_ms, 8..=80).show_value(false),
+                )
+                .changed()
+            {
+                *changed = true;
+            }
+            ui.label(
+                RichText::new(format!("{} ms", settings.resonator.update_ms))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );

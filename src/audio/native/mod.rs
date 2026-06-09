@@ -102,7 +102,6 @@ pub(super) mod imp {
     const MAX_WINDOW_SIZE: usize = 16384;
     const WATERFALL_HISTORY: usize = 52;
     const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
-    const RESONATOR_INTERVAL: Duration = Duration::from_millis(16);
     const SILENCE_RMS_THRESHOLD: f32 = 0.0;
     const INPUT_WAVEFORM_HISTORY: usize = 2048;
 
@@ -1108,7 +1107,7 @@ pub(super) mod imp {
         fn new(sample_rate: f32) -> Self {
             Self {
                 analyzer:     ResonatorAnalyzer::new(sample_rate),
-                last_publish: Instant::now() - RESONATOR_INTERVAL,
+                last_publish: Instant::now() - Duration::from_millis(16),
             }
         }
 
@@ -1126,11 +1125,16 @@ pub(super) mod imp {
             let samples: Vec<f32> = samples.into_iter().map(|sample| sample * gain).collect();
             self.analyzer.process_samples(&samples);
 
-            if self.last_publish.elapsed() < RESONATOR_INTERVAL {
+            let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
+            if self.last_publish.elapsed() < publish_interval {
                 return;
             }
             self.last_publish = Instant::now();
-            publish_resonator_snapshot(shared, self.analyzer.snapshot());
+            publish_resonator_snapshot(
+                shared,
+                self.analyzer.snapshot(),
+                analysis_settings.resonator.history,
+            );
         }
 
         fn sync_settings(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
@@ -1320,7 +1324,11 @@ pub(super) mod imp {
         }
     }
 
-    fn publish_resonator_snapshot(shared: &Arc<Mutex<SharedState>>, snapshot: ResonatorSnapshot) {
+    fn publish_resonator_snapshot(
+        shared: &Arc<Mutex<SharedState>>,
+        snapshot: ResonatorSnapshot,
+        history_len: usize,
+    ) {
         if let Ok(mut state) = shared.lock() {
             state.resonator_spectrum = snapshot.spectrum;
             state.resonator_labels = snapshot.note_labels;
@@ -1329,7 +1337,7 @@ pub(super) mod imp {
             push_limited_history(
                 &mut state.resonator_waterfall,
                 resonator_spectrum.clone(),
-                WATERFALL_HISTORY,
+                history_len,
             );
             let resonator_waterfall: Vec<Vec<f32>> = state.resonator_waterfall.iter().cloned().collect();
 

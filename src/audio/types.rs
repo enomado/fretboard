@@ -54,12 +54,20 @@ pub struct AnalysisSettings {
     pub note_spread:        f32,
     pub spectrum_gamma:     f32,
     pub note_gamma:         f32,
-    pub resonator_min_midi: usize,
-    pub resonator_max_midi: usize,
-    pub resonator_bins:     usize,
-    pub resonator_alpha:    f32,
-    pub resonator_beta:     f32,
-    pub resonator_gamma:    f32,
+    pub resonator:          ResonatorSettings,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResonatorSettings {
+    pub min_midi:  usize,
+    pub max_midi:  usize,
+    pub bins:      usize,
+    pub alpha:     f32,
+    pub beta:      f32,
+    pub gamma:     f32,
+    pub history:   usize,
+    pub update_ms: u64,
+    pub power:     bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -84,12 +92,23 @@ impl Default for AnalysisSettings {
             note_spread:        0.35,
             spectrum_gamma:     0.58,
             note_gamma:         0.72,
-            resonator_min_midi: 12,
-            resonator_max_midi: 84,
-            resonator_bins:     5,
-            resonator_alpha:    1.0,
-            resonator_beta:     1.0,
-            resonator_gamma:    0.72,
+            resonator:          ResonatorSettings::default(),
+        }
+    }
+}
+
+impl Default for ResonatorSettings {
+    fn default() -> Self {
+        Self {
+            min_midi:  12,
+            max_midi:  84,
+            bins:      5,
+            alpha:     1.0,
+            beta:      1.0,
+            gamma:     0.72,
+            history:   52,
+            update_ms: 16,
+            power:     false,
         }
     }
 }
@@ -116,15 +135,25 @@ impl AnalysisSettings {
         self.note_spread = self.note_spread.clamp(0.15, 0.8);
         self.spectrum_gamma = self.spectrum_gamma.clamp(0.35, 1.2);
         self.note_gamma = self.note_gamma.clamp(0.35, 1.2);
-        self.resonator_min_midi = self.resonator_min_midi.clamp(12, 84);
-        self.resonator_max_midi = self.resonator_max_midi.clamp(24, 108);
-        if self.resonator_max_midi <= self.resonator_min_midi + 6 {
-            self.resonator_max_midi = (self.resonator_min_midi + 6).clamp(24, 108);
+        self.resonator = self.resonator.sanitized();
+        self
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ResonatorSettings {
+    pub(crate) fn sanitized(mut self) -> Self {
+        self.min_midi = self.min_midi.clamp(12, 84);
+        self.max_midi = self.max_midi.clamp(24, 108);
+        if self.max_midi <= self.min_midi + 6 {
+            self.max_midi = (self.min_midi + 6).clamp(24, 108);
         }
-        self.resonator_bins = self.resonator_bins.clamp(1, 12);
-        self.resonator_alpha = self.resonator_alpha.clamp(0.2, 4.0);
-        self.resonator_beta = self.resonator_beta.clamp(0.2, 4.0);
-        self.resonator_gamma = self.resonator_gamma.clamp(0.35, 1.2);
+        self.bins = self.bins.clamp(1, 12);
+        self.alpha = self.alpha.clamp(0.05, 12.0);
+        self.beta = self.beta.clamp(0.05, 12.0);
+        self.gamma = self.gamma.clamp(0.15, 2.4);
+        self.history = self.history.clamp(8, 240);
+        self.update_ms = self.update_ms.clamp(8, 80);
         self
     }
 }
@@ -144,12 +173,17 @@ mod tests {
             note_spread:        0.01,
             spectrum_gamma:     0.01,
             note_gamma:         9.0,
-            resonator_min_midi: 10,
-            resonator_max_midi: 11,
-            resonator_bins:     99,
-            resonator_alpha:    0.01,
-            resonator_beta:     9.0,
-            resonator_gamma:    9.0,
+            resonator:          ResonatorSettings {
+                min_midi:  10,
+                max_midi:  11,
+                bins:      99,
+                alpha:     0.01,
+                beta:      9.0,
+                gamma:     9.0,
+                history:   999,
+                update_ms: 1,
+                power:     false,
+            },
         }
         .sanitized();
 
@@ -158,7 +192,12 @@ mod tests {
         assert!(settings.max_frequency > settings.min_frequency);
         assert!(settings.spectrum_smoothing <= 4);
         assert!((0.15..=0.8).contains(&settings.note_spread));
-        assert!(settings.resonator_max_midi > settings.resonator_min_midi);
-        assert!((1..=12).contains(&settings.resonator_bins));
+        assert!(settings.resonator.max_midi > settings.resonator.min_midi);
+        assert!((1..=12).contains(&settings.resonator.bins));
+        assert!((0.05..=12.0).contains(&settings.resonator.alpha));
+        assert!((0.05..=12.0).contains(&settings.resonator.beta));
+        assert!((0.15..=2.4).contains(&settings.resonator.gamma));
+        assert!((8..=240).contains(&settings.resonator.history));
+        assert!((8..=80).contains(&settings.resonator.update_ms));
     }
 }
