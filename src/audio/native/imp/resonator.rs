@@ -26,6 +26,8 @@ pub(super) struct ResonatorViewSettings {
     beta_scale:        f32,
     gamma:             f32,
     power:             bool,
+    // Эталон A4: меняется камертон → пересобираем банк (PartialEq ловит сдвиг).
+    reference_hz:      f32,
 }
 
 #[derive(Clone, Debug)]
@@ -57,6 +59,7 @@ impl Default for ResonatorViewSettings {
             beta_scale:        1.0,
             gamma:             0.72,
             power:             false,
+            reference_hz:      440.0,
         }
     }
 }
@@ -73,6 +76,7 @@ impl From<&AnalysisSettings> for ResonatorViewSettings {
             beta_scale:        s.resonator.beta,
             gamma:             s.resonator.gamma,
             power:             s.resonator.power,
+            reference_hz:      s.concert_pitch_hz,
         }
     }
 }
@@ -115,7 +119,7 @@ fn build_resonator_bank(sample_rate: f32, settings: &ResonatorViewSettings) -> R
     let configs: Vec<ResonatorConfig> = (0..bin_count)
         .map(|i| {
             let midi = settings.min_midi as f32 + i as f32 / settings.bins_per_semitone as f32;
-            let frequency = midi_to_hz(midi, 440.0);
+            let frequency = midi_to_hz(midi, settings.reference_hz);
             let alpha = (heuristic_alpha(frequency, sample_rate) * settings.alpha_scale).clamp(0.0001, 1.0);
             let beta = (heuristic_alpha(frequency, sample_rate) * settings.beta_scale).clamp(0.0001, 1.0);
             ResonatorConfig::new(frequency, alpha, beta)

@@ -7,8 +7,8 @@ pub(super) const SPIRAL_BIN_COUNT: usize =
 
 const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
-pub(super) fn frequency_to_note(frequency_hz: f32) -> (String, f32) {
-    let midi = 69.0 + 12.0 * (frequency_hz / 440.0).log2();
+pub(super) fn frequency_to_note(frequency_hz: f32, reference_hz: f32) -> (String, f32) {
+    let midi = 69.0 + 12.0 * (frequency_hz / reference_hz).log2();
     let nearest = midi.round();
     let cents = (midi - nearest) * 100.0;
     let note_index = ((nearest as i32).rem_euclid(12)) as usize;
@@ -89,11 +89,17 @@ pub(super) fn spectrum_bucket_index(frequency: f32, min_frequency: f32, max_freq
     Some((normalized * (SPECTRUM_BINS - 1) as f32).round() as usize)
 }
 
-pub(super) fn accumulate_note_energy(note_bars: &mut [f32], frequency: f32, energy: f32, note_spread: f32) {
+pub(super) fn accumulate_note_energy(
+    note_bars: &mut [f32],
+    frequency: f32,
+    energy: f32,
+    note_spread: f32,
+    reference_hz: f32,
+) {
     if frequency <= 0.0 || note_bars.is_empty() {
         return;
     }
-    let midi = 69.0 + 12.0 * (frequency / 440.0).log2();
+    let midi = 69.0 + 12.0 * (frequency / reference_hz).log2();
     let note_position = midi - NOTE_BUCKET_MIN_MIDI as f32;
     let center = note_position.round() as isize;
     for index in (center - 2)..=(center + 2) {
@@ -109,11 +115,11 @@ pub(super) fn accumulate_note_energy(note_bars: &mut [f32], frequency: f32, ener
     }
 }
 
-pub(super) fn accumulate_spiral_energy(spiral_bars: &mut [f32], frequency: f32, energy: f32) {
+pub(super) fn accumulate_spiral_energy(spiral_bars: &mut [f32], frequency: f32, energy: f32, reference_hz: f32) {
     if frequency <= 0.0 || spiral_bars.is_empty() {
         return;
     }
-    let midi = 69.0 + 12.0 * (frequency / 440.0).log2();
+    let midi = 69.0 + 12.0 * (frequency / reference_hz).log2();
     if !(NOTE_BUCKET_MIN_MIDI as f32..=NOTE_BUCKET_MAX_MIDI as f32).contains(&midi) {
         return;
     }
@@ -170,7 +176,7 @@ mod tests {
     #[test]
     fn note_energy_prefers_the_closest_semitone() {
         let mut bars = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
-        accumulate_note_energy(&mut bars, 440.0, 1.0, AnalysisSettings::default().note_spread);
+        accumulate_note_energy(&mut bars, 440.0, 1.0, AnalysisSettings::default().note_spread, 440.0);
         let a4_index = 69 - NOTE_BUCKET_MIN_MIDI;
 
         let strongest = bars
@@ -201,11 +207,12 @@ mod tests {
             16.3516,
             1.0,
             AnalysisSettings::default().note_spread,
+            440.0,
         );
         assert!(note_bars[0] > 0.9);
 
         let mut spiral_bars = vec![0.0; SPIRAL_BIN_COUNT];
-        accumulate_spiral_energy(&mut spiral_bars, 32.7032, 1.0);
+        accumulate_spiral_energy(&mut spiral_bars, 32.7032, 1.0, 440.0);
         let c1_index = 12 * 8;
         assert!(spiral_bars[c1_index] > 0.9);
     }

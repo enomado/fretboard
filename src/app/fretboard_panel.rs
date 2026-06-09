@@ -226,8 +226,9 @@ impl App {
         let Some(reading) = self.audio.reading() else {
             return Vec::new();
         };
-        let detected_midi = frequency_to_midi(reading.frequency_hz).round() as u8;
-        let detected_frequency = midi_to_frequency(detected_midi as f32);
+        let reference_hz = self.audio.analysis_settings().concert_pitch_hz;
+        let detected_midi = frequency_to_midi(reading.frequency_hz, reference_hz).round() as u8;
+        let detected_frequency = midi_to_frequency(detected_midi as f32, reference_hz);
         let cents = 1200.0 * (reading.frequency_hz / detected_frequency).log2();
         let mut matches = Vec::new();
 

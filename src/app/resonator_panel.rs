@@ -147,6 +147,34 @@ impl App {
         let mut settings = self.audio.analysis_settings();
         let mut changed = false;
 
+        // Эталон A4 (камертон): тот же стандарт строя, что и на десктопе, но в
+        // мобильной полосе — иначе на Android его негде задать (вкладочной
+        // раскладки с `draw_fretboard_controls` тут нет). Плавно, 400..466 Гц.
+        mobile_slider(ui, "Pitch A4", &mut changed, |ui, c| {
+            // Слайдер ведёт грубо по всему 66-герцовому диапазону; пальцем в
+            // точный академ. строй (440/442/443) по нему не попасть, поэтому
+            // рядом — кнопочки −/+ для тонкой настройки. Они нуджат камертон со
+            // снапом на сетку STEP, так что повторные тапы шагают по круглым
+            // значениям. Клампим тем же [400, 466], что и `sanitize()`, иначе
+            // выход за границы тихо срежется при `set_analysis_settings`.
+            const STEP: f32 = 0.5;
+            let snap = |hz: f32| (hz / STEP).round() * STEP;
+            if ui.small_button("−").clicked() {
+                settings.concert_pitch_hz = snap(settings.concert_pitch_hz - STEP).clamp(400.0, 466.0);
+                *c = true;
+            }
+            *c |= ui
+                .add_sized(
+                    [104.0, 20.0],
+                    egui::Slider::new(&mut settings.concert_pitch_hz, 400.0..=466.0).show_value(false),
+                )
+                .changed();
+            if ui.small_button("+").clicked() {
+                settings.concert_pitch_hz = snap(settings.concert_pitch_hz + STEP).clamp(400.0, 466.0);
+                *c = true;
+            }
+            format!("{:.1} Hz", settings.concert_pitch_hz)
+        });
         mobile_slider(ui, "Spread", &mut changed, |ui, c| {
             *c |= ui
                 .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.note_spread, 0.15..=0.8).show_value(false))

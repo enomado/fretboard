@@ -432,6 +432,31 @@ impl App {
                                 ui.selectable_value(&mut self.scale_kind, scale, scale.label());
                             }
                         });
+
+                    ui.separator();
+
+                    // Эталон A4 (камертон): плавная подстройка стандарта строя
+                    // прямо в основной панели — как на физическом тюнере.
+                    ui.label(
+                        RichText::new("A4")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    let mut settings = self.audio.analysis_settings();
+                    let pitch_changed = ui
+                        .add_sized(
+                            [150.0, 18.0],
+                            egui::Slider::new(&mut settings.concert_pitch_hz, 415.0..=466.0).show_value(false),
+                        )
+                        .changed();
+                    ui.label(
+                        RichText::new(format!("{:.1} Hz", settings.concert_pitch_hz))
+                            .color(Color32::from_rgb(226, 216, 201))
+                            .monospace(),
+                    );
+                    if pitch_changed {
+                        self.audio.set_analysis_settings(settings);
+                    }
                 });
             });
     }

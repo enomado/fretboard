@@ -52,6 +52,14 @@ pub struct AnalysisSettings {
     pub fft_size:           usize,
     pub min_frequency:      f32,
     pub max_frequency:      f32,
+    /// Эталон A4 (камертон / concert pitch) в Гц. Задаёт стандарт строя:
+    /// 440 — ISO, 442/443 — многие европейские оркестры, 430 — классика,
+    /// 415 — барокко. Влияет на маппинг частота↔нота во всём движке.
+    ///
+    /// `serde(default)` — мягкая миграция: в RON прошлых версий поля нет, и без
+    /// дефолта весь снимок настроек сбросился бы. Берём 440.0 (а НЕ `f32`-ноль).
+    #[serde(default = "default_concert_pitch_hz")]
+    pub concert_pitch_hz:   f32,
     pub spectrum_smoothing: usize,
     pub note_spread:        f32,
     pub spectrum_gamma:     f32,
@@ -83,6 +91,10 @@ const MAX_FFT_SIZE: usize = 32768;
 #[cfg(not(target_arch = "wasm32"))]
 const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
 
+fn default_concert_pitch_hz() -> f32 {
+    440.0
+}
+
 impl Default for AnalysisSettings {
     fn default() -> Self {
         Self {
@@ -90,6 +102,7 @@ impl Default for AnalysisSettings {
             fft_size:           16384,
             min_frequency:      16.0,
             max_frequency:      2_000.0,
+            concert_pitch_hz:   440.0,
             spectrum_smoothing: 1,
             note_spread:        0.35,
             spectrum_gamma:     0.58,
@@ -133,6 +146,11 @@ impl AnalysisSettings {
         if self.max_frequency <= self.min_frequency + 40.0 {
             self.max_frequency = (self.min_frequency + 40.0).clamp(120.0, 4_000.0);
         }
+        // Камертон: нижняя граница 400 Гц (чуть ниже барочного 415 — под
+        // верди-строй и исторические низкие диапазоны), верхняя 466.16 (A#4).
+        // Покрывает все академические стандарты (430/440/442/443/444) и не
+        // даёт уехать в бессмыслицу.
+        self.concert_pitch_hz = self.concert_pitch_hz.clamp(400.0, 466.0);
         self.spectrum_smoothing = self.spectrum_smoothing.min(4);
         self.note_spread = self.note_spread.clamp(0.15, 0.8);
         self.spectrum_gamma = self.spectrum_gamma.clamp(0.35, 1.2);
@@ -176,6 +194,7 @@ mod tests {
             fft_size:           1_000,
             min_frequency:      900.0,
             max_frequency:      920.0,
+            concert_pitch_hz:   900.0,
             spectrum_smoothing: 12,
             note_spread:        0.01,
             spectrum_gamma:     0.01,
@@ -197,6 +216,7 @@ mod tests {
         assert!(settings.window_size >= MIN_WINDOW_SIZE);
         assert!(settings.fft_size >= settings.window_size.next_power_of_two());
         assert!(settings.max_frequency > settings.min_frequency);
+        assert!((400.0..=466.0).contains(&settings.concert_pitch_hz));
         assert!(settings.spectrum_smoothing <= 4);
         assert!((0.15..=0.8).contains(&settings.note_spread));
         assert!(settings.resonator.max_midi > settings.resonator.min_midi);
@@ -206,5 +226,17 @@ mod tests {
         assert!((0.15..=2.4).contains(&settings.resonator.gamma));
         assert!((8..=240).contains(&settings.resonator.history));
         assert!((8..=80).contains(&settings.resonator.update_ms));
+    }
+
+    #[test]
+    fn missing_concert_pitch_in_old_ron_defaults_to_a440() {
+        // Снимок до появления камертона: поля concert_pitch_hz нет. Мягкая
+        // миграция должна подставить 440.0, а не уронить разбор всего снимка.
+        let ron = ron::ser::to_string(&AnalysisSettings::default()).unwrap();
+        let legacy = ron.replace(",concert_pitch_hz:440.0", "");
+        assert!(!legacy.contains("concert_pitch_hz"), "field must be absent for the test to be meaningful");
+
+        let restored: AnalysisSettings = ron::from_str(&legacy).unwrap();
+        assert_eq!(restored.concert_pitch_hz, 440.0);
     }
 }

@@ -67,8 +67,14 @@ fn spectrum_bars(
         {
             bars[bucket] += *magnitude;
         }
-        accumulate_note_energy(&mut note_bars, frequency, *magnitude, settings.note_spread);
-        accumulate_spiral_energy(&mut spiral_bars, frequency, *magnitude);
+        accumulate_note_energy(
+            &mut note_bars,
+            frequency,
+            *magnitude,
+            settings.note_spread,
+            settings.concert_pitch_hz,
+        );
+        accumulate_spiral_energy(&mut spiral_bars, frequency, *magnitude, settings.concert_pitch_hz);
     }
 
     normalize_bars(&mut bars, settings.spectrum_gamma);
