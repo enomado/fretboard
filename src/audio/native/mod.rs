@@ -70,11 +70,10 @@ pub(super) mod imp {
     };
     use devices::{
         cpal_device_display_name,
-        cpal_device_route_id,
         enumerate_input_options,
         low_latency_monitor_ring_len,
         preferred_low_latency_buffer,
-        select_input_device,
+        select_cpal_capture,
     };
     use pitch::{
         LOWEST_TRACKED_FREQUENCY,
@@ -88,6 +87,7 @@ pub(super) mod imp {
     use spectrum::spectrum_bars_for_window;
 
     const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
+    const CPAL_DEFAULT_OUTPUT_LOOPBACK_ID: &str = "cpal-loopback::@DEFAULT_OUTPUT@";
     const PULSE_INPUT_ID_PREFIX: &str = "pulse::";
     const PULSE_DEFAULT_SOURCE_ID: &str = "pulse::@DEFAULT_SOURCE@";
     const PULSE_DEFAULT_MONITOR_ID: &str = "pulse::@DEFAULT_MONITOR@";
@@ -467,11 +467,10 @@ pub(super) mod imp {
 
         fn build_cpal_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
             let host = cpal::default_host();
-            let device = select_input_device(&host, id.as_deref())?;
-            let selected_id = cpal_device_route_id(&device);
-            let config = device
-                .default_input_config()
-                .map_err(|e| format!("Input config error: {e}"))?;
+            let capture = select_cpal_capture(&host, id.as_deref())?;
+            let device = capture.device;
+            let selected_id = capture.selected_id;
+            let config = capture.config;
             let sample_rate = config.sample_rate();
             let channels = usize::from(config.channels());
             let sample_format = config.sample_format();

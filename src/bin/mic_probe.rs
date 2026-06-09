@@ -31,6 +31,7 @@ mod native {
         route:   String,
         label:   String,
         device:  Option<cpal::Device>,
+        loopback: bool,
     }
 
     #[derive(Clone, Debug, Default)]
@@ -128,11 +129,24 @@ mod native {
                 route:   "@DEFAULT_SOURCE@".to_owned(),
                 label:   "Default microphone (Pulse/PipeWire)".to_owned(),
                 device:  None,
+                loopback: false,
             });
             candidates.extend(pulse_source_candidates());
         }
 
         let host = cpal::default_host();
+        #[cfg(target_os = "windows")]
+        if let Some(device) = host.default_output_device() {
+            let name = cpal_device_display_name(&device);
+            candidates.push(Candidate {
+                backend: "wasapi".to_owned(),
+                route:   "@DEFAULT_OUTPUT_LOOPBACK@".to_owned(),
+                label:   format!("{name} (default output loopback)"),
+                device:  Some(device),
+                loopback: true,
+            });
+        }
+
         let default_name = host
             .default_input_device()
             .map(|device| cpal_device_display_name(&device));
@@ -149,6 +163,7 @@ mod native {
                     route:   name.clone(),
                     label:   format!("{name}{default_tag}"),
                     device:  Some(device),
+                    loopback: false,
                 });
             }
         }
@@ -204,6 +219,7 @@ mod native {
             route: name,
             label,
             device: None,
+            loopback: false,
         });
     }
 
@@ -279,7 +295,11 @@ mod native {
     }
 
     fn probe_cpal(candidate: Candidate, device: &cpal::Device, duration: Duration) -> ProbeResult {
-        let config = match device.default_input_config() {
+        let config = match if candidate.loopback {
+            device.default_output_config()
+        } else {
+            device.default_input_config()
+        } {
             Ok(config) => config,
             Err(err) => return error_result(candidate, format!("config:{err}"), None),
         };

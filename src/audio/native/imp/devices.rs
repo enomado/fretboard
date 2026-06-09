@@ -10,10 +10,13 @@ use cpal::traits::{
 };
 use cpal::{
     BufferSize,
+    Device,
     SupportedBufferSize,
+    SupportedStreamConfig,
 };
 
 use super::{
+    CPAL_DEFAULT_OUTPUT_LOOPBACK_ID,
     CPAL_INPUT_ID_PREFIX,
     LOW_LATENCY_TARGET_FRAMES,
     PULSE_DEFAULT_MONITOR_ID,
@@ -54,6 +57,20 @@ pub(super) fn enumerate_input_options() -> Vec<AudioInputOption> {
             AudioInputOption {
                 id:    PULSE_DEFAULT_MONITOR_ID.to_owned(),
                 label: "System • Default monitor (Pulse/PipeWire)".to_owned(),
+                kind:  AudioInputKind::System,
+            },
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(device) = cpal::default_host().default_output_device() {
+        let name = cpal_device_display_name(&device);
+        push_unique_input(
+            &mut options,
+            &mut seen,
+            AudioInputOption {
+                id:    CPAL_DEFAULT_OUTPUT_LOOPBACK_ID.to_owned(),
+                label: format!("System • {name} (WASAPI loopback)"),
                 kind:  AudioInputKind::System,
             },
         );
@@ -197,10 +214,41 @@ fn input_option_sort_key(option: &AudioInputOption) -> (u8, u8, String) {
     (kind_rank, route_rank, option.label.to_lowercase())
 }
 
-pub(super) fn select_input_device(
-    host: &cpal::Host,
-    requested: Option<&str>,
-) -> Result<cpal::Device, String> {
+pub(super) struct SelectedCpalCapture {
+    pub device:      Device,
+    pub selected_id: String,
+    pub config:      SupportedStreamConfig,
+}
+
+pub(super) fn select_cpal_capture(host: &cpal::Host, requested: Option<&str>) -> Result<SelectedCpalCapture, String> {
+    #[cfg(target_os = "windows")]
+    if requested == Some(CPAL_DEFAULT_OUTPUT_LOOPBACK_ID) {
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| "No output device found for WASAPI loopback".to_owned())?;
+        let config = device
+            .default_output_config()
+            .map_err(|e| format!("Output loopback config error: {e}"))?;
+        return Ok(SelectedCpalCapture {
+            device,
+            selected_id: CPAL_DEFAULT_OUTPUT_LOOPBACK_ID.to_owned(),
+            config,
+        });
+    }
+
+    let device = select_input_device(host, requested)?;
+    let selected_id = cpal_device_route_id(&device);
+    let config = device
+        .default_input_config()
+        .map_err(|e| format!("Input config error: {e}"))?;
+    Ok(SelectedCpalCapture {
+        device,
+        selected_id,
+        config,
+    })
+}
+
+fn select_input_device(host: &cpal::Host, requested: Option<&str>) -> Result<cpal::Device, String> {
     if let Some(requested) = requested {
         if let Some(device_id) = parse_cpal_device_id(requested)
             && let Some(device) = host.device_by_id(&device_id)
