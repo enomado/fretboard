@@ -7,6 +7,10 @@ mod resonator_panel;
 mod workspace;
 
 use std::ops::Range;
+use std::time::{
+    Duration,
+    Instant,
+};
 
 use eframe::egui::{
     self,
@@ -193,14 +197,15 @@ impl WorkspaceTab {
 }
 
 pub struct App {
-    audio:          AudioEngine,
-    audio_inputs:   Vec<AudioInputOption>,
-    tuning_kind:    TuningKind,
-    scale_kind:     ScaleKind,
-    root_note:      Note,
-    live_chart:     LiveChartKind,
-    test_note_midi: usize,
-    workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
+    audio:                    AudioEngine,
+    audio_inputs:             Vec<AudioInputOption>,
+    last_audio_input_refresh: Instant,
+    tuning_kind:              TuningKind,
+    scale_kind:               ScaleKind,
+    root_note:                Note,
+    live_chart:               LiveChartKind,
+    test_note_midi:           usize,
+    workspace_tree:           Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
 struct HoveredNote {
@@ -229,6 +234,7 @@ impl App {
         Self {
             audio,
             audio_inputs,
+            last_audio_input_refresh: Instant::now(),
             tuning_kind: TuningKind::Cello,
             scale_kind: ScaleKind::BluesMinor,
             root_note: Note::A,
@@ -239,10 +245,27 @@ impl App {
     }
 
     fn selected_input_kind(&self, selected_input_id: Option<&str>) -> AudioInputKind {
+        if let Some(id) = selected_input_id {
+            if id.starts_with("cpal-loopback::") || id.ends_with("@DEFAULT_MONITOR@") || id.ends_with(".monitor") {
+                return AudioInputKind::System;
+            }
+        }
+
         selected_input_id
             .and_then(|id| self.audio_inputs.iter().find(|option| option.id == id))
             .map(|option| option.kind)
             .unwrap_or(AudioInputKind::Other)
+    }
+
+    fn refresh_audio_inputs(&mut self) {
+        self.audio_inputs = self.audio.available_inputs();
+        self.last_audio_input_refresh = Instant::now();
+    }
+
+    fn refresh_audio_inputs_if_stale(&mut self) {
+        if self.last_audio_input_refresh.elapsed() >= Duration::from_secs(2) {
+            self.refresh_audio_inputs();
+        }
     }
 
     fn preferred_input_id(&self, kind: AudioInputKind) -> Option<String> {
@@ -266,6 +289,15 @@ impl App {
                 preferred_pulse_id.and_then(|preferred_id| {
                     self.audio_inputs.iter().find(|option| option.id == preferred_id)
                 })
+            })
+            .or_else(|| {
+                (kind == AudioInputKind::System)
+                    .then(|| {
+                        self.audio_inputs
+                            .iter()
+                            .find(|option| option.id.starts_with("cpal-loopback::"))
+                    })
+                    .flatten()
             })
             .or_else(|| self.audio_inputs.iter().find(|option| option.kind == kind))
             .or_else(|| self.audio_inputs.first())
@@ -339,6 +371,7 @@ fn input_level_label(input_kind: AudioInputKind) -> &'static str {
 fn input_backend_label(selected_input_id: Option<&str>) -> &'static str {
     match selected_input_id {
         Some(id) if id.starts_with("pulse::") => "PulseAudio",
+        Some(id) if id.starts_with("cpal-loopback::") => "WASAPI loopback",
         Some(id) if id.starts_with("cpal::") => "CPAL",
         Some(_) => "Custom",
         None => "None",
@@ -361,6 +394,7 @@ fn input_path_class_label(selected_input_id: Option<&str>) -> &'static str {
         {
             "Monitor source"
         }
+        Some(id) if id.starts_with("cpal-loopback::") => "Loopback source",
         Some(id) if id.starts_with("pulse::") => "Direct source",
         Some(id) if id.starts_with("cpal::") && is_compat_input_path(id) => "Compat path",
         Some(id) if id.starts_with("cpal::") => "Device path",
@@ -379,6 +413,9 @@ fn input_path_detail(selected_input_id: Option<&str>) -> &'static str {
                 && (id.ends_with("@DEFAULT_MONITOR@") || id.ends_with(".monitor")) =>
         {
             "Loopback / monitor source exposed by the audio server."
+        }
+        Some(id) if id.starts_with("cpal-loopback::") => {
+            "Default Windows output captured through WASAPI loopback."
         }
         Some(id) if id.starts_with("pulse::") => "Direct Pulse/PipeWire source path.",
         Some(id) if id.starts_with("cpal::") && is_compat_input_path(id) => {
@@ -423,7 +460,9 @@ fn output_has_bluetooth_risk(output_name: Option<&str>) -> bool {
 }
 
 fn input_supports_monitor(selected_input_id: Option<&str>) -> bool {
-    selected_input_id.is_some_and(|id| !id.ends_with("@DEFAULT_MONITOR@") && !id.ends_with(".monitor"))
+    selected_input_id.is_some_and(|id| {
+        !id.starts_with("cpal-loopback::") && !id.ends_with("@DEFAULT_MONITOR@") && !id.ends_with(".monitor")
+    })
 }
 
 fn waiting_prompt(input_kind: AudioInputKind) -> &'static str {

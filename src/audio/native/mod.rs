@@ -327,9 +327,6 @@ pub(super) mod imp {
         }
 
         pub fn set_selected_input_id(&self, input_id: Option<String>) {
-            if self.selected_input_id() == input_id {
-                return;
-            }
             if let Some(tx) = self.command_tx.as_ref() {
                 let _ = tx.send(Command::SwitchInput(input_id));
             }
