@@ -22,6 +22,7 @@ use super::{
     FRETBOARD_MARGIN_RIGHT,
     FRETBOARD_MARGIN_TOP,
     HoveredNote,
+    ResonatorTarget,
     TunerTarget,
     frequency_to_midi,
     midi_to_frequency,
@@ -59,6 +60,7 @@ impl App {
         let root_pc = PCNote::from_note(self.root_note, Accidental::Natural);
         let scale = self.scale_kind.to_scale(root_pc);
         let tuner_targets = self.filtered_tuner_targets(&tuning, &scale);
+        let resonator_targets = self.resonator_fretboard_targets(&tuning);
 
         Frame::new()
             .fill(PANEL_FILL)
@@ -69,6 +71,11 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(format!("Scale tones: {}", scale.notes().len()))
+                            .color(Color32::from_rgb(143, 150, 160)),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("Resonator notes: {}", resonator_targets.len()))
                             .color(Color32::from_rgb(143, 150, 160)),
                     );
                     ui.separator();
@@ -107,6 +114,9 @@ impl App {
 
                 draw_fret_lines(&painter, fretboard_rect, &fretboard);
                 draw_string_lines_scale(&painter, fretboard_rect, &fretboard, &scale);
+                if !resonator_targets.is_empty() {
+                    self.draw_resonator_targets(&painter, &fretboard, &resonator_targets);
+                }
                 draw_fretboard_scale(painter.clone(), &fretboard, &scale);
                 draw_positions(&painter, fretboard_rect, &fretboard);
                 if !tuner_targets.is_empty() {
@@ -247,6 +257,87 @@ impl App {
         matches
     }
 
+    fn resonator_fretboard_targets(&self, tuning: &Tuning) -> Vec<ResonatorTarget> {
+        let Some(reading) = self.audio.resonator_reading() else {
+            return Vec::new();
+        };
+        if reading.spectrum.is_empty() || reading.note_labels.is_empty() {
+            return Vec::new();
+        }
+
+        let note_strengths = resonator_note_strengths(&reading.spectrum, reading.note_labels.len());
+        let peak = note_strengths.iter().copied().fold(0.0_f32, f32::max);
+        if peak <= 0.0 {
+            return Vec::new();
+        }
+
+        let mean = note_strengths.iter().copied().sum::<f32>() / note_strengths.len().max(1) as f32;
+        let threshold = (mean * 1.75 + 0.06).clamp(0.18, 0.52).min(peak * 0.92);
+        let min_midi = self.audio.analysis_settings().resonator_min_midi;
+        let mut matches = Vec::new();
+
+        for string in 1..=tuning.string_count() {
+            let open = tuning.note(GString(string));
+            for fret in 0..=18 {
+                let note = open.add(Interval(fret as i32));
+                let midi = note.as_u8() as usize;
+                let Some(note_index) = midi.checked_sub(min_midi) else {
+                    continue;
+                };
+                let Some(strength) = note_strengths.get(note_index).copied() else {
+                    continue;
+                };
+                if strength < threshold {
+                    continue;
+                }
+
+                let normalized = if peak > threshold {
+                    ((strength - threshold) / (peak - threshold)).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                matches.push(ResonatorTarget {
+                    string,
+                    fret,
+                    strength: normalized,
+                });
+            }
+        }
+
+        matches.sort_by(|left, right| {
+            right
+                .strength
+                .total_cmp(&left.strength)
+                .then_with(|| left.fret.cmp(&right.fret))
+                .then_with(|| left.string.cmp(&right.string))
+        });
+        matches
+    }
+
+    fn draw_resonator_targets(
+        &self,
+        painter: &egui::Painter,
+        fretboard: &Fretboard,
+        targets: &[ResonatorTarget],
+    ) {
+        for target in targets {
+            let center = pos2(
+                fretboard.fret_pos(Fret(target.fret)),
+                fretboard.string_pos(GString(target.string)),
+            );
+            let strength = target.strength.clamp(0.0, 1.0);
+            let glow_alpha = (34.0 + strength * 96.0).round() as u8;
+            let core_alpha = (80.0 + strength * 150.0).round() as u8;
+            let radius = 12.0 + strength * 8.0;
+            let glow = Color32::from_rgba_unmultiplied(239, 167, 102, glow_alpha);
+            let core = Color32::from_rgba_unmultiplied(255, 213, 149, core_alpha);
+
+            painter.circle_filled(center, radius + 7.0, glow);
+            painter.circle_stroke(center, radius, Stroke::new(1.4 + strength * 1.2, core));
+            painter.circle_filled(center, 2.5 + strength * 2.0, core);
+        }
+    }
+
     fn draw_tuner_targets(&self, painter: &egui::Painter, fretboard: &Fretboard, targets: &[TunerTarget]) {
         for target in targets {
             let center = pos2(
@@ -265,4 +356,29 @@ impl App {
             );
         }
     }
+}
+
+fn resonator_note_strengths(spectrum: &[f32], note_count: usize) -> Vec<f32> {
+    if spectrum.is_empty() || note_count == 0 {
+        return Vec::new();
+    }
+    if note_count == 1 {
+        return vec![spectrum.iter().copied().fold(0.0_f32, f32::max)];
+    }
+
+    let bins_per_note = (spectrum.len().saturating_sub(1) as f32 / (note_count - 1) as f32).max(1.0);
+
+    (0..note_count)
+        .map(|note_index| {
+            let center = note_index as f32 * bins_per_note;
+            let start = (center - bins_per_note * 0.5)
+                .floor()
+                .max(0.0) as usize;
+            let end = (center + bins_per_note * 0.5)
+                .ceil()
+                .min(spectrum.len().saturating_sub(1) as f32) as usize;
+
+            spectrum[start..=end].iter().copied().fold(0.0_f32, f32::max)
+        })
+        .collect()
 }
