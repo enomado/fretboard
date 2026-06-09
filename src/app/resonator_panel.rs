@@ -18,6 +18,8 @@ use super::{
     pill,
     spectrum_color,
 };
+#[cfg(target_os = "android")]
+use crate::core_types::pitch::PNote;
 use crate::audio::ResonatorReading;
 use crate::ui::snail::{
     self,
@@ -168,6 +170,37 @@ impl App {
                 .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.resonator.bins, 1..=12).show_value(false))
                 .changed();
             settings.resonator.bins.to_string()
+        });
+
+        // Octave window the resonator listens on — these bounds also decide which
+        // octaves are visible in the snail. Sliders work in octave space (one
+        // octave = 12 semitones); the validated `PNote` is rebuilt as
+        // `(oct + 1) * 12` MIDI. Octave ranges mirror the desktop resonator
+        // clamps (min 12..=84 → C0..C6, max 24..=108 → C1..C8) expressed in
+        // octaves; `sanitized()` keeps the `max ≥ min + 6` invariant afterwards.
+        // `min_midi` is clamped ≥ 12 and `max_midi` ≥ 24, so the `u8` subtraction
+        // can't underflow and the rebuilt MIDI (≤ 108) can't overflow.
+        let mut low_oct = settings.resonator.min_midi.as_u8() / 12 - 1;
+        mobile_slider(ui, "Low oct", &mut changed, |ui, c| {
+            if ui
+                .add_sized([140.0, 20.0], egui::Slider::new(&mut low_oct, 0..=6).show_value(false))
+                .changed()
+            {
+                settings.resonator.min_midi = PNote::new((low_oct + 1) * 12).unwrap();
+                *c = true;
+            }
+            format!("C{low_oct}")
+        });
+        let mut high_oct = settings.resonator.max_midi.as_u8() / 12 - 1;
+        mobile_slider(ui, "High oct", &mut changed, |ui, c| {
+            if ui
+                .add_sized([140.0, 20.0], egui::Slider::new(&mut high_oct, 1..=8).show_value(false))
+                .changed()
+            {
+                settings.resonator.max_midi = PNote::new((high_oct + 1) * 12).unwrap();
+                *c = true;
+            }
+            format!("C{high_oct}")
         });
 
         if changed {
