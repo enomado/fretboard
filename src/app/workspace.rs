@@ -139,6 +139,29 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
 impl App {
     #[cfg(target_os = "android")]
     pub(super) fn render(&mut self, ui: &mut Ui) {
+        // Frame heartbeat: if these numbers keep climbing in logcat the eframe
+        // loop is alive (not frozen). Logged every 30th frame to stay readable.
+        {
+            use std::sync::atomic::{
+                AtomicU64,
+                Ordering,
+            };
+            static FRAME: AtomicU64 = AtomicU64::new(0);
+            let n = FRAME.fetch_add(1, Ordering::Relaxed);
+            if n % 30 == 0 {
+                crate::android_perm::alog(&format!("frame {n}"));
+            }
+        }
+
+        // Mic permission is driven from here (the first real frame ⇒ the Activity
+        // is resumed and can show the dialog). `request_record_audio` fires once;
+        // on the rising edge of the grant we re-open capture, since the audio
+        // engine's startup open happened before the user tapped "Allow".
+        crate::android_perm::request_record_audio();
+        if crate::android_perm::newly_granted() {
+            self.audio.set_selected_input_id(None);
+        }
+
         egui::CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin::same(8)))
             .show_inside(ui, |ui| {
