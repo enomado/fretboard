@@ -25,6 +25,7 @@ pub(super) struct ResonatorViewSettings {
     alpha_scale:       f32,
     beta_scale:        f32,
     gamma:             f32,
+    power:             bool,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +56,7 @@ impl Default for ResonatorViewSettings {
             alpha_scale:       1.0,
             beta_scale:        1.0,
             gamma:             0.72,
+            power:             false,
         }
     }
 }
@@ -62,12 +64,13 @@ impl Default for ResonatorViewSettings {
 impl From<&AnalysisSettings> for ResonatorViewSettings {
     fn from(s: &AnalysisSettings) -> Self {
         Self {
-            min_midi:          s.resonator_min_midi,
-            max_midi:          s.resonator_max_midi,
-            bins_per_semitone: s.resonator_bins,
-            alpha_scale:       s.resonator_alpha,
-            beta_scale:        s.resonator_beta,
-            gamma:             s.resonator_gamma,
+            min_midi:          s.resonator.min_midi,
+            max_midi:          s.resonator.max_midi,
+            bins_per_semitone: s.resonator.bins,
+            alpha_scale:       s.resonator.alpha,
+            beta_scale:        s.resonator.beta,
+            gamma:             s.resonator.gamma,
+            power:             s.resonator.power,
         }
     }
 }
@@ -120,7 +123,11 @@ fn build_resonator_bank(sample_rate: f32, settings: &ResonatorViewSettings) -> R
 }
 
 fn resonator_snapshot(bank: &ResonatorBank, settings: &ResonatorViewSettings) -> ResonatorSnapshot {
-    let mut spectrum = bank.magnitudes();
+    let mut spectrum = if settings.power {
+        bank.powers()
+    } else {
+        bank.magnitudes()
+    };
     normalize_bars(&mut spectrum, settings.gamma);
     ResonatorSnapshot {
         spectrum,
