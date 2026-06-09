@@ -22,6 +22,7 @@
 
 mod controls;
 mod panel;
+pub(crate) mod solver;
 mod wheel;
 
 use eframe::egui::{
@@ -44,10 +45,6 @@ use super::{
     ScaleKind,
     pill,
 };
-use crate::audio::{
-    AnalysisSettings,
-    TunerReading,
-};
 use crate::core_types::pitch::PCNote;
 use crate::core_types::scale_detect::method_profile::{
     TonalProfile,
@@ -55,8 +52,7 @@ use crate::core_types::scale_detect::method_profile::{
     unit_from_pearson,
 };
 use crate::core_types::scale_detect::method_root::{
-    fold_bass_chroma,
-    persistence,
+    persistence_chroma,
     root_evidence,
 };
 use crate::core_types::scale_detect::method_set::{
@@ -73,8 +69,7 @@ use crate::core_types::scale_detect::{
     MethodScores,
     PITCH_CLASS_COUNT,
     ScaleFinderConfig,
-    fold_chroma,
-    mean_spectrum,
+    mean_chroma,
     softmax_with_temperature,
 };
 use crate::ui::theme::PANEL_FILL;
@@ -146,34 +141,23 @@ fn dominant_method_color(scores: &MethodScores) -> Color32 {
     best.0
 }
 
-/// Свернуть резонаторный снимок в chroma и проранжировать 12×N кандидатов всеми
-/// тремя методами. `None` — нет резонаторных бинов или полная тишина.
-fn rank(reading: &TunerReading, settings: &AnalysisSettings, config: ScaleFinderConfig) -> Option<Ranking> {
-    if reading.resonator_spectrum.is_empty() {
+/// Проранжировать 12×N кандидатов всеми четырьмя методами по окну chroma-кадров,
+/// уже свёрнутых решалкой. `None` — окно пустое или полная тишина.
+fn rank(chroma_frames: &[Chroma], bass_frames: &[Chroma], config: ScaleFinderConfig) -> Option<Ranking> {
+    if chroma_frames.is_empty() {
         return None;
     }
 
-    // Контракт банка (`resonator.rs`): бин i = MIDI `min_midi + i/bins_per_semitone`.
-    let min_midi = settings.resonator.min_midi.as_u8() as usize;
-    let bins = settings.resonator.bins;
-
-    // Ширина окна: интегрируем только последние `window_frames` кадров истории
-    // (хвост — новейшие кадры лежат в конце). Узкое окно — отзывчиво, широкое —
-    // стабильно. И chroma, и устойчивость метода C считаются по этому же окну.
-    let window = config.window_frames.max(1);
-    let history = &reading.resonator_waterfall;
-    let recent = &history[history.len().saturating_sub(window)..];
-
-    let mean = mean_spectrum(recent, &reading.resonator_spectrum);
-    let chroma = fold_chroma(&mean, min_midi, bins);
+    // chroma и бас — средние по окну; устойчивость — по тем же кадрам окна.
+    let chroma = mean_chroma(chroma_frames);
     let chroma_peak = chroma.iter().copied().fold(0.0, f32::max);
     if chroma_peak <= 0.0 {
         return None;
     }
 
     // Метод C готовится один раз: бас + устойчивость во времени → улика корня.
-    let bass = fold_bass_chroma(&mean, min_midi, bins);
-    let persist = persistence(recent, min_midi, bins, PROMINENCE_RATIO);
+    let bass = mean_chroma(bass_frames);
+    let persist = persistence_chroma(chroma_frames, PROMINENCE_RATIO);
     let root_ev = root_evidence(&bass, &persist);
     // Метод D готовится один раз: центр тяжести chroma на круге квинт.
     let ce = center_of_effect(&chroma);
@@ -228,14 +212,22 @@ fn rank(reading: &TunerReading, settings: &AnalysisSettings, config: ScaleFinder
 
 impl App {
     pub(super) fn draw_scale_finder_card(&mut self, ui: &mut Ui) {
+        // Эта панель — потребитель резонаторного банка: пока она видима, держим
+        // его «нужным». Закрылась → запросы прекратились → банк паркуется.
+        self.audio.request_resonator();
+
+        let now = std::time::Instant::now();
         let reading = self.audio.reading();
         let settings = self.audio.analysis_settings();
-        // Веса берём из конфига App. Слайдеры ниже меняют их для следующего кадра
-        // (egui перерисовывается непрерывно — лаг в один кадр незаметен).
-        let ranking = reading
-            .as_ref()
-            .and_then(|reading| rank(reading, &settings, self.scale_finder));
-        let frame_ms = settings.resonator.update_ms;
+
+        // Тик решалки — только пока панель видима (этот метод зовётся лишь для
+        // активной вкладки): закрыта → не тикается, окно стынет, ничего не считается.
+        if let Some(reading) = &reading {
+            self.scale_solver.tick(now, reading, &settings);
+        }
+        let (chroma_frames, bass_frames) = self.scale_solver.window(now, self.scale_finder.window_seconds);
+        let ranking = rank(&chroma_frames, &bass_frames, self.scale_finder);
+        let captured_secs = self.scale_solver.captured_secs(now);
 
         let selected_root_pc = PCNote::from_natural(self.root_note).0 as usize;
         let selected_kind = self.scale_kind;
@@ -254,7 +246,7 @@ impl App {
                                 .color(Color32::from_rgb(228, 220, 208)),
                         );
                         ui.label(
-                            RichText::new("3 methods on the snail: notes · tonal profile · root")
+                            RichText::new("4 methods on the snail: notes · tonal · root · spiral")
                                 .color(Color32::from_rgb(152, 158, 165)),
                         );
                     });
@@ -282,7 +274,7 @@ impl App {
                 });
 
                 ui.add_space(10.0);
-                self.draw_scale_finder_controls(ui, frame_ms);
+                self.draw_scale_finder_controls(ui, captured_secs);
                 ui.add_space(10.0);
                 draw_scale_finder_body(ui, ranking.as_ref(), selected_root_pc, selected_kind);
             });

@@ -217,8 +217,11 @@ pub struct App {
     root_note: Note,
     live_chart: LiveChartKind,
     test_note_midi: PNote,
-    /// Конфиг Scale Finder: баланс методов + ширина окна (не compute-состояние).
+    /// Конфиг Scale Finder: баланс методов + ширина окна (персистится).
     scale_finder: ScaleFinderConfig,
+    /// Решалка Scale Finder: рантайм-окно chroma по времени (не персистится,
+    /// тикается только пока панель видима). См. [`scale_finder::solver`].
+    scale_solver: scale_finder::solver::ScaleSolver,
     workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
@@ -263,6 +266,7 @@ impl App {
             live_chart: LiveChartKind::Spiral,
             test_note_midi: PNote::new(24).unwrap(),
             scale_finder: ScaleFinderConfig::default(),
+            scale_solver: scale_finder::solver::ScaleSolver::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
         };
 

@@ -28,6 +28,7 @@ use crate::ui::waterfall;
 
 impl App {
     pub(super) fn draw_resonator_snail_card(&mut self, ui: &mut Ui) {
+        self.audio.request_resonator(); // потребитель банка → держим его «нужным»
         let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
 
@@ -91,6 +92,7 @@ impl App {
     }
 
     pub(super) fn draw_resonator_bank_card(&mut self, ui: &mut Ui) {
+        self.audio.request_resonator(); // потребитель банка → держим его «нужным»
         let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
 
@@ -239,6 +241,7 @@ impl App {
     }
 
     pub(super) fn draw_resonator_waterfall_card(&mut self, ui: &mut Ui) {
+        self.audio.request_resonator(); // потребитель банка → держим его «нужным»
         let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
 

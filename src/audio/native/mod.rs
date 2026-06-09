@@ -116,6 +116,12 @@ pub(super) mod imp {
 
     // Время паузы воркера, когда в кольце нет свежих сэмплов
     const ANALYSIS_IDLE_SLEEP: Duration = Duration::from_millis(5);
+    /// Сколько резонаторный банк ещё молотит после последнего запроса от UI.
+    /// UI двигает дедлайн каждый кадр, пока панель-потребитель видна; когда панель
+    /// закрылась и запросы прекратились, через этот грейс воркер паркуется.
+    const RESONATOR_PARK_GRACE: Duration = Duration::from_millis(300);
+    /// Сон запаркованного резонаторного воркера между сливами кольца.
+    const RESONATOR_PARK_SLEEP: Duration = Duration::from_millis(20);
 
     type SampleProducer = <HeapRb<f32> as Split>::Prod;
     type SampleConsumer = <HeapRb<f32> as Split>::Cons;
@@ -150,6 +156,7 @@ pub(super) mod imp {
         input_sample_rate:   Arc<AtomicU32>,
         monitor_output_rate: Arc<AtomicU32>, // 0 = output не запущен
         selected_input_id:   Arc<Mutex<Option<String>>>,
+        resonator_wanted:    Arc<Mutex<Instant>>, // дедлайн «банк нужен до» (гейт)
         command_tx:          Option<Sender<Command>>,
         audio_thread:        Option<JoinHandle<()>>,
     }
@@ -188,6 +195,8 @@ pub(super) mod imp {
             let input_sample_rate = Arc::new(AtomicU32::new(0));
             let monitor_output_rate = Arc::new(AtomicU32::new(0));
             let selected_input_id = Arc::new(Mutex::new(None));
+            // Гейт резонатора: дедлайн в прошлом → пока никто не просит, банк не молотит.
+            let resonator_wanted = Arc::new(Mutex::new(Instant::now()));
 
             let (command_tx, command_rx) = mpsc::channel::<Command>();
 
@@ -204,6 +213,7 @@ pub(super) mod imp {
                     input_sample_rate:   input_sample_rate.clone(),
                     monitor_output_rate: monitor_output_rate.clone(),
                     selected_input_id:   selected_input_id.clone(),
+                    resonator_wanted:    resonator_wanted.clone(),
                 };
                 move || {
                     audio_thread_main(command_rx, ctx);
@@ -220,6 +230,7 @@ pub(super) mod imp {
                 input_sample_rate,
                 monitor_output_rate,
                 selected_input_id,
+                resonator_wanted,
                 command_tx: Some(command_tx),
                 audio_thread: Some(audio_thread),
             }
@@ -337,6 +348,15 @@ pub(super) mod imp {
                 let _ = tx.send(Command::PlayTestNote(midi));
             }
         }
+
+        /// Запросить резонаторный банк на ближайший грейс. Панели-потребители
+        /// (Scale Finder, Resonator *) зовут это каждый кадр, пока видимы; пока
+        /// зовут — воркер молотит, перестали (панель закрылась) — паркуется.
+        pub fn request_resonator(&self) {
+            if let Ok(mut until) = self.resonator_wanted.lock() {
+                *until = Instant::now() + RESONATOR_PARK_GRACE;
+            }
+        }
     }
 
     impl Drop for AudioEngine {
@@ -407,6 +427,7 @@ pub(super) mod imp {
         input_sample_rate:   Arc<AtomicU32>,
         monitor_output_rate: Arc<AtomicU32>,
         selected_input_id:   Arc<Mutex<Option<String>>>,
+        resonator_wanted:    Arc<Mutex<Instant>>,
     }
 
     impl AudioContext {
@@ -612,6 +633,7 @@ pub(super) mod imp {
                 self.shared.clone(),
                 self.settings.clone(),
                 self.input_gain.clone(),
+                self.resonator_wanted.clone(),
             )
         }
 
@@ -738,6 +760,7 @@ pub(super) mod imp {
         shared: Arc<Mutex<SharedState>>,
         settings: Arc<Mutex<AnalysisSettings>>,
         input_gain: Arc<AtomicU32>,
+        resonator_wanted: Arc<Mutex<Instant>>,
     ) -> AnalysisWorker {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_flag = stop.clone();
@@ -747,12 +770,29 @@ pub(super) mod imp {
             let mut batch: Vec<f32> = Vec::with_capacity(4096);
 
             while !stop_flag.load(Ordering::Relaxed) {
+                // Гейт: банк нужен, только пока UI двигает дедлайн. Замок не
+                // отравлен/в прошлом → считаем active=false (паркуемся). Если замок
+                // отравлен — на стороне безопасности молотим (lock().is_ok() == false
+                // ⇒ active=false здесь; но это практически недостижимо).
+                let active = resonator_wanted
+                    .lock()
+                    .map(|until| Instant::now() < *until)
+                    .unwrap_or(false);
+
                 batch.clear();
                 for _ in 0..4096 {
                     match cons.try_pop() {
                         Some(s) => batch.push(s),
                         None => break,
                     }
+                }
+
+                if !active {
+                    // Запаркованы: кольцо ВСЁ РАВНО дренируем (иначе переполнится и
+                    // при пробуждении выльется пачкой старого звука), но дорогой банк
+                    // не считаем — это и есть экономия CPU.
+                    thread::sleep(RESONATOR_PARK_SLEEP);
+                    continue;
                 }
                 if batch.is_empty() {
                     thread::sleep(ANALYSIS_IDLE_SLEEP);

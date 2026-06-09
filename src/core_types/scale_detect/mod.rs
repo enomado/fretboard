@@ -35,27 +35,19 @@ pub const PITCH_CLASS_COUNT: usize = 12;
 /// 12-мерный вектор энергии по pitch-классам, индекс = pitch-класс 0..=11 (C..B).
 pub type Chroma = [f32; PITCH_CLASS_COUNT];
 
-/// Усреднённый спектр по истории кадров плюс текущий кадр (поэлементное среднее).
-/// Тональность/скейл — медленная величина: интегрировать по фразе правильнее, чем
-/// читать один дёрганый кадр. Кадры несогласованной длины молча пропускаются.
-pub fn mean_spectrum(history: &[Vec<f32>], current: &[f32]) -> Vec<f32> {
-    let len = current.len();
-    if len == 0 {
-        return Vec::new();
+/// Поэлементное среднее набора chroma-кадров (окна интеграции). Тональность —
+/// медленная величина: усреднять по окну правильнее, чем читать дёрганый кадр.
+pub fn mean_chroma(frames: &[Chroma]) -> Chroma {
+    let mut acc = [0.0f32; PITCH_CLASS_COUNT];
+    if frames.is_empty() {
+        return acc;
     }
-
-    let mut acc = current.to_vec();
-    let mut count = 1usize;
-    for row in history {
-        if row.len() != len {
-            continue;
-        }
-        for (a, v) in acc.iter_mut().zip(row.iter()) {
+    for frame in frames {
+        for (a, v) in acc.iter_mut().zip(frame.iter()) {
             *a += *v;
         }
-        count += 1;
     }
-    let inv = 1.0 / count as f32;
+    let inv = 1.0 / frames.len() as f32;
     for a in &mut acc {
         *a *= inv;
     }
@@ -137,20 +129,25 @@ impl MethodScores {
     }
 }
 
-/// Конфиг панели Scale Finder: баланс трёх методов + ширина окна интеграции —
-/// сколько последних кадров истории сворачивать в chroma. Узкое окно отзывчиво,
-/// но дёргано; широкое стабильно, но инертно (тональность — медленная величина).
+/// Конфиг панели Scale Finder: баланс методов + ширина окна интеграции В СЕКУНДАХ
+/// (решалка копит свой буфер по времени, не привязана к длине истории банка).
+/// Узкое окно отзывчиво, но дёргано; широкое стабильно, но инертно.
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub struct ScaleFinderConfig {
-    pub weights:       MethodWeights,
-    pub window_frames: usize,
+    pub weights:        MethodWeights,
+    #[serde(default = "default_window_seconds")]
+    pub window_seconds: f32,
+}
+
+fn default_window_seconds() -> f32 {
+    4.0
 }
 
 impl Default for ScaleFinderConfig {
     fn default() -> Self {
         Self {
-            weights:       MethodWeights::default(),
-            window_frames: 32,
+            weights:        MethodWeights::default(),
+            window_seconds: default_window_seconds(),
         }
     }
 }

@@ -96,4 +96,8 @@ impl AudioEngine {
 
     pub fn play_test_note(&self, _midi: crate::core_types::pitch::PNote) {
     }
+
+    /// Гейт резонатора — нет банка в wasm, no-op (паритет API с native).
+    pub fn request_resonator(&self) {
+    }
 }
