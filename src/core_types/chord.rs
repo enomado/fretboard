@@ -22,7 +22,7 @@ impl Chord {
         self.intervals
             .iter()
             .position(|interval| self.root.add(interval) == note)
-            .map(|idx| idx + 1) // ступени нумеруем с 1
+            .map(|idx| idx * 2 + 1) // терцовые аккорды даем как 1/3/5/7
     }
 
     /// Возвращает все ноты аккорда как PCNote

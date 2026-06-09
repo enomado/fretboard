@@ -4,6 +4,9 @@ pub mod core_types;
 pub mod fretboard;
 pub mod ui;
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(android_app: android_activity::AndroidApp) {
