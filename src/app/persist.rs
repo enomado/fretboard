@@ -126,5 +126,24 @@ mod tests {
         assert_eq!(back.selected_input_id.as_deref(), Some("pulse::@DEFAULT_SOURCE@"));
         assert!(back.monitor_enabled);
         assert_eq!(back.analysis_settings.resonator.min_midi, AnalysisSettings::default().resonator.min_midi);
+
+        // The docking layout must survive too: same tile count and same set of
+        // panes after the round-trip, not just a syntactically valid tree.
+        let before = &state.workspace_tree;
+        let after = &back.workspace_tree;
+        assert_eq!(after.tiles.len(), before.tiles.len());
+        let mut before_panes: Vec<_> = before.tiles.tiles().filter_map(pane_kind).collect();
+        let mut after_panes: Vec<_> = after.tiles.tiles().filter_map(pane_kind).collect();
+        before_panes.sort();
+        after_panes.sort();
+        assert_eq!(after_panes, before_panes);
+        assert!(!after_panes.is_empty());
+    }
+
+    fn pane_kind(tile: &egui_tiles::Tile<super::WorkspaceTab>) -> Option<String> {
+        match tile {
+            egui_tiles::Tile::Pane(pane) => Some(format!("{:?}", pane.label())),
+            egui_tiles::Tile::Container(_) => None,
+        }
     }
 }

@@ -13,14 +13,18 @@ use eframe::egui::{
     vec2,
 };
 
-use super::live_analysis::SpiralChart;
 use super::{
     App,
     pill,
     spectrum_color,
 };
 use crate::audio::ResonatorReading;
+use crate::ui::snail::{
+    self,
+    SpiralChart,
+};
 use crate::ui::theme::PANEL_FILL;
+use crate::ui::waterfall;
 
 impl App {
     pub(super) fn draw_resonator_snail_card(&mut self, ui: &mut Ui) {
@@ -68,7 +72,7 @@ impl App {
                 });
 
                 ui.add_space(12.0);
-                self.draw_spiral_chart(
+                snail::draw_spiral_chart(
                     ui,
                     SpiralChart {
                         title:             "Resonator spiral",
@@ -81,6 +85,7 @@ impl App {
                         empty_message:     "The resonator bank is empty",
                         active_note_label: "bank focus",
                     },
+                    &self.audio.analysis_settings(),
                 );
             });
     }
@@ -203,7 +208,7 @@ impl App {
         } else {
             1.0
         };
-        self.draw_pitch_labeled_waterfall(
+        waterfall::draw_pitch_labeled_waterfall(
             &painter,
             waterfall_rect,
             &reading.waterfall,
@@ -327,7 +332,7 @@ impl App {
         } else {
             1.0
         };
-        self.draw_pitch_labeled_waterfall(
+        waterfall::draw_pitch_labeled_waterfall(
             &painter,
             chart_rect,
             &reading.waterfall,
