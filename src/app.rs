@@ -280,13 +280,12 @@ impl App {
     }
 
     fn selected_input_kind(&self, selected_input_id: Option<&str>) -> AudioInputKind {
-        if let Some(id) = selected_input_id {
-            if id.starts_with("cpal-loopback::")
+        if let Some(id) = selected_input_id
+            && (id.starts_with("cpal-loopback::")
                 || id.ends_with("@DEFAULT_MONITOR@")
-                || id.ends_with(".monitor")
-            {
-                return AudioInputKind::System;
-            }
+                || id.ends_with(".monitor"))
+        {
+            return AudioInputKind::System;
         }
 
         selected_input_id

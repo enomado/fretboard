@@ -88,6 +88,7 @@ pub(super) mod imp {
     use spectrum::spectrum_bars_for_window;
 
     const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
+    #[cfg(target_os = "windows")]
     const CPAL_DEFAULT_OUTPUT_LOOPBACK_ID: &str = "cpal-loopback::@DEFAULT_OUTPUT@";
     const PULSE_INPUT_ID_PREFIX: &str = "pulse::";
     const PULSE_DEFAULT_SOURCE_ID: &str = "pulse::@DEFAULT_SOURCE@";

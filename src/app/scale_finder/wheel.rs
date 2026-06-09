@@ -47,7 +47,7 @@ pub(super) fn draw_fifths_ring(painter: &egui::Painter, rect: Rect, ranking: &Ra
         Stroke::new(1.0_f32, Color32::from_rgb(59, 64, 72)),
     );
 
-    for pc in 0..PITCH_CLASS_COUNT {
+    for (pc, &label) in SPIRAL_PITCH_LABELS.iter().enumerate() {
         // Угол на круге квинт, C сверху: совпадает с координатами `fifths_point`,
         // повёрнутыми на -π/2 (там pc=C даёт направление +x, тут хотим вверх).
         let j = (7 * pc) % PITCH_CLASS_COUNT;
@@ -56,7 +56,7 @@ pub(super) fn draw_fifths_ring(painter: &egui::Painter, rect: Rect, ranking: &Ra
         painter.text(
             center + dir * (radius + 12.0),
             egui::Align2::CENTER_CENTER,
-            SPIRAL_PITCH_LABELS[pc],
+            label,
             FontId::proportional(11.0),
             pitch_class_color(pc),
         );

@@ -4,6 +4,7 @@
 //!   - `snail`     — the logarithmic pitch spiral,
 //!   - `waterfall` — spectrogram-style history strips,
 //!   - `theme`     — shared colours and the egui style.
+//!
 //! Callers reach into these with explicit paths (e.g. `crate::ui::snail::draw_spiral_chart`)
 //! rather than via re-exports, so it stays obvious where each renderer lives.
 

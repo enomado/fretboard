@@ -4,6 +4,7 @@
 //!   - plain grid,
 //!   - note-labelled (one label column per cell),
 //!   - pitch-labelled (labels spaced by a fractional bins-per-label stride).
+//!
 //! All functions are pure: they paint into a borrowed `Painter` over a `Rect`.
 
 use eframe::egui::{

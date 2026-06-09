@@ -15,8 +15,9 @@ use cpal::{
     SupportedStreamConfig,
 };
 
+#[cfg(target_os = "windows")]
+use super::CPAL_DEFAULT_OUTPUT_LOOPBACK_ID;
 use super::{
-    CPAL_DEFAULT_OUTPUT_LOOPBACK_ID,
     CPAL_INPUT_ID_PREFIX,
     LOW_LATENCY_TARGET_FRAMES,
     PULSE_DEFAULT_MONITOR_ID,
