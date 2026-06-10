@@ -3012,8 +3012,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 [[package]]
 name = "resonators"
 version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebcff29f6ecce70afb9738310d1275b4b13ec2ba8e41838d78719e24963065fd"
+source = "git+https://github.com/enomado/resonators.git?branch=onepole-bank#d3ef10cfebf06d9ace25d6139f0a135a2f7df3fb"
 dependencies = [
  "num-complex",
 ]

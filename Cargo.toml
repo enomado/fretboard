@@ -26,7 +26,12 @@ ron = "0.12"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "0.18.1"
 rustfft = "6.4"
-resonators = "0.1.1"
+# Fork (PR jhartquist/resonators#6): adds OnePoleBank — the phasor-free, self-
+# stabilizing core (~1.4–1.7× faster) plus an f64 de-rotation fix that keeps
+# phase()/complex() accurate over a long session. We drive the snail's Δφ
+# reassignment off phase(), so the f64 fix matters here. Pin to a rev so the
+# build is reproducible; bump to the crates.io release once the PR lands.
+resonators = { git = "https://github.com/enomado/resonators.git", branch = "onepole-bank" }
 ringbuf = "0.5"
 
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]

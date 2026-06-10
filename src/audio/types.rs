@@ -78,6 +78,20 @@ pub struct ResonatorSettings {
     pub history:   usize,
     pub update_ms: u64,
     pub power:     bool,
+    /// Δφ instantaneous-frequency reassignment on the spiral: each bin's energy
+    /// is placed at its measured true frequency (super-resolution) and a
+    /// coherence gate suppresses the negative-frequency image / noise. Turning it
+    /// off falls back to plain per-bin magnitude at the bin's nominal pitch — the
+    /// original behaviour, kept as a safety net.
+    ///
+    /// `serde(default)` — soft migration: configs saved before this field existed
+    /// load with reassignment on (the intended default), not `bool`'s `false`.
+    #[serde(default = "default_reassign")]
+    pub reassign:  bool,
+}
+
+fn default_reassign() -> bool {
+    true
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -124,6 +138,7 @@ impl Default for ResonatorSettings {
             history:   52,
             update_ms: 16,
             power:     false,
+            reassign:  true,
         }
     }
 }
@@ -209,6 +224,7 @@ mod tests {
                 history:   999,
                 update_ms: 1,
                 power:     false,
+                reassign:  true,
             },
         }
         .sanitized();
@@ -234,7 +250,10 @@ mod tests {
         // миграция должна подставить 440.0, а не уронить разбор всего снимка.
         let ron = ron::ser::to_string(&AnalysisSettings::default()).unwrap();
         let legacy = ron.replace(",concert_pitch_hz:440.0", "");
-        assert!(!legacy.contains("concert_pitch_hz"), "field must be absent for the test to be meaningful");
+        assert!(
+            !legacy.contains("concert_pitch_hz"),
+            "field must be absent for the test to be meaningful"
+        );
 
         let restored: AnalysisSettings = ron::from_str(&legacy).unwrap();
         assert_eq!(restored.concert_pitch_hz, 440.0);
