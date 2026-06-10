@@ -18,9 +18,9 @@ use super::{
     pill,
     spectrum_color,
 };
+use crate::audio::ResonatorReading;
 #[cfg(target_os = "android")]
 use crate::core_types::pitch::PNote;
-use crate::audio::ResonatorReading;
 use crate::ui::snail::{
     self,
     SpiralChart,
@@ -108,7 +108,11 @@ impl App {
                 // Mobile caps the snail's height to the available width so the
                 // round chart stays inside the narrow screen instead of filling
                 // (possibly unbounded) leftover height. Desktop stays rubbery.
-                let max_height = if with_settings { ui.available_width() } else { f32::INFINITY };
+                let max_height = if with_settings {
+                    ui.available_width()
+                } else {
+                    f32::INFINITY
+                };
                 snail::draw_spiral_chart_sized(
                     ui,
                     SpiralChart {
@@ -116,7 +120,11 @@ impl App {
                         // The chart paints title (left) and subtitle (right) on one
                         // line; on the narrow phone they collide, so mobile drops
                         // the subtitle just like the card header above.
-                        subtitle:          if with_settings { "" } else { "same snail, but driven by the resonator bank instead of FFT bins" },
+                        subtitle:          if with_settings {
+                            ""
+                        } else {
+                            "same snail, but driven by the resonator bank instead of FFT bins"
+                        },
                         spectrum:          reading_ref.map(|value| value.spectrum.as_slice()),
                         waterfall:         reading_ref.map_or(&[][..], |value| value.waterfall.as_slice()),
                         note_labels:       reading_ref.map_or(&[][..], |value| value.note_labels.as_slice()),
@@ -177,25 +185,37 @@ impl App {
         });
         mobile_slider(ui, "Spread", &mut changed, |ui, c| {
             *c |= ui
-                .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.note_spread, 0.15..=0.8).show_value(false))
+                .add_sized(
+                    [140.0, 20.0],
+                    egui::Slider::new(&mut settings.note_spread, 0.15..=0.8).show_value(false),
+                )
                 .changed();
             format!("{:.2}", settings.note_spread)
         });
         mobile_slider(ui, "Glow", &mut changed, |ui, c| {
             *c |= ui
-                .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.note_gamma, 0.35..=1.2).show_value(false))
+                .add_sized(
+                    [140.0, 20.0],
+                    egui::Slider::new(&mut settings.note_gamma, 0.35..=1.2).show_value(false),
+                )
                 .changed();
             format!("{:.2}", settings.note_gamma)
         });
         mobile_slider(ui, "Trail", &mut changed, |ui, c| {
             *c |= ui
-                .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.resonator.history, 8..=240).show_value(false))
+                .add_sized(
+                    [140.0, 20.0],
+                    egui::Slider::new(&mut settings.resonator.history, 8..=240).show_value(false),
+                )
                 .changed();
             settings.resonator.history.to_string()
         });
         mobile_slider(ui, "Bins", &mut changed, |ui, c| {
             *c |= ui
-                .add_sized([140.0, 20.0], egui::Slider::new(&mut settings.resonator.bins, 1..=12).show_value(false))
+                .add_sized(
+                    [140.0, 20.0],
+                    egui::Slider::new(&mut settings.resonator.bins, 1..=12).show_value(false),
+                )
                 .changed();
             settings.resonator.bins.to_string()
         });
@@ -211,7 +231,10 @@ impl App {
         let mut low_oct = settings.resonator.min_midi.as_u8() / 12 - 1;
         mobile_slider(ui, "Low oct", &mut changed, |ui, c| {
             if ui
-                .add_sized([140.0, 20.0], egui::Slider::new(&mut low_oct, 0..=6).show_value(false))
+                .add_sized(
+                    [140.0, 20.0],
+                    egui::Slider::new(&mut low_oct, 0..=6).show_value(false),
+                )
                 .changed()
             {
                 settings.resonator.min_midi = PNote::new((low_oct + 1) * 12).unwrap();
@@ -222,7 +245,10 @@ impl App {
         let mut high_oct = settings.resonator.max_midi.as_u8() / 12 - 1;
         mobile_slider(ui, "High oct", &mut changed, |ui, c| {
             if ui
-                .add_sized([140.0, 20.0], egui::Slider::new(&mut high_oct, 1..=8).show_value(false))
+                .add_sized(
+                    [140.0, 20.0],
+                    egui::Slider::new(&mut high_oct, 1..=8).show_value(false),
+                )
                 .changed()
             {
                 settings.resonator.max_midi = PNote::new((high_oct + 1) * 12).unwrap();
@@ -230,6 +256,15 @@ impl App {
             }
             format!("C{high_oct}")
         });
+
+        // Δφ reassignment toggle (super-resolution + image/noise gate). Off falls
+        // back to plain per-bin magnitude — the safety net if reassignment misbehaves.
+        if ui
+            .checkbox(&mut settings.resonator.reassign, "Δφ reassign")
+            .changed()
+        {
+            changed = true;
+        }
 
         if changed {
             self.audio.set_analysis_settings(settings);
@@ -512,7 +547,12 @@ impl App {
 /// on one fixed `horizontal` row; rows are stacked by the caller's vertical
 /// layout (see `draw_mobile_snail_settings` for why we don't wrap them).
 #[cfg(target_os = "android")]
-fn mobile_slider(ui: &mut Ui, label: &str, changed: &mut bool, body: impl FnOnce(&mut Ui, &mut bool) -> String) {
+fn mobile_slider(
+    ui: &mut Ui,
+    label: &str,
+    changed: &mut bool,
+    body: impl FnOnce(&mut Ui, &mut bool) -> String,
+) {
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(label)

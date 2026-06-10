@@ -446,7 +446,8 @@ impl App {
                     let pitch_changed = ui
                         .add_sized(
                             [150.0, 18.0],
-                            egui::Slider::new(&mut settings.concert_pitch_hz, 415.0..=466.0).show_value(false),
+                            egui::Slider::new(&mut settings.concert_pitch_hz, 415.0..=466.0)
+                                .show_value(false),
                         )
                         .changed();
                     ui.label(
@@ -506,6 +507,7 @@ impl App {
                 settings.resonator.history = defaults.resonator.history;
                 settings.resonator.update_ms = defaults.resonator.update_ms;
                 settings.resonator.power = defaults.resonator.power;
+                settings.resonator.reassign = defaults.resonator.reassign;
             },
             Self::draw_resonator_fft_config_tab,
         );
@@ -964,6 +966,27 @@ impl App {
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
+        });
+
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .checkbox(
+                    &mut settings.resonator.reassign,
+                    RichText::new("Δφ reassign")
+                        .color(Color32::from_rgb(205, 194, 176))
+                        .strong(),
+                )
+                .on_hover_text(
+                    "Place each partial at its true frequency via instantaneous-frequency \
+                     (Δφ) reassignment, with a coherence gate that suppresses the \
+                     negative-frequency image and noise. Off = plain per-bin magnitude \
+                     at the nominal pitch (original behaviour).",
+                )
+                .changed()
+            {
+                *changed = true;
+            }
         });
     }
 }

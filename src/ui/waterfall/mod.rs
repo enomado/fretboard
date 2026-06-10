@@ -7,6 +7,7 @@
 //!
 //! All functions are pure: they paint into a borrowed `Painter` over a `Rect`.
 
+use eframe::egui::epaint::Vertex;
 use eframe::egui::{
     self,
     Color32,
@@ -16,7 +17,6 @@ use eframe::egui::{
     Rect,
     Shape,
     Stroke,
-    epaint::Vertex,
     pos2,
 };
 
@@ -60,10 +60,26 @@ pub fn draw_waterfall(painter: &Painter, rect: Rect, waterfall: &[Vec<f32>]) {
             let color = waterfall_color(*value, age);
 
             let base = mesh.vertices.len() as u32;
-            mesh.vertices.push(Vertex { pos: pos2(x0, y0), uv, color });
-            mesh.vertices.push(Vertex { pos: pos2(x1, y0), uv, color });
-            mesh.vertices.push(Vertex { pos: pos2(x1, y1), uv, color });
-            mesh.vertices.push(Vertex { pos: pos2(x0, y1), uv, color });
+            mesh.vertices.push(Vertex {
+                pos: pos2(x0, y0),
+                uv,
+                color,
+            });
+            mesh.vertices.push(Vertex {
+                pos: pos2(x1, y0),
+                uv,
+                color,
+            });
+            mesh.vertices.push(Vertex {
+                pos: pos2(x1, y1),
+                uv,
+                color,
+            });
+            mesh.vertices.push(Vertex {
+                pos: pos2(x0, y1),
+                uv,
+                color,
+            });
             mesh.indices
                 .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }

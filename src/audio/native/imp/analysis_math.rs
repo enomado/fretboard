@@ -1,7 +1,7 @@
 pub(super) const SPECTRUM_BINS: usize = 72;
 pub(super) const NOTE_BUCKET_MIN_MIDI: usize = 12;
 pub(super) const NOTE_BUCKET_MAX_MIDI: usize = 84;
-const SPIRAL_BINS_PER_SEMITONE: usize = 8;
+pub(super) const SPIRAL_BINS_PER_SEMITONE: usize = 8;
 pub(super) const SPIRAL_BIN_COUNT: usize =
     (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
 
@@ -115,7 +115,12 @@ pub(super) fn accumulate_note_energy(
     }
 }
 
-pub(super) fn accumulate_spiral_energy(spiral_bars: &mut [f32], frequency: f32, energy: f32, reference_hz: f32) {
+pub(super) fn accumulate_spiral_energy(
+    spiral_bars: &mut [f32],
+    frequency: f32,
+    energy: f32,
+    reference_hz: f32,
+) {
     if frequency <= 0.0 || spiral_bars.is_empty() {
         return;
     }
@@ -124,13 +129,27 @@ pub(super) fn accumulate_spiral_energy(spiral_bars: &mut [f32], frequency: f32, 
         return;
     }
     let position = (midi - NOTE_BUCKET_MIN_MIDI as f32) * SPIRAL_BINS_PER_SEMITONE as f32;
-    let left_index = position.floor() as usize;
-    let frac = position - left_index as f32;
-    if left_index < spiral_bars.len() {
-        spiral_bars[left_index] += energy * (1.0 - frac);
+    splat_linear(spiral_bars, position, energy);
+}
+
+/// Splat `weight` into `bars` at the fractional bin index `position`, using a
+/// two-tap linear interpolation: the weight is shared between the two nearest
+/// bins in proportion to the sub-bin fraction. Positions outside the grid are
+/// dropped. This is the shared kernel behind both the FFT spiral
+/// ([`accumulate_spiral_energy`]) and the resonator's instantaneous-frequency
+/// reassignment splat — both place continuous-frequency energy onto a discrete
+/// pitch grid, so they must round the same way.
+pub(super) fn splat_linear(bars: &mut [f32], position: f32, weight: f32) {
+    if weight <= 0.0 || bars.is_empty() || position < 0.0 {
+        return;
     }
-    if left_index + 1 < spiral_bars.len() {
-        spiral_bars[left_index + 1] += energy * frac;
+    let left = position.floor() as usize;
+    let frac = position - left as f32;
+    if left < bars.len() {
+        bars[left] += weight * (1.0 - frac);
+    }
+    if left + 1 < bars.len() {
+        bars[left + 1] += weight * frac;
     }
 }
 
@@ -176,7 +195,13 @@ mod tests {
     #[test]
     fn note_energy_prefers_the_closest_semitone() {
         let mut bars = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
-        accumulate_note_energy(&mut bars, 440.0, 1.0, AnalysisSettings::default().note_spread, 440.0);
+        accumulate_note_energy(
+            &mut bars,
+            440.0,
+            1.0,
+            AnalysisSettings::default().note_spread,
+            440.0,
+        );
         let a4_index = 69 - NOTE_BUCKET_MIN_MIDI;
 
         let strongest = bars

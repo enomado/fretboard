@@ -1173,7 +1173,7 @@ pub(super) mod imp {
 
             let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
             let samples: Vec<f32> = samples.into_iter().map(|sample| sample * gain).collect();
-            self.analyzer.process_samples(&samples);
+            self.analyzer.process_samples(&samples, analysis_settings.resonator.reassign);
 
             let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
             if self.last_publish.elapsed() < publish_interval {
@@ -1182,7 +1182,7 @@ pub(super) mod imp {
             self.last_publish = Instant::now();
             publish_resonator_snapshot(
                 shared,
-                self.analyzer.snapshot(),
+                self.analyzer.snapshot(analysis_settings.resonator.reassign),
                 analysis_settings.resonator.history,
             );
         }
