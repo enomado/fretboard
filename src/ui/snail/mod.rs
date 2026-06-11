@@ -122,11 +122,13 @@ pub fn draw_spiral_chart_sized(
     let outer_radius = square * 0.47;
     let semitone_count = chart.note_labels.len().max(1);
     let spiral_bin_count = spectrum.len().max(1);
-    let bins_per_semitone = if semitone_count > 1 {
-        (spiral_bin_count.saturating_sub(1) as f32 / (semitone_count - 1) as f32).max(1.0)
-    } else {
-        1.0
-    };
+    // The bins→semitone divisor must come from the length of the data actually
+    // being drawn, not from a single per-frame count. A waterfall row can have
+    // been captured at a different resolution than the live spectrum: toggling
+    // Δφ reassign switches the resonator spiral between 5 and 8 bins/semitone
+    // while the history keeps the older rows. A shared divisor would reinterpret
+    // those stale rows at the wrong scale and splay them onto bogus radii.
+    let live_bins_per_semitone = bins_per_semitone(spectrum.len(), semitone_count);
     let pitch_class_offset = chart
         .note_labels
         .first()
@@ -190,7 +192,7 @@ pub fn draw_spiral_chart_sized(
                 center,
                 inner_radius,
                 radius_step,
-                index as f32 / bins_per_semitone,
+                index as f32 / live_bins_per_semitone,
                 pitch_class_offset as f32,
             )
         })
@@ -202,13 +204,16 @@ pub fn draw_spiral_chart_sized(
 
     for (history_index, row) in chart.waterfall.iter().enumerate() {
         let age = history_index as f32 / chart.waterfall.len().max(1) as f32;
+        // Per-row divisor: this row may pre-date a resolution change, so its bins
+        // are scaled by its own length — not the live spectrum's.
+        let row_bins_per_semitone = bins_per_semitone(row.len(), semitone_count);
         let strengths = spiral_contrast_strengths(row, settings);
         for (note_index, intensity) in strengths.iter().copied().enumerate() {
             if intensity <= 0.0 {
                 continue;
             }
 
-            let semitone_position = note_index as f32 / bins_per_semitone;
+            let semitone_position = note_index as f32 / row_bins_per_semitone;
             let pitch_class = (pitch_class_offset + semitone_position.floor() as usize) % 12;
             let position = spiral_point_fractional(
                 center,
@@ -234,7 +239,7 @@ pub fn draw_spiral_chart_sized(
             continue;
         }
 
-        let semitone_position = note_index as f32 / bins_per_semitone;
+        let semitone_position = note_index as f32 / live_bins_per_semitone;
         let pitch_class = (pitch_class_offset + semitone_position.floor() as usize) % 12;
         let position = spiral_point_fractional(
             center,
@@ -307,6 +312,24 @@ fn note_label_pitch_class(label: &str) -> Option<usize> {
         "A#" | "Bb" => Some(10),
         "B" => Some(11),
         _ => None,
+    }
+}
+
+/// How many spectrum bins span one semitone, for a row of `bin_count` samples
+/// laid across `semitone_count` note labels (one label per semitone). The grid
+/// is `(semitone_count - 1)` semitones wide and carries `bin_count` samples, so
+/// the density is `(bin_count - 1) / (semitone_count - 1)`.
+///
+/// Derived per drawn row rather than shared frame-wide: the resonator spiral
+/// changes resolution (5 vs 8 bins/semitone) when Δφ reassign toggles, and the
+/// waterfall history outlives that switch — each row must be scaled by its own
+/// length or its energy lands on the wrong radius. Floored at 1.0 so a degenerate
+/// row can never invert the bin→semitone mapping.
+fn bins_per_semitone(bin_count: usize, semitone_count: usize) -> f32 {
+    if semitone_count > 1 {
+        (bin_count.max(1).saturating_sub(1) as f32 / (semitone_count - 1) as f32).max(1.0)
+    } else {
+        1.0
     }
 }
 
@@ -416,7 +439,10 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::note_label_pitch_class;
+    use super::{
+        bins_per_semitone,
+        note_label_pitch_class,
+    };
 
     #[test]
     fn note_label_pitch_class_reads_sharp_flat_and_natural_notes() {
@@ -424,5 +450,41 @@ mod tests {
         assert_eq!(note_label_pitch_class("F3"), Some(5));
         assert_eq!(note_label_pitch_class("G#4"), Some(8));
         assert_eq!(note_label_pitch_class("Bb5"), Some(10));
+    }
+
+    /// The divisor is recovered from the row's own length, so the two resolutions
+    /// the resonator spiral switches between (5 and 8 bins/semitone, toggled by
+    /// Δφ reassign) each report their true density across the same note labels.
+    #[test]
+    fn bins_per_semitone_reads_each_rows_own_resolution() {
+        let semitone_count = 13; // 12 semitones between the innermost/outermost label
+        assert_eq!(bins_per_semitone(12 * 5 + 1, semitone_count), 5.0);
+        assert_eq!(bins_per_semitone(12 * 8 + 1, semitone_count), 8.0);
+    }
+
+    /// The crux of the toggle bug: a stale history row captured at one resolution
+    /// must land on the same semitone (hence the same radius) as a fresh row at
+    /// another resolution — because each is scaled by its own length, not a shared
+    /// frame-wide divisor. The last bin of every full row is the top semitone.
+    #[test]
+    fn rows_of_different_resolution_map_to_the_same_semitone() {
+        let semitone_count = 13;
+        let span = (semitone_count - 1) as f32;
+
+        let coarse_len = 12 * 5 + 1; // reassign off
+        let fine_len = 12 * 8 + 1; // reassign on
+        let coarse_top = (coarse_len - 1) as f32 / bins_per_semitone(coarse_len, semitone_count);
+        let fine_top = (fine_len - 1) as f32 / bins_per_semitone(fine_len, semitone_count);
+
+        assert_eq!(coarse_top, span);
+        assert_eq!(fine_top, span);
+    }
+
+    /// Degenerate inputs never invert the mapping (divisor floored at 1.0).
+    #[test]
+    fn bins_per_semitone_is_floored_for_degenerate_rows() {
+        assert_eq!(bins_per_semitone(0, 13), 1.0);
+        assert_eq!(bins_per_semitone(1, 13), 1.0);
+        assert_eq!(bins_per_semitone(99, 1), 1.0);
     }
 }
