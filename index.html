@@ -4,10 +4,19 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>fretboard</title>
-    <!-- Select the wasm bin explicitly: `mic_probe` (src/bin/) is a native-only
-         tool and must not be the trunk artifact. Without this, trunk errors on
-         the ambiguous multi-bin target set. -->
-    <link data-trunk rel="rust" data-bin="fretboard-app" />
+    <!-- Resolve relative URLs (notably the worker loader) against the
+         --public-url base so the app works when served under a sub-path. -->
+    <base data-trunk-public-url />
+    <!-- Main app bin. Selected explicitly because the crate has several bins
+         (`mic_probe`, `dsp_worker`); without data-bin trunk can't disambiguate.
+         data-wasm-opt=4: optimize for SPEED — the audio DSP is FFT/resonator
+         heavy, so codegen speed drives smoothness. -->
+    <link data-trunk rel="rust" data-bin="fretboard-app" data-wasm-opt="4" />
+    <!-- DSP web worker: runs the analysis off the main thread. data-loader-shim
+         emits the stable `dsp_worker_loader.js` the main thread spawns. -->
+    <link data-trunk rel="rust" href="Cargo.toml" data-bin="dsp_worker"
+          data-type="worker" data-loader-shim data-bindgen-target="web"
+          data-wasm-opt="4" />
     <style>
         html, body {
             margin: 0;

@@ -1,5 +1,4 @@
 pub(super) mod imp {
-    use std::collections::VecDeque;
     use std::io::Read;
     use std::process::{
         Child,
@@ -45,7 +44,6 @@ pub(super) mod imp {
         Producer,
         Split,
     };
-    use rustfft::FftPlanner;
 
     use super::super::types::{
         AnalysisSettings,
@@ -56,19 +54,8 @@ pub(super) mod imp {
     };
     use crate::core_types::pitch::PNote;
 
-    mod analysis_math;
     mod devices;
-    mod pitch;
-    mod resonator;
-    mod spectrum;
 
-    use analysis_math::{
-        NOTE_BUCKET_MAX_MIDI,
-        NOTE_BUCKET_MIN_MIDI,
-        frequency_to_note,
-        note_bucket_labels,
-        smooth_frequency,
-    };
     use devices::{
         cpal_device_display_name,
         enumerate_input_options,
@@ -76,16 +63,20 @@ pub(super) mod imp {
         preferred_low_latency_buffer,
         select_cpal_capture,
     };
-    use pitch::{
-        LOWEST_TRACKED_FREQUENCY,
-        detect_pitch_yin,
+
+    // The analysis (FFT/YIN/resonator) and the pipelines that drive it live in
+    // the target-agnostic `audio::core`/`audio::dsp` so the wasm engine reuses
+    // exactly the same code. Native owns only capture + threading below.
+    use crate::audio::core::{
+        AnalysisPipeline,
+        ResonatorPipeline,
+        SharedState,
+        set_shared_error,
     };
-    use resonator::{
-        ResonatorAnalyzer,
-        ResonatorSnapshot,
-        ResonatorViewSettings,
+    use crate::audio::dsp::analysis_math::{
+        NOTE_BUCKET_MAX_MIDI,
+        NOTE_BUCKET_MIN_MIDI,
     };
-    use spectrum::spectrum_bars_for_window;
 
     const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
     #[cfg(target_os = "windows")]
@@ -98,14 +89,7 @@ pub(super) mod imp {
     const PULSE_CAPTURE_PROCESS_MS: u32 = 10;
     const LOW_LATENCY_TARGET_FRAMES: u32 = 256;
 
-    // ------------------------------------------------------------------
-    // Конфигурация анализа
-    // ------------------------------------------------------------------
-    const MAX_WINDOW_SIZE: usize = 16384;
-    const WATERFALL_HISTORY: usize = 52;
-    const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
-    const SILENCE_RMS_THRESHOLD: f32 = 0.0;
-    const INPUT_WAVEFORM_HISTORY: usize = 2048;
+    // Analysis tuning constants (window/waterfall/interval) live in `audio::core`.
 
     // Gain
     const DEFAULT_INPUT_GAIN: f32 = 1.0;
@@ -127,21 +111,7 @@ pub(super) mod imp {
     type SampleProducer = <HeapRb<f32> as Split>::Prod;
     type SampleConsumer = <HeapRb<f32> as Split>::Cons;
 
-    // ------------------------------------------------------------------
-    // Данные, которые UI читает через AudioEngine
-    // ------------------------------------------------------------------
-    struct SharedState {
-        status:              AudioStatus,
-        reading:             Option<TunerReading>,
-        input_waveform:      VecDeque<f32>,
-        waterfall:           VecDeque<Vec<f32>>,
-        note_waterfall:      VecDeque<Vec<f32>>,
-        spiral_waterfall:    VecDeque<Vec<f32>>,
-        resonator_spectrum:  Vec<f32>,
-        resonator_waterfall: VecDeque<Vec<f32>>,
-        resonator_labels:    Vec<String>,
-        smoothed_frequency:  Option<f32>,
-    }
+    // `SharedState` (the UI-facing snapshot) is defined in `audio::core`.
 
     // ------------------------------------------------------------------
     // AudioEngine: тонкий фасад для UI. Всё живое в отдельном audio-треде,
@@ -176,18 +146,7 @@ pub(super) mod imp {
 
     impl AudioEngine {
         pub fn new() -> Self {
-            let shared = Arc::new(Mutex::new(SharedState {
-                status:              AudioStatus::Idle,
-                reading:             None,
-                input_waveform:      VecDeque::with_capacity(INPUT_WAVEFORM_HISTORY),
-                waterfall:           VecDeque::with_capacity(WATERFALL_HISTORY),
-                note_waterfall:      VecDeque::with_capacity(WATERFALL_HISTORY),
-                spiral_waterfall:    VecDeque::with_capacity(WATERFALL_HISTORY),
-                resonator_spectrum:  Vec::new(),
-                resonator_waterfall: VecDeque::with_capacity(WATERFALL_HISTORY),
-                resonator_labels:    Vec::new(),
-                smoothed_frequency:  None,
-            }));
+            let shared = Arc::new(Mutex::new(SharedState::new()));
             let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
             let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
             let input_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
@@ -445,16 +404,7 @@ pub(super) mod imp {
 
         fn reset_shared_state(&self) {
             if let Ok(mut s) = self.shared.lock() {
-                s.reading = None;
-                s.input_waveform.clear();
-                s.waterfall.clear();
-                s.note_waterfall.clear();
-                s.spiral_waterfall.clear();
-                s.resonator_spectrum.clear();
-                s.resonator_waterfall.clear();
-                s.resonator_labels.clear();
-                s.smoothed_frequency = None;
-                s.status = AudioStatus::Listening;
+                s.reset();
             }
         }
 
@@ -1115,288 +1065,4 @@ pub(super) mod imp {
         f32::from(i16::from_le_bytes(bytes)) / 32768.0
     }
 
-    fn set_shared_error(shared: &Arc<Mutex<SharedState>>, msg: &str) {
-        if let Ok(mut state) = shared.lock() {
-            state.status = AudioStatus::Error(msg.to_owned());
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // AnalysisPipeline: чистые функции, ничего аудио-специфичного.
-    // ------------------------------------------------------------------
-    struct ResonatorPipeline {
-        analyzer:     ResonatorAnalyzer,
-        last_publish: Instant,
-    }
-
-    struct AnalysisPipeline {
-        buffer:        VecDeque<f32>,
-        last_analysis: Instant,
-        planner:       FftPlanner<f32>,
-        sample_rate:   f32,
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    struct PitchEstimate {
-        frequency_hz: f32,
-        clarity:      f32,
-    }
-
-    #[derive(Clone, Debug)]
-    struct AnalysisFrame {
-        pitch:            Option<PitchEstimate>,
-        spectrum:         Vec<f32>,
-        note_spectrum:    Vec<f32>,
-        spiral_spectrum:  Vec<f32>,
-        // Камертон момента анализа: нота считается после сглаживания частоты
-        // (в publish_*), а settings туда не доходят — несём значение во фрейме.
-        concert_pitch_hz: f32,
-    }
-
-    impl ResonatorPipeline {
-        fn new(sample_rate: f32) -> Self {
-            Self {
-                analyzer:     ResonatorAnalyzer::new(sample_rate),
-                last_publish: Instant::now() - Duration::from_millis(16),
-            }
-        }
-
-        fn push_samples(
-            &mut self,
-            samples: impl IntoIterator<Item = f32>,
-            shared: &Arc<Mutex<SharedState>>,
-            settings: &Arc<Mutex<AnalysisSettings>>,
-            input_gain: &Arc<AtomicU32>,
-        ) {
-            let analysis_settings = settings.lock().map(|g| g.clone()).unwrap_or_default().sanitized();
-            self.sync_settings(&analysis_settings, shared);
-
-            let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
-            let samples: Vec<f32> = samples.into_iter().map(|sample| sample * gain).collect();
-            self.analyzer.process_samples(&samples, analysis_settings.resonator.reassign);
-
-            let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
-            if self.last_publish.elapsed() < publish_interval {
-                return;
-            }
-            self.last_publish = Instant::now();
-            publish_resonator_snapshot(
-                shared,
-                self.analyzer.snapshot(analysis_settings.resonator.reassign),
-                analysis_settings.resonator.history,
-            );
-        }
-
-        fn sync_settings(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
-            let requested = ResonatorViewSettings::from(settings);
-            if !self.analyzer.sync_settings(requested) {
-                return;
-            }
-            if let Ok(mut state) = shared.lock() {
-                state.resonator_spectrum.clear();
-                state.resonator_waterfall.clear();
-                state.resonator_labels = self.analyzer.note_labels();
-                let resonator_labels = state.resonator_labels.clone();
-                if let Some(reading) = state.reading.as_mut() {
-                    reading.resonator_spectrum.clear();
-                    reading.resonator_waterfall.clear();
-                    reading.resonator_note_labels = resonator_labels;
-                }
-            }
-        }
-    }
-
-    impl AnalysisPipeline {
-        fn new(sample_rate: f32) -> Self {
-            Self {
-                buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
-                last_analysis: Instant::now() - ANALYSIS_INTERVAL,
-                planner: FftPlanner::new(),
-                sample_rate,
-            }
-        }
-
-        fn push_samples(
-            &mut self,
-            samples: impl IntoIterator<Item = f32>,
-            shared: &Arc<Mutex<SharedState>>,
-            settings: &Arc<Mutex<AnalysisSettings>>,
-            input_gain: &Arc<AtomicU32>,
-            input_level: &Arc<AtomicU32>,
-        ) {
-            let analysis_settings = settings.lock().map(|g| g.clone()).unwrap_or_default().sanitized();
-            let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
-            let mut recent: Vec<f32> = Vec::new();
-
-            // Применяем гейн без хард-клипа: обрезка в signal-path рождает
-            // гармоники, сбивает YIN/FFT. Отрисовка сама клипит на ±1 при ренде.
-            for s in samples {
-                let scaled = s * gain;
-                self.buffer.push_back(scaled);
-                recent.push(scaled);
-            }
-
-            append_input_waveform(shared, &recent);
-
-            while self.buffer.len() > MAX_WINDOW_SIZE * 2 {
-                self.buffer.pop_front();
-            }
-
-            if self.buffer.len() < analysis_settings.window_size
-                || self.last_analysis.elapsed() < ANALYSIS_INTERVAL
-            {
-                return;
-            }
-            self.last_analysis = Instant::now();
-
-            let start = self.buffer.len().saturating_sub(analysis_settings.window_size);
-            let window: Vec<f32> = self.buffer.iter().skip(start).copied().collect();
-            let level = normalized_level(&window);
-            let previous_level = f32::from_bits(input_level.load(Ordering::Relaxed));
-            let smoothed_level_value = smoothed_level(previous_level, level);
-            input_level.store(smoothed_level_value.to_bits(), Ordering::Relaxed);
-            let frame = analyze_window(&window, self.sample_rate, &analysis_settings, &mut self.planner);
-            publish_analysis_reading(shared, frame);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Чистые функции анализа (FFT / YIN / резонаторы / метки)
-    // ------------------------------------------------------------------
-    fn normalized_level(window: &[f32]) -> f32 {
-        let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
-        if rms <= f32::EPSILON {
-            return 0.0;
-        }
-        let db = 20.0 * rms.log10();
-        ((db + 54.0) / 48.0).clamp(0.0, 1.0)
-    }
-
-    fn smoothed_level(previous: f32, current: f32) -> f32 {
-        let alpha = if current > previous { 0.32 } else { 0.12 };
-        previous + (current - previous) * alpha
-    }
-
-    fn analyze_window(
-        window: &[f32],
-        sample_rate: f32,
-        settings: &AnalysisSettings,
-        planner: &mut FftPlanner<f32>,
-    ) -> AnalysisFrame {
-        let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
-        let (spectrum, note_spectrum, spiral_spectrum) =
-            spectrum_bars_for_window(window, sample_rate, settings, planner);
-        let pitch = if rms < SILENCE_RMS_THRESHOLD {
-            None
-        } else {
-            detect_pitch_yin(window, sample_rate).and_then(|(f, c)| {
-                (LOWEST_TRACKED_FREQUENCY..=1200.0)
-                    .contains(&f)
-                    .then_some(PitchEstimate {
-                        frequency_hz: f,
-                        clarity:      c,
-                    })
-            })
-        };
-
-        AnalysisFrame {
-            pitch,
-            spectrum,
-            note_spectrum,
-            spiral_spectrum,
-            concert_pitch_hz: settings.concert_pitch_hz,
-        }
-    }
-
-    fn append_input_waveform(shared: &Arc<Mutex<SharedState>>, samples: &[f32]) {
-        if samples.is_empty() {
-            return;
-        }
-        if let Ok(mut state) = shared.lock() {
-            state.input_waveform.extend(samples.iter().copied());
-            while state.input_waveform.len() > INPUT_WAVEFORM_HISTORY {
-                state.input_waveform.pop_front();
-            }
-        }
-    }
-
-    fn push_limited_history<T>(history: &mut VecDeque<T>, item: T, max_len: usize) {
-        history.push_back(item);
-        while history.len() > max_len {
-            history.pop_front();
-        }
-    }
-
-    fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFrame) {
-        if let Ok(mut state) = shared.lock() {
-            let (smoothed_frequency, clarity) = match frame.pitch {
-                Some(pitch) => {
-                    let sf = smooth_frequency(state.smoothed_frequency, pitch.frequency_hz);
-                    state.smoothed_frequency = Some(sf);
-                    (sf, pitch.clarity)
-                }
-                None => {
-                    let Some(sf) = state.smoothed_frequency else {
-                        return;
-                    };
-                    (sf, 0.0)
-                }
-            };
-
-            let (note_name, cents) = frequency_to_note(smoothed_frequency, frame.concert_pitch_hz);
-            push_limited_history(&mut state.waterfall, frame.spectrum.clone(), WATERFALL_HISTORY);
-            push_limited_history(
-                &mut state.note_waterfall,
-                frame.note_spectrum.clone(),
-                WATERFALL_HISTORY,
-            );
-            push_limited_history(
-                &mut state.spiral_waterfall,
-                frame.spiral_spectrum.clone(),
-                WATERFALL_HISTORY,
-            );
-            state.reading = Some(TunerReading {
-                frequency_hz: smoothed_frequency,
-                note_name,
-                cents,
-                clarity,
-                spectrum: frame.spectrum,
-                waterfall: state.waterfall.iter().cloned().collect(),
-                note_spectrum: frame.note_spectrum,
-                note_waterfall: state.note_waterfall.iter().cloned().collect(),
-                spiral_spectrum: frame.spiral_spectrum,
-                spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
-                resonator_spectrum: state.resonator_spectrum.clone(),
-                resonator_waterfall: state.resonator_waterfall.iter().cloned().collect(),
-                resonator_note_labels: state.resonator_labels.clone(),
-                note_labels: note_bucket_labels(),
-            });
-            state.status = AudioStatus::Listening;
-        }
-    }
-
-    fn publish_resonator_snapshot(
-        shared: &Arc<Mutex<SharedState>>,
-        snapshot: ResonatorSnapshot,
-        history_len: usize,
-    ) {
-        if let Ok(mut state) = shared.lock() {
-            state.resonator_spectrum = snapshot.spectrum;
-            state.resonator_labels = snapshot.note_labels;
-            let resonator_spectrum = state.resonator_spectrum.clone();
-            let resonator_labels = state.resonator_labels.clone();
-            push_limited_history(
-                &mut state.resonator_waterfall,
-                resonator_spectrum.clone(),
-                history_len,
-            );
-            let resonator_waterfall: Vec<Vec<f32>> = state.resonator_waterfall.iter().cloned().collect();
-
-            if let Some(reading) = state.reading.as_mut() {
-                reading.resonator_spectrum = resonator_spectrum;
-                reading.resonator_waterfall = resonator_waterfall;
-                reading.resonator_note_labels = resonator_labels;
-            }
-        }
-    }
 }
