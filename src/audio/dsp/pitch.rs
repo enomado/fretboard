@@ -1,9 +1,9 @@
 use super::analysis_math::parabolic_tau;
 
-pub(super) const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
+pub(crate) const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
 const YIN_THRESHOLD: f32 = 0.12;
 
-pub(super) fn detect_pitch_yin(window: &[f32], sample_rate: f32) -> Option<(f32, f32)> {
+pub(crate) fn detect_pitch_yin(window: &[f32], sample_rate: f32) -> Option<(f32, f32)> {
     let min_lag = (sample_rate / 1000.0).max(1.0) as usize;
     let max_lag = (sample_rate / LOWEST_TRACKED_FREQUENCY) as usize;
     let search_end = max_lag.min(window.len().saturating_sub(1));

@@ -1,6 +1,8 @@
 use crate::core_types::pitch::PNote;
 
-#[derive(Clone, Debug)]
+// Serialize/Deserialize so the wasm DSP web worker can ship readings back to the
+// main thread (bincode over postMessage). Inert on native.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TunerReading {
     pub frequency_hz:          f32,
     pub note_name:             String,
@@ -18,14 +20,14 @@ pub struct TunerReading {
     pub note_labels:           Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResonatorReading {
     pub spectrum:    Vec<f32>,
     pub waterfall:   Vec<Vec<f32>>,
     pub note_labels: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum AudioStatus {
     Idle,
     Listening,
@@ -94,15 +96,10 @@ fn default_reassign() -> bool {
     true
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 const MIN_WINDOW_SIZE: usize = 2048;
-#[cfg(not(target_arch = "wasm32"))]
 const MAX_WINDOW_SIZE: usize = 16384;
-#[cfg(not(target_arch = "wasm32"))]
 const MIN_FFT_SIZE: usize = 4096;
-#[cfg(not(target_arch = "wasm32"))]
 const MAX_FFT_SIZE: usize = 32768;
-#[cfg(not(target_arch = "wasm32"))]
 const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
 
 fn default_concert_pitch_hz() -> f32 {
@@ -143,7 +140,6 @@ impl Default for ResonatorSettings {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl AnalysisSettings {
     pub(crate) fn sanitized(mut self) -> Self {
         self.window_size = self.window_size.clamp(MIN_WINDOW_SIZE, MAX_WINDOW_SIZE);
@@ -175,7 +171,6 @@ impl AnalysisSettings {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl ResonatorSettings {
     pub(crate) fn sanitized(mut self) -> Self {
         // Clamp in raw-MIDI space (the newtype has no arithmetic), keeping the

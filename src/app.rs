@@ -9,10 +9,9 @@ mod scale_finder;
 mod workspace;
 
 use std::ops::Range;
-use std::time::{
-    Duration,
-    Instant,
-};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use eframe::egui::{
     self,

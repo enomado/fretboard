@@ -216,7 +216,7 @@ impl App {
         // его «нужным». Закрылась → запросы прекратились → банк паркуется.
         self.audio.request_resonator();
 
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         let reading = self.audio.reading();
         let settings = self.audio.analysis_settings();
 

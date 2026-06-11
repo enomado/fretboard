@@ -51,7 +51,7 @@ const GATE_MAX_SEMITONES: f32 = 2.0;
 const OUTPUT_BINS_PER_SEMITONE: usize = SPIRAL_BINS_PER_SEMITONE;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct ResonatorViewSettings {
+pub(crate) struct ResonatorViewSettings {
     min_midi:          usize,
     max_midi:          usize,
     bins_per_semitone: usize,
@@ -64,13 +64,13 @@ pub(super) struct ResonatorViewSettings {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct ResonatorSnapshot {
-    pub(super) spectrum:    Vec<f32>,
-    pub(super) note_labels: Vec<String>,
+pub(crate) struct ResonatorSnapshot {
+    pub(crate) spectrum:    Vec<f32>,
+    pub(crate) note_labels: Vec<String>,
 }
 
 #[derive(Debug)]
-pub(super) struct ResonatorAnalyzer {
+pub(crate) struct ResonatorAnalyzer {
     settings:    ResonatorViewSettings,
     sample_rate: f32,
     bank:        OnePoleBank,
@@ -86,7 +86,7 @@ pub(super) struct ResonatorAnalyzer {
 }
 
 impl ResonatorViewSettings {
-    pub(super) fn note_labels(&self) -> Vec<String> {
+    pub(crate) fn note_labels(&self) -> Vec<String> {
         resonator_note_labels(self.min_midi, self.max_midi)
     }
 }
@@ -124,7 +124,7 @@ impl From<&AnalysisSettings> for ResonatorViewSettings {
 }
 
 impl ResonatorAnalyzer {
-    pub(super) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(sample_rate: f32) -> Self {
         let settings = ResonatorViewSettings::default();
         let bank = build_resonator_bank(sample_rate, &settings);
         let n = bank.len();
@@ -139,7 +139,7 @@ impl ResonatorAnalyzer {
         }
     }
 
-    pub(super) fn sync_settings(&mut self, requested: ResonatorViewSettings) -> bool {
+    pub(crate) fn sync_settings(&mut self, requested: ResonatorViewSettings) -> bool {
         if requested == self.settings {
             return false;
         }
@@ -165,7 +165,7 @@ impl ResonatorAnalyzer {
     /// bank in one shot and skip it. The tracking state is reset so re-enabling
     /// reassignment restarts from a clean phase baseline rather than differencing
     /// across the gap where measurement was suspended.
-    pub(super) fn process_samples(&mut self, samples: &[f32], reassign: bool) {
+    pub(crate) fn process_samples(&mut self, samples: &[f32], reassign: bool) {
         if !reassign {
             self.bank.process_samples(samples);
             self.pending = 0;
@@ -218,11 +218,11 @@ impl ResonatorAnalyzer {
         self.have_phase = true;
     }
 
-    pub(super) fn snapshot(&self, reassign: bool) -> ResonatorSnapshot {
+    pub(crate) fn snapshot(&self, reassign: bool) -> ResonatorSnapshot {
         resonator_snapshot(&self.bank, &self.settings, &self.detuning_hz, reassign)
     }
 
-    pub(super) fn note_labels(&self) -> Vec<String> {
+    pub(crate) fn note_labels(&self) -> Vec<String> {
         self.settings.note_labels()
     }
 }

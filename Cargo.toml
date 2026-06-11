@@ -24,6 +24,21 @@ itertools = { version = "0.14.0" }
 serde_json.workspace = true
 serde.workspace = true
 nom = { version = "8.0" }
+# `Instant` that works on every target: re-exports std on native/Android, and
+# uses `performance.now()` on wasm — std::time::Instant panics ("time not
+# implemented on this platform") on wasm32-unknown-unknown.
+web-time = "1.1"
+
+# DSP core (FFT spectrum + resonator bank) — shared by the native and wasm audio
+# engines (`audio::dsp`/`audio::core`), so these are all-target deps. cpal/ringbuf
+# stay native-only: the browser captures via Web Audio, not cpal.
+rustfft = "6.4"
+# Fork (PR jhartquist/resonators#6): adds OnePoleBank — the phasor-free, self-
+# stabilizing core (~1.4–1.7× faster) plus an f64 de-rotation fix that keeps
+# phase()/complex() accurate over a long session. We drive the snail's Δφ
+# reassignment off phase(), so the f64 fix matters here. Pin to a rev so the
+# build is reproducible; bump to the crates.io release once the PR lands.
+resonators = { git = "https://github.com/enomado/resonators.git", branch = "onepole-bank" }
 
 eframe.workspace = true
 
@@ -33,13 +48,6 @@ ron = "0.12"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "0.18.1"
-rustfft = "6.4"
-# Fork (PR jhartquist/resonators#6): adds OnePoleBank — the phasor-free, self-
-# stabilizing core (~1.4–1.7× faster) plus an f64 de-rotation fix that keeps
-# phase()/complex() accurate over a long session. We drive the snail's Δφ
-# reassignment off phase(), so the f64 fix matters here. Pin to a rev so the
-# build is reproducible; bump to the crates.io release once the PR lands.
-resonators = { git = "https://github.com/enomado/resonators.git", branch = "onepole-bank" }
 ringbuf = "0.5"
 
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
@@ -60,7 +68,42 @@ ndk-context = "0.1"
 eframe = { workspace = true, features = ["glow", "persistence"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Document", "Window", "HtmlCanvasElement", "Element"] }
+js-sys = "0.3"
+# Wire format for main-thread ↔ DSP-worker messages (samples / settings out,
+# readings back). Compact binary, much cheaper than JSON for the f32 spectra.
+bincode = "1.3"
+# Web Audio capture (mic via getUserMedia, system via getDisplayMedia) + the
+# audio graph (MediaStreamSource → ScriptProcessor) that ships samples to the
+# DSP web worker.
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "Element",
+    "HtmlCanvasElement",
+    "Navigator",
+    "MediaDevices",
+    "MediaDeviceInfo",
+    "MediaDeviceKind",
+    "MediaStream",
+    "MediaStreamTrack",
+    "MediaStreamConstraints",
+    "DisplayMediaStreamConstraints",
+    "AudioContext",
+    "BaseAudioContext",
+    "AudioContextState",
+    "MediaStreamAudioSourceNode",
+    "ScriptProcessorNode",
+    "AudioProcessingEvent",
+    "AudioBuffer",
+    "AudioNode",
+    "AudioDestinationNode",
+    "Event",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
+    "DedicatedWorkerGlobalScope",
+    "MessageEvent",
+] }
 
 [package.metadata.android]
 package = "com.fretboard.snail"
@@ -97,6 +140,14 @@ exported = true
 orientation = "portrait"
 
 [profile]
+
+# Release builds the wasm/web bundle: the audio DSP runs on the main thread
+# there, so squeeze codegen. fat LTO + a single codegen unit let the optimizer
+# inline across the FFT/resonator hot path; trunk's wasm-opt (data-wasm-opt=4)
+# then does a second speed pass on the wasm.
+[profile.release]
+lto = "fat"
+codegen-units = 1
 
 [profile.wasm-dev]
 inherits = "dev"

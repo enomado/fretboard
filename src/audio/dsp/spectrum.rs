@@ -14,7 +14,7 @@ use super::analysis_math::{
 };
 use crate::audio::types::AnalysisSettings;
 
-pub(super) fn spectrum_bars_for_window(
+pub(crate) fn spectrum_bars_for_window(
     window: &[f32],
     sample_rate: f32,
     settings: &AnalysisSettings,
