@@ -2,9 +2,17 @@
 name = "fretboard"
 version = "0.1.0"
 edition = "2024"
-default-run = "fretboard"
+# The bin target is named distinctly from the lib so the wasm/web build can
+# disambiguate. On wasm `cargo` emits BOTH this bin's wasm and the lib's cdylib
+# wasm (the cdylib exists for Android NativeActivity); trunk selects an artifact
+# by target NAME, so the bin and lib must not both be named `fretboard`.
+default-run = "fretboard-app"
 
-# rlib: consumed by the desktop/wasm `fretboard` bin (src/main.rs).
+[[bin]]
+name = "fretboard-app"
+path = "src/main.rs"
+
+# rlib: consumed by the desktop/wasm `fretboard-app` bin (src/main.rs).
 # cdylib: NativeActivity dlopen's `libfretboard.so` on Android — without it
 # cargo-apk silently packages a stale leftover .so and your changes never ship.
 [lib]
