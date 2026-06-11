@@ -4,6 +4,10 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>fretboard</title>
+    <!-- Select the wasm bin explicitly: `mic_probe` (src/bin/) is a native-only
+         tool and must not be the trunk artifact. Without this, trunk errors on
+         the ambiguous multi-bin target set. -->
+    <link data-trunk rel="rust" data-bin="fretboard-app" />
     <style>
         html, body {
             margin: 0;
