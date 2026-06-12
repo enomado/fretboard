@@ -233,8 +233,15 @@ fn build_resonator_bank(sample_rate: f32, settings: &ResonatorViewSettings) -> O
         .map(|i| {
             let midi = settings.min_midi as f32 + i as f32 / settings.bins_per_semitone as f32;
             let frequency = midi_to_hz(midi, settings.reference_hz);
-            let alpha = (heuristic_alpha(frequency, sample_rate) * settings.alpha_scale).clamp(0.0001, 1.0);
-            let beta = (heuristic_alpha(frequency, sample_rate) * settings.beta_scale).clamp(0.0001, 1.0);
+            // Floor guards only alpha > 0 (a zero coefficient is a dead resonator);
+            // it must sit well below base_alpha * min(slider). The old floor of 1e-4
+            // silently swallowed the bottom of the slider range for bass bins: at
+            // C0 (~16 Hz) base alpha ≈ 3e-4, so any scale below ~0.33 was clamped
+            // flat. At 1e-6 the slider stays effective down to scale 0.001 for
+            // every bin above ~90 Hz (tau ≈ 23 s at the floor — extreme but stable:
+            // 1 − alpha < 1 keeps the pole inside the unit circle).
+            let alpha = (heuristic_alpha(frequency, sample_rate) * settings.alpha_scale).clamp(1e-6, 1.0);
+            let beta = (heuristic_alpha(frequency, sample_rate) * settings.beta_scale).clamp(1e-6, 1.0);
             ResonatorConfig::new(frequency, alpha, beta)
         })
         .collect();

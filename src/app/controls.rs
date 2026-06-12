@@ -836,14 +836,19 @@ impl App {
             if ui
                 .add_sized(
                     [150.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.alpha, 0.05..=12.0).show_value(false),
+                    // Логарифмический: перцептуально интересна нижняя декада
+                    // (0.001..0.1 — длинный «звон»), на линейной шкале она
+                    // занимала бы <1% хода слайдера.
+                    egui::Slider::new(&mut settings.resonator.alpha, 0.001..=12.0)
+                        .logarithmic(true)
+                        .show_value(false),
                 )
                 .changed()
             {
                 *changed = true;
             }
             ui.label(
-                RichText::new(format!("{:.2}", settings.resonator.alpha))
+                RichText::new(format!("{:.3}", settings.resonator.alpha))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -858,14 +863,16 @@ impl App {
             if ui
                 .add_sized(
                     [150.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.beta, 0.05..=12.0).show_value(false),
+                    egui::Slider::new(&mut settings.resonator.beta, 0.001..=12.0)
+                        .logarithmic(true)
+                        .show_value(false),
                 )
                 .changed()
             {
                 *changed = true;
             }
             ui.label(
-                RichText::new(format!("{:.2}", settings.resonator.beta))
+                RichText::new(format!("{:.3}", settings.resonator.beta))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -989,8 +996,90 @@ impl App {
                 *changed = true;
             }
         });
+
+        // Collapsed crib sheet for every knob above: costs one header line until
+        // opened. Lives here (desktop tab) only — the Android strip in
+        // `resonator_panel.rs` has no room for it.
+        ui.add_space(10.0);
+        egui::CollapsingHeader::new(
+            RichText::new("What do these knobs do?").color(Color32::from_rgb(152, 158, 165)),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            for (name, text) in RESONATOR_PARAM_HELP {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(
+                        RichText::new(*name)
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    ui.label(RichText::new(*text).color(Color32::from_rgb(152, 158, 165)));
+                });
+                ui.add_space(4.0);
+            }
+        });
     }
 }
+
+// Plain-English help for the resonator config tab, one entry per knob, in the
+// same order they appear on screen.
+const RESONATOR_PARAM_HELP: &[(&str, &str)] = &[
+    (
+        "Range",
+        "Pitch span the resonator bank covers. Every semitone in the span gets \
+         its own resonators, so widening the range adds bins (CPU).",
+    ),
+    (
+        "Bins / semitone",
+        "Resonator density on the nominal pitch grid. More bins resolve closely \
+         spaced partials better but cost CPU. With Δφ reassign on, the on-screen \
+         grid is already finer than the bank, so this mostly affects tracking, \
+         not display resolution.",
+    ),
+    (
+        "Alpha",
+        "Bandwidth vs. ring time of each resonator (scales the input-stage \
+         filter coefficient; ring time grows as 1/Alpha, slider is logarithmic, \
+         1.0 = the per-frequency default). Lower = narrower band, longer ring: \
+         notes sustain on screen and pitch sharpens, but response slows — at A4 \
+         roughly 6 ms at 1.0, 0.6 s at 0.01, 6 s at 0.001. Higher = snappier \
+         attack, blurrier pitch.",
+    ),
+    (
+        "Beta",
+        "Smoothing of the displayed envelope (the second filter stage), scaled \
+         the same way as Alpha. Lower = bars rise and decay smoothly and linger; \
+         higher = they follow the resonator immediately and jitter more.",
+    ),
+    (
+        "Gamma",
+        "Display contrast. Each frame is normalised to its loudest bin, then \
+         raised to this power: below 1 lifts quiet bins, above 1 keeps only the \
+         peaks.",
+    ),
+    (
+        "Mode",
+        "Magnitude draws linear amplitude; Power draws its square, stretching \
+         the contrast between strong and weak partials.",
+    ),
+    (
+        "History",
+        "How many published frames the waterfall / spiral trail keeps. Trail \
+         duration ≈ History × Update.",
+    ),
+    (
+        "Update",
+        "How often a fresh frame is published to the UI, in milliseconds. Lower \
+         = smoother motion, slightly more work per second.",
+    ),
+    (
+        "Δφ reassign",
+        "Re-places each bin's energy at its measured instantaneous frequency: \
+         sub-bin pitch accuracy, plus a coherence gate that mutes noise and \
+         mirror images. Off = plain per-bin magnitudes at nominal pitch.",
+    ),
+];
 
 fn midi_label(midi: PNote) -> String {
     const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
