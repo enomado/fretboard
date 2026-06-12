@@ -17,9 +17,12 @@ mod worker_proto;
 pub use native::imp::AudioEngine;
 pub use types::{
     AnalysisSettings,
+    ArpPattern,
     AudioInputKind,
     AudioInputOption,
     AudioStatus,
+    DroneMode,
+    DroneState,
     ResonatorReading,
     ResonatorSettings,
     TunerReading,

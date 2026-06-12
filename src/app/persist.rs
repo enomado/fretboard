@@ -20,7 +20,10 @@ use super::{
     TuningKind,
     WorkspaceTab,
 };
-use crate::audio::AnalysisSettings;
+use crate::audio::{
+    AnalysisSettings,
+    DroneState,
+};
 use crate::core_types::note::Note;
 use crate::core_types::pitch::PNote;
 use crate::core_types::scale_detect::ScaleFinderConfig;
@@ -42,6 +45,10 @@ pub(super) struct PersistentState {
     monitor_enabled:   bool,
     monitor_gain:      f32,
     selected_input_id: Option<String>,
+    /// Состояние дрон-плеера (набор нот, режим, темп). `serde(default)` — мягкая
+    /// миграция: в RON прошлых версий поля нет, берём дефолтный дрон.
+    #[serde(default)]
+    drone:             DroneState,
     workspace_tree:    egui_tiles::Tree<WorkspaceTab>,
 }
 
@@ -77,6 +84,7 @@ impl App {
         self.audio.set_monitor_enabled(state.monitor_enabled);
         self.audio.set_monitor_gain(state.monitor_gain);
         self.audio.set_selected_input_id(state.selected_input_id);
+        self.audio.set_drone_state(state.drone);
     }
 
     /// Snapshot the current state for eframe to serialize to RON. The docking
@@ -95,6 +103,7 @@ impl App {
             monitor_enabled:   self.audio.monitor_enabled(),
             monitor_gain:      self.audio.monitor_gain(),
             selected_input_id: self.audio.selected_input_id(),
+            drone:             self.audio.drone_state(),
             workspace_tree:    self.workspace_tree.clone().unwrap(),
         }
     }
@@ -124,6 +133,7 @@ mod tests {
             monitor_enabled:   true,
             monitor_gain:      0.25,
             selected_input_id: Some("pulse::@DEFAULT_SOURCE@".to_owned()),
+            drone:             crate::audio::DroneState::default(),
             workspace_tree:    default_workspace_tree(),
         };
 

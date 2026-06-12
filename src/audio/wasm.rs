@@ -35,6 +35,7 @@ use crate::audio::types::{
     AudioInputKind,
     AudioInputOption,
     AudioStatus,
+    DroneState,
     ResonatorReading,
     TunerReading,
 };
@@ -111,6 +112,9 @@ struct Inner {
     selected_input_id:   RefCell<Option<String>>,
     capture:             RefCell<Option<Capture>>,
     sample_rate:         Cell<u32>,
+    // Состояние дрона держим, чтобы UI на wasm работал и персистился; синтеза
+    // нет (Web Audio output-граф дрона ещё не реализован) — методы инертны.
+    drone:               RefCell<DroneState>,
     last_resonator_post: Cell<Instant>,
     // Kept alive for as long as the engine lives so the worker callback fires.
     _on_message:         Closure<dyn FnMut(web_sys::MessageEvent)>,
@@ -157,6 +161,7 @@ impl AudioEngine {
             selected_input_id: RefCell::new(None),
             capture: RefCell::new(None),
             sample_rate: Cell::new(0),
+            drone: RefCell::new(DroneState::default()),
             last_resonator_post: Cell::new(Instant::now() - RESONATOR_POST_INTERVAL),
             _on_message: on_message,
         });
@@ -253,6 +258,23 @@ impl AudioEngine {
 
     /// No speaker output graph on wasm — test-tone playback is a no-op here.
     pub fn play_test_note(&self, _midi: PNote) {}
+
+    // ── Drone: state round-trips for the UI/persist, but no audio on wasm yet. ──
+    pub fn drone_state(&self) -> DroneState {
+        self.inner.drone.borrow().clone()
+    }
+
+    pub fn set_drone_state(&self, state: DroneState) {
+        *self.inner.drone.borrow_mut() = state.sanitized();
+    }
+
+    pub fn drone_playing(&self) -> bool {
+        false
+    }
+
+    pub fn start_drone(&self) {}
+
+    pub fn stop_drone(&self) {}
 
     pub fn request_resonator(&self) {
         // Re-assert the gate at most every RESONATOR_POST_INTERVAL; the UI calls

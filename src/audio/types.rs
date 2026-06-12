@@ -196,6 +196,108 @@ impl ResonatorSettings {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Drone player — целевой инструмент для занятий музыкой: тянет ноту/аккорд
+// непрерывно, ритмично пульсирует или арпеджирует набор нот. Состояние живёт в
+// движке (источник истины); UI читает/правит/пишет его целиком, как настройки
+// анализа. Синтез — нативный (см. `audio::native`), wasm держит копию инертно.
+// ----------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DroneMode {
+    /// Все ноты набора звучат непрерывно (классический дрон/аккорд).
+    Sustained,
+    /// Весь набор пульсирует в такт: вкл `pulse_duty` доли удара, потом тишина.
+    Pulse,
+    /// Ноты набора играются по очереди (маленький арпеджиатор) на каждый удар.
+    Arp,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ArpPattern {
+    Up,
+    Down,
+    UpDown,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct DroneState {
+    /// Набор звучащих нот. Инвариант после `sanitized`: отсортирован, без
+    /// дублей, длина ≤ [`DRONE_MAX_NOTES`]. Пустой набор = тишина (валидно).
+    pub notes:        Vec<PNote>,
+    /// Мастер-громкость дрона, 0..=1.
+    pub gain:         f32,
+    /// Эталон A4 (камертон). UI держит его в синхроне с настройками анализа,
+    /// чтобы дрон звучал по тому же строю, что и тюнер. Частота ноты считается
+    /// в реалтайме из этого значения, поэтому смена камертона слышна сразу.
+    pub reference_hz: f32,
+    pub mode:         DroneMode,
+    /// Темп пульса/арпеджио в ударах в минуту (один удар = один шаг).
+    pub bpm:          f32,
+    /// Доля удара, в которой звук включён в режиме [`DroneMode::Pulse`], 0..=1.
+    pub pulse_duty:   f32,
+    /// Доля шага, в которой звучит нота в режиме [`DroneMode::Arp`], 0..=1.
+    pub arp_gate:     f32,
+    pub arp_pattern:  ArpPattern,
+    /// Тембр: 0 = почти чистая синусоида, 1 = ярко, с обертонами.
+    pub brightness:   f32,
+}
+
+/// Потолок полифонии дрона. Держим набор компактным — это инструмент для
+/// занятий (дрон/аккорд/арпеджио), а не сэмплер; заодно ограничивает сумму
+/// амплитуд в реалтайм-колбэке.
+pub const DRONE_MAX_NOTES: usize = 12;
+
+impl Default for DroneState {
+    fn default() -> Self {
+        Self {
+            // A2 — низкий, спокойный референс-дрон по умолчанию.
+            notes:        vec![PNote::new(45).unwrap()],
+            gain:         0.4,
+            reference_hz: 440.0,
+            mode:         DroneMode::Sustained,
+            bpm:          80.0,
+            pulse_duty:   0.5,
+            arp_gate:     0.6,
+            arp_pattern:  ArpPattern::Up,
+            brightness:   0.4,
+        }
+    }
+}
+
+impl DroneState {
+    pub fn sanitized(mut self) -> Self {
+        // Ноты: отбрасываем дубли и сортируем (арпеджио идёт по высоте),
+        // затем подрезаем до потолка полифонии.
+        self.notes.sort();
+        self.notes.dedup();
+        self.notes.truncate(DRONE_MAX_NOTES);
+        self.gain = self.gain.clamp(0.0, 1.0);
+        // Камертон — те же границы, что у `AnalysisSettings` (400..466).
+        self.reference_hz = self.reference_hz.clamp(400.0, 466.0);
+        self.bpm = self.bpm.clamp(20.0, 300.0);
+        self.pulse_duty = self.pulse_duty.clamp(0.05, 0.95);
+        self.arp_gate = self.arp_gate.clamp(0.05, 1.0);
+        self.brightness = self.brightness.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Переключить присутствие ноты в наборе (для тумблер-клавиатуры в UI).
+    /// Сохраняет инвариант сортировки/уникальности.
+    pub fn toggle_note(&mut self, note: PNote) {
+        match self.notes.binary_search(&note) {
+            Ok(idx) => {
+                self.notes.remove(idx);
+            }
+            Err(idx) => {
+                if self.notes.len() < DRONE_MAX_NOTES {
+                    self.notes.insert(idx, note);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +342,56 @@ mod tests {
         assert!((0.15..=2.4).contains(&settings.resonator.gamma));
         assert!((8..=240).contains(&settings.resonator.history));
         assert!((8..=80).contains(&settings.resonator.update_ms));
+    }
+
+    #[test]
+    fn drone_sanitized_enforces_invariants() {
+        let dirty = DroneState {
+            // Дубли + не по порядку + сверх потолка полифонии.
+            notes:        (0..30u8).rev().map(|i| PNote::new(40 + i).unwrap()).collect(),
+            gain:         5.0,
+            reference_hz: 1000.0,
+            mode:         DroneMode::Arp,
+            bpm:          5000.0,
+            pulse_duty:   2.0,
+            arp_gate:     -1.0,
+            arp_pattern:  ArpPattern::UpDown,
+            brightness:   9.0,
+        };
+        let clean = dirty.sanitized();
+        assert!(clean.notes.len() <= DRONE_MAX_NOTES);
+        assert!(clean.notes.windows(2).all(|w| w[0] < w[1]), "sorted + deduped");
+        assert!((0.0..=1.0).contains(&clean.gain));
+        assert!((400.0..=466.0).contains(&clean.reference_hz));
+        assert!((20.0..=300.0).contains(&clean.bpm));
+        assert!((0.05..=0.95).contains(&clean.pulse_duty));
+        assert!((0.05..=1.0).contains(&clean.arp_gate));
+        assert!((0.0..=1.0).contains(&clean.brightness));
+    }
+
+    #[test]
+    fn drone_toggle_note_adds_and_removes_keeping_order() {
+        let mut drone = DroneState {
+            notes: Vec::new(),
+            ..DroneState::default()
+        };
+        let a = PNote::new(57).unwrap();
+        let b = PNote::new(45).unwrap();
+        drone.toggle_note(a);
+        drone.toggle_note(b);
+        assert_eq!(drone.notes, vec![b, a], "kept sorted on insert");
+        drone.toggle_note(a);
+        assert_eq!(drone.notes, vec![b], "second toggle removes");
+    }
+
+    #[test]
+    fn drone_toggle_note_respects_polyphony_cap() {
+        let mut drone = DroneState { notes: Vec::new(), ..DroneState::default() };
+        // Пытаемся набить больше потолка — лишние тихо отбрасываются.
+        for midi in 36..36 + (DRONE_MAX_NOTES as u8 + 5) {
+            drone.toggle_note(PNote::new(midi).unwrap());
+        }
+        assert_eq!(drone.notes.len(), DRONE_MAX_NOTES);
     }
 
     #[test]
