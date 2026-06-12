@@ -184,8 +184,11 @@ impl ResonatorSettings {
         self.min_midi = PNote::new(min).unwrap();
         self.max_midi = PNote::new(max).unwrap();
         self.bins = self.bins.clamp(1, 12);
-        self.alpha = self.alpha.clamp(0.05, 12.0);
-        self.beta = self.beta.clamp(0.05, 12.0);
+        // Низ 0.001 (а не 0.05): меньшая alpha = длиннее тау = «звон» резонатора;
+        // именно нижняя декада даёт слышимый/видимый отклик, верх после
+        // нормализации почти неразличим.
+        self.alpha = self.alpha.clamp(0.001, 12.0);
+        self.beta = self.beta.clamp(0.001, 12.0);
         self.gamma = self.gamma.clamp(0.15, 2.4);
         self.history = self.history.clamp(8, 240);
         self.update_ms = self.update_ms.clamp(8, 80);
@@ -232,8 +235,8 @@ mod tests {
         assert!((0.15..=0.8).contains(&settings.note_spread));
         assert!(settings.resonator.max_midi > settings.resonator.min_midi);
         assert!((1..=12).contains(&settings.resonator.bins));
-        assert!((0.05..=12.0).contains(&settings.resonator.alpha));
-        assert!((0.05..=12.0).contains(&settings.resonator.beta));
+        assert!((0.001..=12.0).contains(&settings.resonator.alpha));
+        assert!((0.001..=12.0).contains(&settings.resonator.beta));
         assert!((0.15..=2.4).contains(&settings.resonator.gamma));
         assert!((8..=240).contains(&settings.resonator.history));
         assert!((8..=80).contains(&settings.resonator.update_ms));
