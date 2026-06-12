@@ -47,8 +47,11 @@ pub(super) mod imp {
 
     use super::super::types::{
         AnalysisSettings,
+        ArpPattern,
         AudioInputOption,
         AudioStatus,
+        DroneMode,
+        DroneState,
         ResonatorReading,
         TunerReading,
     };
@@ -98,6 +101,12 @@ pub(super) mod imp {
     const MONITOR_DEFAULT_GAIN: f32 = 0.35;
     const TEST_TONE_GAIN: f32 = 0.28;
     const TEST_TONE_DURATION: Duration = Duration::from_millis(1_600);
+    /// Общий потолок громкости дрона после суммирования голосов (до мастер-гейна
+    /// из [`DroneState`]). Держит даже плотный аккорд в безопасном пределе.
+    const DRONE_OUTPUT_GAIN: f32 = 0.5;
+    /// Время сглаживания вкл/выкл голоса (атака/спад), сек. Убирает щелчки при
+    /// смене нот, пульсе и шагах арпеджио, не размазывая ритм.
+    const DRONE_RAMP_SECONDS: f32 = 0.006;
 
     // Время паузы воркера, когда в кольце нет свежих сэмплов
     const ANALYSIS_IDLE_SLEEP: Duration = Duration::from_millis(5);
@@ -128,6 +137,12 @@ pub(super) mod imp {
         monitor_output_rate: Arc<AtomicU32>, // 0 = output не запущен
         selected_input_id:   Arc<Mutex<Option<String>>>,
         resonator_wanted:    Arc<Mutex<Instant>>, // дедлайн «банк нужен до» (гейт)
+        // Живое состояние дрона: UI пишет его целиком (lock+write), реалтайм-
+        // колбэк дрон-стрима читает try_lock каждый блок. Источник истины для
+        // персиста, поэтому копии на App нет.
+        drone:               Arc<Mutex<DroneState>>,
+        // true, пока дрон-стрим поднят. Ставит/снимает audio-тред.
+        drone_playing:       Arc<AtomicBool>,
         command_tx:          Option<Sender<Command>>,
         audio_thread:        Option<JoinHandle<()>>,
     }
@@ -136,6 +151,8 @@ pub(super) mod imp {
         SwitchInput(Option<String>),
         SetMonitorEnabled(bool),
         PlayTestNote(PNote),
+        StartDrone,
+        StopDrone,
     }
 
     impl Default for AudioEngine {
@@ -157,6 +174,8 @@ pub(super) mod imp {
             let selected_input_id = Arc::new(Mutex::new(None));
             // Гейт резонатора: дедлайн в прошлом → пока никто не просит, банк не молотит.
             let resonator_wanted = Arc::new(Mutex::new(Instant::now()));
+            let drone = Arc::new(Mutex::new(DroneState::default()));
+            let drone_playing = Arc::new(AtomicBool::new(false));
 
             let (command_tx, command_rx) = mpsc::channel::<Command>();
 
@@ -174,6 +193,8 @@ pub(super) mod imp {
                     monitor_output_rate: monitor_output_rate.clone(),
                     selected_input_id:   selected_input_id.clone(),
                     resonator_wanted:    resonator_wanted.clone(),
+                    drone:               drone.clone(),
+                    drone_playing:       drone_playing.clone(),
                 };
                 move || {
                     audio_thread_main(command_rx, ctx);
@@ -191,6 +212,8 @@ pub(super) mod imp {
                 monitor_output_rate,
                 selected_input_id,
                 resonator_wanted,
+                drone,
+                drone_playing,
                 command_tx: Some(command_tx),
                 audio_thread: Some(audio_thread),
             }
@@ -309,6 +332,36 @@ pub(super) mod imp {
             }
         }
 
+        /// Снимок текущего состояния дрона (для отрисовки/правки в UI).
+        pub fn drone_state(&self) -> DroneState {
+            self.drone.lock().map(|g| g.clone()).unwrap_or_default()
+        }
+
+        /// Заменить состояние дрона целиком. Реалтайм-колбэк подхватит его на
+        /// ближайшем блоке — менять ноты/темп/режим можно прямо во время игры,
+        /// перезапуск стрима не нужен.
+        pub fn set_drone_state(&self, state: DroneState) {
+            if let Ok(mut guard) = self.drone.lock() {
+                *guard = state.sanitized();
+            }
+        }
+
+        pub fn drone_playing(&self) -> bool {
+            self.drone_playing.load(Ordering::Relaxed)
+        }
+
+        pub fn start_drone(&self) {
+            if let Some(tx) = self.command_tx.as_ref() {
+                let _ = tx.send(Command::StartDrone);
+            }
+        }
+
+        pub fn stop_drone(&self) {
+            if let Some(tx) = self.command_tx.as_ref() {
+                let _ = tx.send(Command::StopDrone);
+            }
+        }
+
         /// Запросить резонаторный банк на ближайший грейс. Панели-потребители
         /// (Scale Finder, Resonator *) зовут это каждый кадр, пока видимы; пока
         /// зовут — воркер молотит, перестали (панель закрылась) — паркуется.
@@ -340,6 +393,10 @@ pub(super) mod imp {
             ctx.set_error("Could not open default audio input");
         }
 
+        // Дрон-стрим живёт параллельно capture: отдельный output, который audio-
+        // тред держит ровно пока дрон играет. Дроп = тишина и освобождение устройства.
+        let mut drone_stream: Option<cpal::Stream> = None;
+
         while let Ok(cmd) = rx.recv() {
             match cmd {
                 Command::SwitchInput(id) => {
@@ -368,9 +425,26 @@ pub(super) mod imp {
                 Command::PlayTestNote(midi) => {
                     ctx.play_test_note(midi);
                 }
+                Command::StartDrone => {
+                    // Идемпотентно: если уже играет, оставляем текущий стрим.
+                    if drone_stream.is_none() {
+                        match ctx.build_drone_stream() {
+                            Ok(stream) => {
+                                drone_stream = Some(stream);
+                                ctx.drone_playing.store(true, Ordering::Relaxed);
+                            }
+                            Err(msg) => ctx.set_error(&msg),
+                        }
+                    }
+                }
+                Command::StopDrone => {
+                    drone_stream = None; // дроп стрима = тишина
+                    ctx.drone_playing.store(false, Ordering::Relaxed);
+                }
             }
         }
 
+        drop(drone_stream);
         if let Some(cap) = current.take() {
             cap.shutdown();
         }
@@ -388,6 +462,8 @@ pub(super) mod imp {
         monitor_output_rate: Arc<AtomicU32>,
         selected_input_id:   Arc<Mutex<Option<String>>>,
         resonator_wanted:    Arc<Mutex<Instant>>,
+        drone:               Arc<Mutex<DroneState>>,
+        drone_playing:       Arc<AtomicBool>,
     }
 
     impl AudioContext {
@@ -423,6 +499,57 @@ pub(super) mod imp {
                     set_shared_error(&shared, &message);
                 }
             });
+        }
+
+        /// Поднять непрерывный дрон-output. Колбэк синтезирует в реалтайме из
+        /// [`DroneState`] (try_lock каждый блок), голоса держат фазу между
+        /// блоками и сглаживаются по амплитуде → щелчков нет даже на пульсе/арпе.
+        fn build_drone_stream(&self) -> Result<cpal::Stream, String> {
+            let host = cpal::default_host();
+            let device = host
+                .default_output_device()
+                .ok_or_else(|| "No output device for drone".to_owned())?;
+            let mut supported = device
+                .supported_output_configs()
+                .map_err(|e| format!("Drone output configs error: {e}"))?;
+            let output_config = supported
+                .find(|config| config.sample_format() == cpal::SampleFormat::F32)
+                .ok_or_else(|| "No f32 output config for drone".to_owned())?;
+            let output_rate =
+                48_000_u32.clamp(output_config.min_sample_rate(), output_config.max_sample_rate());
+            let mut config = output_config.with_sample_rate(output_rate).config();
+            config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
+            let sample_rate = config.sample_rate as f32;
+            let channels = usize::from(config.channels);
+
+            let drone = self.drone.clone();
+            let mut synth = DroneSynth::new(sample_rate);
+
+            let stream = device
+                .build_output_stream(
+                    config,
+                    move |data: &mut [f32], _| {
+                        // try_lock: если UI прямо сейчас пишет состояние, держим
+                        // прошлый снимок — реалтайм-колбэк никогда не блокируется.
+                        if let Ok(guard) = drone.try_lock() {
+                            synth.adopt(&guard);
+                        }
+                        for frame in data.chunks_mut(channels) {
+                            let sample = synth.next_sample();
+                            for out in frame {
+                                *out = sample;
+                            }
+                        }
+                    },
+                    |err| eprintln!("Drone output error: {err}"),
+                    None,
+                )
+                .map_err(|e| format!("Failed to build drone output: {e}"))?;
+
+            stream
+                .play()
+                .map_err(|e| format!("Failed to start drone output: {e}"))?;
+            Ok(stream)
         }
 
         // Поднимает входной stream, кольцевые буферы, анализ-воркер и
@@ -1065,4 +1192,154 @@ pub(super) mod imp {
         f32::from(i16::from_le_bytes(bytes)) / 32768.0
     }
 
+    // ------------------------------------------------------------------
+    // DroneSynth: реалтайм-синтез дрона. Живёт внутри колбэка дрон-стрима,
+    // держит фазу/амплитуду каждого голоса между блоками. Параметры берёт из
+    // снимка [`DroneState`] через `adopt`; ничего не аллоцирует на горячем пути,
+    // кроме `notes` (обновляется только в `adopt`).
+    // ------------------------------------------------------------------
+    struct DroneSynth {
+        sample_rate:      f32,
+        // Параметры (снимок DroneState, по одному полю чтобы не лочить в колбэке).
+        notes:            Vec<u8>, // отсортированы по высоте (инвариант DroneState)
+        gain:             f32,
+        mode:             DroneMode,
+        samples_per_step: f32, // длина удара в сэмплах = sr*60/bpm
+        pulse_duty:       f32,
+        arp_gate:         f32,
+        arp_pattern:      ArpPattern,
+        brightness:       f32,
+        // Частота каждой MIDI-ноты при текущем камертоне (пересчёт в `adopt`).
+        freq:             [f32; 128],
+        // Живое состояние голосов.
+        phase:            [f32; 128], // фаза в циклах, 0..1
+        amp:              [f32; 128], // сглаженная амплитуда голоса, 0..1
+        clock:            f64,        // счётчик сэмплов для секвенсора
+        ramp_k:           f32,        // шаг сглаживания амплитуды за сэмпл
+    }
+
+    impl DroneSynth {
+        fn new(sample_rate: f32) -> Self {
+            let mut synth = Self {
+                sample_rate,
+                notes: Vec::new(),
+                gain: 0.0,
+                mode: DroneMode::Sustained,
+                samples_per_step: sample_rate, // = 60 bpm до первого adopt
+                pulse_duty: 0.5,
+                arp_gate: 0.6,
+                arp_pattern: ArpPattern::Up,
+                brightness: 0.4,
+                freq: [0.0; 128],
+                phase: [0.0; 128],
+                amp: [0.0; 128],
+                clock: 0.0,
+                // Экспоненциальное сглаживание с постоянной времени DRONE_RAMP_SECONDS.
+                ramp_k: (1.0 / (DRONE_RAMP_SECONDS * sample_rate)).clamp(0.0, 1.0),
+            };
+            synth.adopt(&DroneState::default());
+            synth
+        }
+
+        /// Подхватить новый снимок состояния. Фаза/амплитуда/часы НЕ сбрасываются
+        /// — параметры можно крутить во время игры без щелчков и сбоя ритма.
+        fn adopt(&mut self, state: &DroneState) {
+            self.notes.clear();
+            self.notes.extend(state.notes.iter().map(|n| n.as_u8()));
+            self.gain = state.gain;
+            self.mode = state.mode;
+            self.samples_per_step = (self.sample_rate * 60.0 / state.bpm).max(1.0);
+            self.pulse_duty = state.pulse_duty;
+            self.arp_gate = state.arp_gate;
+            self.arp_pattern = state.arp_pattern;
+            self.brightness = state.brightness;
+            // Частоты по текущему камертону: midi_to_hz(m, A4) = A4 * 2^((m-69)/12).
+            for (m, slot) in self.freq.iter_mut().enumerate() {
+                *slot = midi_to_hz(m as f32, state.reference_hz);
+            }
+        }
+
+        /// Какой голос (или голоса) звучит на текущем сэмпле и с каким гейтом.
+        /// Возвращает (midi, gate_open) для каждой звучащей ноты — для пульса это
+        /// весь набор, для арпеджио максимум одна нота, для дрона — весь набор.
+        fn sounding_target(&self, out: &mut [bool; 128]) {
+            if self.notes.is_empty() {
+                return;
+            }
+            match self.mode {
+                DroneMode::Sustained => {
+                    for &m in &self.notes {
+                        out[m as usize] = true;
+                    }
+                }
+                DroneMode::Pulse => {
+                    let beat_phase = (self.clock / self.samples_per_step as f64).fract() as f32;
+                    if beat_phase < self.pulse_duty {
+                        for &m in &self.notes {
+                            out[m as usize] = true;
+                        }
+                    }
+                }
+                DroneMode::Arp => {
+                    let step_len = self.samples_per_step as f64;
+                    let beat_phase = (self.clock / step_len).fract() as f32;
+                    if beat_phase < self.arp_gate {
+                        let step = (self.clock / step_len).floor() as i64;
+                        let n = self.notes.len() as i64;
+                        let pos = match self.arp_pattern {
+                            ArpPattern::Up => step.rem_euclid(n),
+                            ArpPattern::Down => n - 1 - step.rem_euclid(n),
+                            ArpPattern::UpDown => {
+                                // Пинг-понг: период 2*(n-1), вершина и низ не дублируются.
+                                if n <= 1 {
+                                    0
+                                } else {
+                                    let period = 2 * (n - 1);
+                                    let k = step.rem_euclid(period);
+                                    if k < n { k } else { period - k }
+                                }
+                            }
+                        };
+                        out[self.notes[pos as usize] as usize] = true;
+                    }
+                }
+            }
+        }
+
+        fn next_sample(&mut self) -> f32 {
+            let mut target = [false; 128];
+            self.sounding_target(&mut target);
+
+            let mut mix = 0.0_f32;
+            // Нормировка тембра: яркость добавляет обертоны, держим пик ~1.
+            let timbre_norm = 1.0 / (1.0 + 0.6 * self.brightness);
+            for (m, &want_on) in target.iter().enumerate() {
+                let want = if want_on { 1.0 } else { 0.0 };
+                let mut a = self.amp[m];
+                if a == 0.0 && want == 0.0 {
+                    continue;
+                }
+                a += (want - a) * self.ramp_k;
+                if (a - want).abs() < 1e-4 {
+                    a = want;
+                }
+                self.amp[m] = a;
+                if a <= 1e-4 {
+                    self.amp[m] = 0.0;
+                    continue;
+                }
+                let ph = self.phase[m];
+                let tau_ph = std::f32::consts::TAU * ph;
+                let voice = (tau_ph).sin()
+                    + self.brightness * (0.4 * (2.0 * tau_ph).sin() + 0.2 * (3.0 * tau_ph).sin());
+                mix += a * voice * timbre_norm;
+                let next = ph + self.freq[m] / self.sample_rate;
+                self.phase[m] = next.fract();
+            }
+
+            self.clock += 1.0;
+            // tanh — мягкий лимитер: плотный аккорд не клиппует жёстко.
+            (mix * DRONE_OUTPUT_GAIN * self.gain).tanh()
+        }
+    }
 }

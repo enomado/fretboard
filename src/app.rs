@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "android", allow(dead_code))]
 
 mod controls;
+mod drone_panel;
 mod fretboard_panel;
 mod live_analysis;
 mod persist;
@@ -186,12 +187,13 @@ enum WorkspaceTab {
     ResonatorSnail,
     ResonatorWaterfall,
     Fretboard,
+    Drone,
 }
 
 impl WorkspaceTab {
     /// Полный реестр панелей — источник для меню «Panels» (открыть/закрыть)
     /// и для дефолтной раскладки. Порядок = порядок в меню.
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::Controls,
         Self::FretboardControls,
         Self::InputScope,
@@ -204,6 +206,7 @@ impl WorkspaceTab {
         Self::ResonatorBank,
         Self::ResonatorSnail,
         Self::ResonatorWaterfall,
+        Self::Drone,
     ];
 
     fn label(self) -> &'static str {
@@ -220,6 +223,7 @@ impl WorkspaceTab {
             Self::ResonatorSnail => "Resonator Snail",
             Self::ResonatorWaterfall => "Resonator Waterfall",
             Self::Fretboard => "Fretboard",
+            Self::Drone => "Drone",
         }
     }
 }

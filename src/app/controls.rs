@@ -273,36 +273,21 @@ impl App {
                 );
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new("Test note")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
-                    // egui's Slider binds to a raw numeric; the PNote newtype is
-                    // reconstructed (and range-validated) on change.
-                    let mut midi = self.test_note_midi.as_u8();
-                    if ui
-                        .add_sized(
-                            [180.0, 18.0],
-                            egui::Slider::new(&mut midi, 12..=84).show_value(false),
-                        )
-                        .changed()
-                    {
-                        self.test_note_midi = PNote::new(midi).unwrap();
-                    }
-                    ui.label(
-                        RichText::new(midi_label(self.test_note_midi))
-                            .color(Color32::from_rgb(226, 216, 201))
-                            .monospace(),
-                    );
-                    let play_button = egui::Button::new("Play note")
-                        .min_size(vec2(92.0, 28.0))
+                    // Простейшая кнопка проверки вывода: дёргает одну фиксированную
+                    // ноту через спикер. Полноценная игра нот — в панели «Drone».
+                    let play_button = egui::Button::new("Play test note")
+                        .min_size(vec2(116.0, 28.0))
                         .fill(Color32::from_rgb(42, 78, 72))
                         .stroke(Stroke::new(1.0_f32, Color32::from_rgb(111, 154, 142)))
                         .corner_radius(CornerRadius::same(14));
                     if ui.add(play_button).clicked() {
                         self.audio.play_test_note(self.test_note_midi);
                     }
+                    ui.label(
+                        RichText::new("Checks speaker output")
+                            .color(Color32::from_rgb(145, 151, 160))
+                            .size(12.0),
+                    );
                 });
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
