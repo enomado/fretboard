@@ -21,6 +21,7 @@ use crate::audio::{
     ArpPattern,
     DroneMode,
     DroneState,
+    Timbre,
 };
 use crate::core_types::pitch::PNote;
 use crate::ui::theme::PANEL_FILL;
@@ -102,7 +103,24 @@ impl App {
                 // ── Мастер-громкость ──
                 changed |= slider_row(ui, "Volume", &mut drone.gain, 0.0..=1.0, |v| format!("{:>3.0}%", v * 100.0));
 
-                // ── Тембр ──
+                // ── Тембр: голос + яркость ──
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Voice").color(LABEL_COLOR).strong());
+                    ui.add_space(6.0);
+                    for (timbre, name) in [
+                        (Timbre::Sine, "Sine"),
+                        (Timbre::Violin, "Violin"),
+                        (Timbre::Organ, "Organ"),
+                        (Timbre::Synth, "Synth"),
+                        (Timbre::EPiano, "E-Piano"),
+                    ] {
+                        if mode_button(ui, name, drone.timbre == timbre).clicked() {
+                            drone.timbre = timbre;
+                            changed = true;
+                        }
+                    }
+                });
+                ui.add_space(8.0);
                 changed |= slider_row(ui, "Brightness", &mut drone.brightness, 0.0..=1.0, |v| {
                     format!("{:>3.0}%", v * 100.0)
                 });

@@ -25,6 +25,7 @@ pub use types::{
     DroneState,
     ResonatorReading,
     ResonatorSettings,
+    Timbre,
     TunerReading,
 };
 #[cfg(target_arch = "wasm32")]
