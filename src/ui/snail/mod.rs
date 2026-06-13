@@ -39,6 +39,14 @@ pub struct SpiralChart<'a> {
 /// the leftover screen height instead of overflowing past the bottom edge.
 pub const SPIRAL_MIN_HEIGHT: f32 = 376.0;
 
+/// Baseline drawn diameter (`square`) at which the decorative sizes — pitch-label
+/// font, note dots, active-note rings — were originally tuned. It equals the
+/// viz square at `SPIRAL_MIN_HEIGHT` (376 − 44 top inset − 20 bottom inset = 312).
+/// All cosmetic sizes are scaled by `square / SPIRAL_REFERENCE_SQUARE` so they
+/// grow when the pane is stretched and shrink when it is squeezed, instead of
+/// staying at a fixed pixel size that looks tiny when large and huge when small.
+const SPIRAL_REFERENCE_SQUARE: f32 = 312.0;
+
 pub fn draw_spiral_chart(ui: &mut Ui, chart: SpiralChart<'_>, settings: &AnalysisSettings) {
     // Desktop tiles are "rubbery": no upper bound, so a divider drag stretches
     // the snail to fill the pane.
@@ -116,6 +124,10 @@ pub fn draw_spiral_chart_sized(
     }
 
     let square = viz_rect.width().min(viz_rect.height());
+    // Scale all fixed-pixel cosmetics (label fonts, dot radii, rings) with the
+    // drawn diameter so they keep their proportions at any pane size. Clamped to
+    // keep labels legible when tiny and not cartoonish when huge.
+    let scale = (square / SPIRAL_REFERENCE_SQUARE).clamp(0.55, 3.0);
     let chart_rect = Rect::from_center_size(viz_rect.center(), vec2(square, square));
     let center = chart_rect.center();
     let inner_radius = square * 0.12;
@@ -161,7 +173,7 @@ pub fn draw_spiral_chart_sized(
     for (pitch_class, pitch_label) in SPIRAL_PITCH_LABELS.iter().enumerate() {
         let angle = pitch_class_angle(pitch_class);
         let direction = vec2(angle.cos(), angle.sin());
-        let label_pos = center + direction * (outer_radius + 20.0);
+        let label_pos = center + direction * (outer_radius + 20.0 * scale);
         let spoke_color = pitch_class_color(pitch_class);
         let spoke_stroke = if Some(pitch_class) == active_index.map(|index| (pitch_class_offset + index) % 12)
         {
@@ -181,7 +193,7 @@ pub fn draw_spiral_chart_sized(
             label_pos,
             egui::Align2::CENTER_CENTER,
             *pitch_label,
-            FontId::proportional(18.0),
+            FontId::proportional(18.0 * scale),
             spoke_color,
         );
     }
@@ -222,7 +234,7 @@ pub fn draw_spiral_chart_sized(
                 semitone_position,
                 pitch_class_offset as f32,
             );
-            let glow = 1.8 + intensity * 6.0 * (0.45 + age * 0.40);
+            let glow = (1.8 + intensity * 6.0 * (0.45 + age * 0.40)) * scale;
             painter.circle_filled(
                 position,
                 glow,
@@ -248,8 +260,8 @@ pub fn draw_spiral_chart_sized(
             semitone_position,
             pitch_class_offset as f32,
         );
-        let glow_radius = 3.0 + intensity * 8.0;
-        let core_radius = 1.4 + intensity * 3.2;
+        let glow_radius = (3.0 + intensity * 8.0) * scale;
+        let core_radius = (1.4 + intensity * 3.2) * scale;
         let color = pitch_class_color(pitch_class);
 
         painter.circle_filled(
@@ -269,10 +281,10 @@ pub fn draw_spiral_chart_sized(
             pitch_class_offset as f32,
         );
         let active_color = pitch_class_color((pitch_class_offset + active_index) % 12);
-        painter.circle_stroke(active_position, 11.0, Stroke::new(2.0_f32, active_color));
+        painter.circle_stroke(active_position, 11.0 * scale, Stroke::new(2.0_f32, active_color));
         painter.circle_stroke(
             active_position,
-            17.0,
+            17.0 * scale,
             Stroke::new(
                 1.0_f32,
                 Color32::from_rgba_unmultiplied(active_color.r(), active_color.g(), active_color.b(), 100),
