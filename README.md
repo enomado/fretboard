@@ -2,7 +2,10 @@
 
 Interactive fretboard visualizer built with [egui](https://github.com/emilk/egui). Shows notes, scales, and positions on a fretboard with logarithmic fret spacing.
 
+<img width="1920" height="1993" alt="image" src="https://github.com/user-attachments/assets/cf6ab81d-5c72-4e94-8a23-64606bc1c60b" />
+
 ## Features
+
 
 - Multiple tunings: cello (C-G-D-A), standard guitar (E), minor thirds
 - Scales: major, minor, blues, dorian, phrygian, lydian, mixolydian, locrian
