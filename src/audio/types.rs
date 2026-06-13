@@ -220,6 +220,25 @@ pub enum ArpPattern {
     UpDown,
 }
 
+/// Голос дрона — форма волны/тембр. Синтез аддитивный/субтрактивный прямо в
+/// колбэке (см. `audio::native`), без сэмплов. Каждый тембр нормирован к пику
+/// ≈1, чтобы громкость не прыгала при переключении; `brightness` управляет
+/// яркостью верхних гармоник внутри каждого тембра.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Timbre {
+    /// Чистый тон с лёгкими обертонами — исходный голос дрона (дефолт).
+    #[default]
+    Sine,
+    /// Смычковая струна: пилообразный спектр + лёгкое вибрато.
+    Violin,
+    /// Орган/драубары: фундамент + октавы, тёплый, без затухания.
+    Organ,
+    /// Субтрактивный синт: яркая пила со «срезом» по brightness.
+    Synth,
+    /// Электропиано: удар с перкуссивным затуханием (как зажатая клавиша).
+    EPiano,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DroneState {
     /// Набор звучащих нот. Инвариант после `sanitized`: отсортирован, без
@@ -241,6 +260,10 @@ pub struct DroneState {
     pub arp_pattern:  ArpPattern,
     /// Тембр: 0 = почти чистая синусоида, 1 = ярко, с обертонами.
     pub brightness:   f32,
+    /// Голос/форма волны. `#[serde(default)]` — старые снимки без поля грузятся
+    /// как [`Timbre::Sine`] (прежнее звучание), без падения разбора.
+    #[serde(default)]
+    pub timbre:       Timbre,
 }
 
 /// Потолок полифонии дрона. Держим набор компактным — это инструмент для
@@ -261,6 +284,7 @@ impl Default for DroneState {
             arp_gate:     0.6,
             arp_pattern:  ArpPattern::Up,
             brightness:   0.4,
+            timbre:       Timbre::Sine,
         }
     }
 }
@@ -357,6 +381,7 @@ mod tests {
             arp_gate:     -1.0,
             arp_pattern:  ArpPattern::UpDown,
             brightness:   9.0,
+            timbre:       Timbre::Violin,
         };
         let clean = dirty.sanitized();
         assert!(clean.notes.len() <= DRONE_MAX_NOTES);
