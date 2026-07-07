@@ -165,7 +165,7 @@ impl App {
 
         egui::CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin::same(8)))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
                 // No scroll area here on purpose: a vertical ScrollArea hands its
@@ -187,7 +187,7 @@ impl App {
                     .fill(Color32::from_rgb(18, 22, 27))
                     .inner_margin(Margin::symmetric(8, 4)),
             )
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 let tree = self.workspace_tree.get_or_insert_with(default_workspace_tree);
                 egui::MenuBar::new().ui(ui, |ui| {
                     ui.menu_button("Panels", |ui| {
@@ -214,7 +214,7 @@ impl App {
 
         egui::CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin::same(8)))
-            .show_inside(ui, |ui| {
+            .show(ui, |ui| {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
 

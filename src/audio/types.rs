@@ -1,7 +1,7 @@
 use crate::core_types::pitch::PNote;
 
 // Serialize/Deserialize so the wasm DSP web worker can ship readings back to the
-// main thread (bincode over postMessage). Inert on native.
+// main thread (postcard over postMessage). Inert on native.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TunerReading {
     pub frequency_hz:          f32,
