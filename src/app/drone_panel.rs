@@ -249,12 +249,17 @@ fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) ->
                     Color32::from_rgb(48, 52, 58)
                 };
                 let stroke = if selected { ACCENT_STROKE } else { IDLE_STROKE };
-                let text_color = if selected { VALUE_COLOR } else { Color32::from_rgb(188, 192, 198) };
-                let button = egui::Button::new(RichText::new(note_name(midi, style)).size(11.0).color(text_color))
-                    .min_size(vec2(34.0, 24.0))
-                    .fill(fill)
-                    .stroke(Stroke::new(1.0_f32, stroke))
-                    .corner_radius(CornerRadius::same(6));
+                let text_color = if selected {
+                    VALUE_COLOR
+                } else {
+                    Color32::from_rgb(188, 192, 198)
+                };
+                let button =
+                    egui::Button::new(RichText::new(note_name(midi, style)).size(11.0).color(text_color))
+                        .min_size(vec2(34.0, 24.0))
+                        .fill(fill)
+                        .stroke(Stroke::new(1.0_f32, stroke))
+                        .corner_radius(CornerRadius::same(6));
                 if ui.add(button).clicked() {
                     drone.toggle_note(note);
                     changed = true;
@@ -307,7 +312,10 @@ fn mode_button(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
     let button = egui::Button::new(label)
         .min_size(vec2(86.0, 26.0))
         .fill(if active { ACCENT_FILL } else { IDLE_FILL })
-        .stroke(Stroke::new(1.0_f32, if active { ACCENT_STROKE } else { IDLE_STROKE }))
+        .stroke(Stroke::new(
+            1.0_f32,
+            if active { ACCENT_STROKE } else { IDLE_STROKE },
+        ))
         .corner_radius(CornerRadius::same(13));
     ui.add(button)
 }

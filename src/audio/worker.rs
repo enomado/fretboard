@@ -8,11 +8,13 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{
     AtomicU32,
     Ordering,
+};
+use std::sync::{
+    Arc,
+    Mutex,
 };
 
 use wasm_bindgen::JsCast;
@@ -50,12 +52,12 @@ const RESONATOR_PARK_GRACE: Duration = Duration::from_millis(300);
 
 struct WorkerState {
     // `None` until the first `Init` names the capture sample rate.
-    pipelines:           Option<(AnalysisPipeline, ResonatorPipeline)>,
-    shared:              Arc<Mutex<SharedState>>,
-    settings:            Arc<Mutex<AnalysisSettings>>,
-    input_gain:          Arc<AtomicU32>,
-    input_level:         Arc<AtomicU32>,
-    resonator_deadline:  Instant,
+    pipelines:          Option<(AnalysisPipeline, ResonatorPipeline)>,
+    shared:             Arc<Mutex<SharedState>>,
+    settings:           Arc<Mutex<AnalysisSettings>>,
+    input_gain:         Arc<AtomicU32>,
+    input_level:        Arc<AtomicU32>,
+    resonator_deadline: Instant,
 }
 
 impl WorkerState {
@@ -148,22 +150,28 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
 fn snapshot(state: &WorkerState) -> FromWorker {
     let level = f32::from_bits(state.input_level.load(Ordering::Relaxed));
     let (status, reading, resonator, waveform) = match state.shared.lock() {
-        Ok(shared) => (
-            shared.status.clone(),
-            shared.reading.clone(),
-            (!shared.resonator_spectrum.is_empty()).then(|| ResonatorReading {
-                spectrum:    shared.resonator_spectrum.clone(),
-                waterfall:   shared.resonator_waterfall.iter().cloned().collect(),
-                note_labels: shared.resonator_labels.clone(),
-            }),
-            shared.input_waveform.iter().copied().collect(),
-        ),
-        Err(_) => (
-            AudioStatus::Error("worker state poisoned".to_owned()),
-            None,
-            None,
-            Vec::new(),
-        ),
+        Ok(shared) => {
+            (
+                shared.status.clone(),
+                shared.reading.clone(),
+                (!shared.resonator_spectrum.is_empty()).then(|| {
+                    ResonatorReading {
+                        spectrum:    shared.resonator_spectrum.clone(),
+                        waterfall:   shared.resonator_waterfall.iter().cloned().collect(),
+                        note_labels: shared.resonator_labels.clone(),
+                    }
+                }),
+                shared.input_waveform.iter().copied().collect(),
+            )
+        }
+        Err(_) => {
+            (
+                AudioStatus::Error("worker state poisoned".to_owned()),
+                None,
+                None,
+                Vec::new(),
+            )
+        }
     };
     FromWorker::Snapshot(Box::new(WorkerSnapshot {
         status,

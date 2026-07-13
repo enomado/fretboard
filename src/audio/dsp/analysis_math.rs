@@ -138,14 +138,8 @@ pub(crate) fn note_bucket_labels(style: AccidentalStyle) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn resonator_note_labels(
-    min_midi: usize,
-    max_midi: usize,
-    style: AccidentalStyle,
-) -> Vec<String> {
-    (min_midi..=max_midi)
-        .map(|m| style.midi_name(m as i32))
-        .collect()
+pub(crate) fn resonator_note_labels(min_midi: usize, max_midi: usize, style: AccidentalStyle) -> Vec<String> {
+    (min_midi..=max_midi).map(|m| style.midi_name(m as i32)).collect()
 }
 
 /// How many harmonics [`resonator_fundamental`] sums when scoring a candidate as a

@@ -14,8 +14,6 @@ mod workspace;
 use std::ops::Range;
 use std::time::Duration;
 
-use web_time::Instant;
-
 use eframe::egui::{
     self,
     Color32,
@@ -28,6 +26,7 @@ use eframe::{
     CreationContext,
     Frame as AppFrame,
 };
+use web_time::Instant;
 
 use crate::audio::{
     AudioEngine,
@@ -257,6 +256,10 @@ pub struct App {
     /// the eased view window. Not persisted (a fresh session starts blank).
     pitch_roll: pitch_roll_panel::PitchRoll,
     workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
+    /// Какую единственную панель показывать на мобиле (Android). На десктопе не
+    /// влияет ни на что, но персистится вместе с остальными настройками. См.
+    /// `draw_mobile_panel_selector` / мобильный `render`.
+    mobile_panel: WorkspaceTab,
 }
 
 struct HoveredNote {
@@ -305,6 +308,7 @@ impl App {
             staff: staff_panel::StaffTrainer::default(),
             pitch_roll: pitch_roll_panel::PitchRoll::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
+            mobile_panel: WorkspaceTab::ResonatorSnail,
         };
 
         // Restore last session's preferences over the defaults built above.

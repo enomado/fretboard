@@ -1401,9 +1401,7 @@ pub(super) mod imp {
         let tau = TAU * ph;
         match timbre {
             // Чистый тон с лёгкими обертонами — прежний дефолтный голос дрона.
-            Timbre::Sine => {
-                tau.sin() + brightness * (0.4 * (2.0 * tau).sin() + 0.2 * (3.0 * tau).sin())
-            }
+            Timbre::Sine => tau.sin() + brightness * (0.4 * (2.0 * tau).sin() + 0.2 * (3.0 * tau).sin()),
             // Смычковая струна: пилообразный спектр (гармоники ~1/k), brightness
             // открывает верх через спектральный наклон `tilt`.
             Timbre::Violin => {

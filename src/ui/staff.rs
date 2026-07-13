@@ -129,21 +129,27 @@ impl Clef {
 
     fn glyph(self) -> ClefGlyph {
         match self {
-            Clef::Treble => ClefGlyph {
-                glyph:            "\u{1D11E}", // 𝄞 G clef
-                ref_step:         2,           // curls around the G4 line
-                center_above_ref: 0.235,
-            },
-            Clef::Bass => ClefGlyph {
-                glyph:            "\u{1D122}", // 𝄢 F clef
-                ref_step:         6,           // dots straddle the F3 line
-                center_above_ref: -0.158,
-            },
-            Clef::Tenor => ClefGlyph {
-                glyph:            "\u{1D121}", // 𝄡 C clef
-                ref_step:         6,           // centred on the C4 line
-                center_above_ref: -0.015,
-            },
+            Clef::Treble => {
+                ClefGlyph {
+                    glyph:            "\u{1D11E}", // 𝄞 G clef
+                    ref_step:         2,           // curls around the G4 line
+                    center_above_ref: 0.235,
+                }
+            }
+            Clef::Bass => {
+                ClefGlyph {
+                    glyph:            "\u{1D122}", // 𝄢 F clef
+                    ref_step:         6,           // dots straddle the F3 line
+                    center_above_ref: -0.158,
+                }
+            }
+            Clef::Tenor => {
+                ClefGlyph {
+                    glyph:            "\u{1D121}", // 𝄡 C clef
+                    ref_step:         6,           // centred on the C4 line
+                    center_above_ref: -0.015,
+                }
+            }
         }
     }
 
@@ -153,29 +159,35 @@ impl Clef {
         match self {
             // Treble: F♯ on the top line (F5 = step 8); B♭ on the middle line
             // (B4 = step 4). These are the standard engraved heights.
-            Clef::Treble => KeySigLayout {
-                sharp_first: 8,
-                sharp_floor: 3,
-                flat_first:  4,
-                flat_ceil:   7,
-            },
+            Clef::Treble => {
+                KeySigLayout {
+                    sharp_first: 8,
+                    sharp_floor: 3,
+                    flat_first:  4,
+                    flat_ceil:   7,
+                }
+            }
             // Bass: the whole pattern one staff line (two steps) lower than treble.
-            Clef::Bass => KeySigLayout {
-                sharp_first: 6,
-                sharp_floor: 1,
-                flat_first:  2,
-                flat_ceil:   5,
-            },
+            Clef::Bass => {
+                KeySigLayout {
+                    sharp_first: 6,
+                    sharp_floor: 1,
+                    flat_first:  2,
+                    flat_ceil:   5,
+                }
+            }
             // Tenor C-clef: derived to keep the glyphs on the staff with the
             // correct letters. (This is a clean derivation, not the rarely-used
             // canonical tenor-clef exception, which nudges a couple of glyphs by
             // an octave to further compress the run — a minor cosmetic difference.)
-            Clef::Tenor => KeySigLayout {
-                sharp_first: 9,
-                sharp_floor: 0,
-                flat_first:  5,
-                flat_ceil:   8,
-            },
+            Clef::Tenor => {
+                KeySigLayout {
+                    sharp_first: 9,
+                    sharp_floor: 0,
+                    flat_first:  5,
+                    flat_ceil:   8,
+                }
+            }
         }
     }
 }
@@ -319,10 +331,7 @@ pub fn draw_staff_lines(painter: &Painter, geom: &StaffGeom, color: Color32) {
     let stroke = Stroke::new((geom.gap * 0.09).max(1.0), color);
     for i in 0..5 {
         let y = geom.line_y(i);
-        painter.line_segment(
-            [pos2(geom.staff_left, y), pos2(geom.notes_right, y)],
-            stroke,
-        );
+        painter.line_segment([pos2(geom.staff_left, y), pos2(geom.notes_right, y)], stroke);
     }
 }
 
@@ -534,7 +543,10 @@ mod tests {
     #[test]
     fn accidentals_follow_spelling() {
         let g = Clef::Treble;
-        assert_eq!(note_staff_step(66, AccidentalStyle::Sharps, g).1, Accidental::Sharp); // F#4
+        assert_eq!(
+            note_staff_step(66, AccidentalStyle::Sharps, g).1,
+            Accidental::Sharp
+        ); // F#4
         // Same pitch, flat spelling → Gb: different letter slot, flat sign.
         let (sharp_step, _) = note_staff_step(66, AccidentalStyle::Sharps, g); // F#4 → F slot
         let (flat_step, flat_acc) = note_staff_step(66, AccidentalStyle::Flats, g); // Gb4 → G slot
@@ -560,7 +572,10 @@ mod tests {
             vec![6, 3, 7, 4, 1, 5, 2]
         );
         // A partial signature is just the first N of the run (D major = first 2 sharps).
-        assert_eq!(key_sig_steps(Clef::Treble, KeySignature { fifths: 2 }), vec![8, 5]);
+        assert_eq!(
+            key_sig_steps(Clef::Treble, KeySignature { fifths: 2 }),
+            vec![8, 5]
+        );
         // C major draws nothing.
         assert!(key_sig_steps(Clef::Treble, KeySignature { fifths: 0 }).is_empty());
     }
@@ -611,7 +626,15 @@ mod tests {
         // Staff lines.
         for i in 0..5 {
             let y = geom.line_y(i);
-            draw_line_img(&mut img, w, h, (geom.staff_left, y), (geom.notes_right, y), 1.4, line_col);
+            draw_line_img(
+                &mut img,
+                w,
+                h,
+                (geom.staff_left, y),
+                (geom.notes_right, y),
+                1.4,
+                line_col,
+            );
         }
         // (Clef is a font glyph now — not rendered by this bitmap preview, which
         // only checks staff-line + notehead + ledger geometry.)
@@ -623,7 +646,15 @@ mod tests {
             let y = geom.step_y(step);
             for e in ledger_steps(step) {
                 let ly = geom.step_y(e);
-                draw_line_img(&mut img, w, h, (x - gap * 0.92, ly), (x + gap * 0.92, ly), 1.4, line_col);
+                draw_line_img(
+                    &mut img,
+                    w,
+                    h,
+                    (x - gap * 0.92, ly),
+                    (x + gap * 0.92, ly),
+                    1.4,
+                    line_col,
+                );
             }
             draw_ellipse_img(&mut img, w, h, (x, y), gap * 0.66, gap * 0.5, [232, 200, 120]);
         }
@@ -648,7 +679,15 @@ mod tests {
             }
         }
     }
-    fn draw_ellipse_img(img: &mut [[u8; 3]], w: usize, h: usize, c: (f32, f32), rx: f32, ry: f32, col: [u8; 3]) {
+    fn draw_ellipse_img(
+        img: &mut [[u8; 3]],
+        w: usize,
+        h: usize,
+        c: (f32, f32),
+        rx: f32,
+        ry: f32,
+        col: [u8; 3],
+    ) {
         let (cx, cy) = c;
         for dy in -(ry as i32 + 1)..=(ry as i32 + 1) {
             for dx in -(rx as i32 + 1)..=(rx as i32 + 1) {
@@ -660,7 +699,15 @@ mod tests {
             }
         }
     }
-    fn draw_line_img(img: &mut [[u8; 3]], w: usize, h: usize, a: (f32, f32), b: (f32, f32), width: f32, col: [u8; 3]) {
+    fn draw_line_img(
+        img: &mut [[u8; 3]],
+        w: usize,
+        h: usize,
+        a: (f32, f32),
+        b: (f32, f32),
+        width: f32,
+        col: [u8; 3],
+    ) {
         let dx = b.0 - a.0;
         let dy = b.1 - a.1;
         let len = (dx * dx + dy * dy).sqrt().max(1.0);

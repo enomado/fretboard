@@ -23,6 +23,7 @@
 //! The rolling samples/heat and the eased view window live in
 //! [`crate::app::pitch_roll_panel`].
 
+use eframe::egui::epaint::Vertex;
 use eframe::egui::{
     self,
     Align2,
@@ -36,7 +37,6 @@ use eframe::egui::{
     Stroke,
     pos2,
 };
-use eframe::egui::epaint::Vertex;
 
 use crate::core_types::note::AccidentalStyle;
 use crate::ui::theme::intonation_color;
@@ -93,7 +93,16 @@ pub fn draw_pitch_roll(
     draw_heat(painter, plot, span, heat, res_min_midi, res_max_midi, &y_of);
     draw_graph(painter, plot, samples, &y_of);
     draw_right_scale(
-        painter, plot, view_lo, view_hi, span, &y_of, style, heat, res_min_midi, res_max_midi,
+        painter,
+        plot,
+        view_lo,
+        view_hi,
+        span,
+        &y_of,
+        style,
+        heat,
+        res_min_midi,
+        res_max_midi,
     );
 }
 
@@ -324,12 +333,7 @@ fn heat_color(value: f32, recency: f32) -> Color32 {
 /// flows in from the left and ends at the playhead (right edge). Each segment is
 /// coloured by that sample's intonation and faded by its level; a silent frame
 /// breaks the line so rests show as gaps.
-fn draw_graph(
-    painter: &Painter,
-    plot: Rect,
-    samples: &[Option<PitchPoint>],
-    y_of: &impl Fn(f32) -> f32,
-) {
+fn draw_graph(painter: &Painter, plot: Rect, samples: &[Option<PitchPoint>], y_of: &impl Fn(f32) -> f32) {
     if !samples.iter().any(Option::is_some) {
         painter.text(
             plot.center(),
@@ -374,7 +378,10 @@ fn draw_graph(
 
     // Playhead: a faint vertical marker at the "now" edge.
     painter.line_segment(
-        [pos2(plot.right() - 0.5, plot.top()), pos2(plot.right() - 0.5, plot.bottom())],
+        [
+            pos2(plot.right() - 0.5, plot.top()),
+            pos2(plot.right() - 0.5, plot.bottom()),
+        ],
         Stroke::new(1.0, Color32::from_rgb(70, 76, 86)),
     );
 }

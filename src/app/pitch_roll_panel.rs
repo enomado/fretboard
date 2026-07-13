@@ -71,18 +71,18 @@ const VIEW_EASE: f32 = 0.08;
 pub struct PitchRoll {
     /// Per-frame melody-line pitch (fused pYIN), oldest → newest, *after* spike
     /// rejection. `None` = a silent frame or a rejected octave glitch (a gap).
-    samples: VecDeque<Option<PitchPoint>>,
+    samples:    VecDeque<Option<PitchPoint>>,
     /// Per-frame resonator column aligned 1:1 with `samples` (same index = same
     /// instant), oldest → newest. An *empty* `Vec` marks a silent frame. This is
     /// the spectral-heat ground truth; unlike the line it makes no octave decision.
-    heat: VecDeque<Vec<f32>>,
+    heat:       VecDeque<Vec<f32>>,
     /// Recent *raw* (pre-filter) voiced pitches, for the spike-rejection median.
     /// Cleared on silence so a new phrase starts fresh. See [`OCTAVE_REJECT`].
     raw_recent: VecDeque<f32>,
     /// Eased fractional-MIDI window shown on screen (`view_lo` bottom, `view_hi`
     /// top). Auto-frames the graph on the played range without per-frame jumps.
-    view_lo: f32,
-    view_hi: f32,
+    view_lo:    f32,
+    view_hi:    f32,
 }
 
 impl Default for PitchRoll {
@@ -90,11 +90,11 @@ impl Default for PitchRoll {
         // Default window ≈ violin open strings (G3=55 .. E5=76) with headroom, so
         // the panel looks sensible before the first note eases it to real data.
         Self {
-            samples: VecDeque::with_capacity(HISTORY_FRAMES),
-            heat: VecDeque::with_capacity(HISTORY_FRAMES),
+            samples:    VecDeque::with_capacity(HISTORY_FRAMES),
+            heat:       VecDeque::with_capacity(HISTORY_FRAMES),
             raw_recent: VecDeque::with_capacity(MEDIAN_WINDOW),
-            view_lo: 53.0,
-            view_hi: 79.0,
+            view_lo:    53.0,
+            view_hi:    79.0,
         }
     }
 }
@@ -117,8 +117,8 @@ impl PitchRoll {
                 // sample an octave (≥ OCTAVE_REJECT semitones) off it is a rare
                 // tracker octave slip, not a note — drop it to a gap. Trill/vibrato
                 // intervals are far smaller and always pass.
-                let spike = self.raw_recent.len() >= 3
-                    && (midi_f - median(&self.raw_recent)).abs() >= OCTAVE_REJECT;
+                let spike =
+                    self.raw_recent.len() >= 3 && (midi_f - median(&self.raw_recent)).abs() >= OCTAVE_REJECT;
                 (!spike).then_some(PitchPoint { midi_f, level })
             }
             None => {
@@ -198,18 +198,15 @@ impl App {
         // and smoothed, so it reads the melody as one clean curve. It cannot show a
         // fast trill (its window + HMM "stay" bias smear it) — that is the heat's
         // job below. Gated on level + voiced clarity + range.
-        let pitch = voiced
-            .then(|| reading.as_ref())
-            .flatten()
-            .and_then(|r| {
-                if r.frequency_hz <= 0.0 || r.clarity < CLARITY_GATE {
-                    return None;
-                }
-                let midi_f = 69.0 + 12.0 * (r.frequency_hz / reference).log2();
-                (MIDI_MIN..=MIDI_MAX)
-                    .contains(&(midi_f.round() as i32))
-                    .then_some(midi_f)
-            });
+        let pitch = voiced.then(|| reading.as_ref()).flatten().and_then(|r| {
+            if r.frequency_hz <= 0.0 || r.clarity < CLARITY_GATE {
+                return None;
+            }
+            let midi_f = 69.0 + 12.0 * (r.frequency_hz / reference).log2();
+            (MIDI_MIN..=MIDI_MAX)
+                .contains(&(midi_f.round() as i32))
+                .then_some(midi_f)
+        });
         // HEAT source = the resonator bank's newest column (fast, per bank column),
         // painted as-is so trills/overtones show with no octave decision. Blanked
         // (empty column) when the input is silent, so rests are clean gaps rather
@@ -254,7 +251,14 @@ impl App {
                 let heat = self.pitch_roll.heat.make_contiguous();
                 let samples = self.pitch_roll.samples.make_contiguous();
                 pianoroll::draw_pitch_roll(
-                    &painter, rect, samples, heat, res_min_midi, res_max_midi, view_lo, view_hi,
+                    &painter,
+                    rect,
+                    samples,
+                    heat,
+                    res_min_midi,
+                    res_max_midi,
+                    view_lo,
+                    view_hi,
                     style,
                 );
             });
@@ -289,7 +293,10 @@ mod tests {
         for _ in 0..400 {
             line(&mut roll, Some(69.0), 0.5); // A4
         }
-        assert!(roll.view_lo < 69.0 && roll.view_hi > 69.0, "note is inside the view");
+        assert!(
+            roll.view_lo < 69.0 && roll.view_hi > 69.0,
+            "note is inside the view"
+        );
         assert!(
             (roll.view_hi - roll.view_lo) >= MIN_SPAN - 0.5,
             "span stays at least the minimum"

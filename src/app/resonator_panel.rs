@@ -275,10 +275,7 @@ impl App {
                     .color(Color32::from_rgb(205, 194, 176))
                     .strong(),
             );
-            for (label, style) in [
-                ("C#", AccidentalStyle::Sharps),
-                ("Db", AccidentalStyle::Flats),
-            ] {
+            for (label, style) in [("C#", AccidentalStyle::Sharps), ("Db", AccidentalStyle::Flats)] {
                 let selected = settings.accidental == style;
                 if ui.selectable_label(selected, label).clicked() && settings.accidental != style {
                     settings.accidental = style;

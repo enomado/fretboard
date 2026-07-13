@@ -11,11 +11,13 @@
 //! code stays byte-identical across targets.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{
     AtomicU32,
     Ordering,
+};
+use std::sync::{
+    Arc,
+    Mutex,
 };
 
 use rustfft::FftPlanner;
@@ -190,7 +192,8 @@ impl ResonatorPipeline {
 
         let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
         let samples: Vec<f32> = samples.into_iter().map(|sample| sample * gain).collect();
-        self.analyzer.process_samples(&samples, analysis_settings.resonator.reassign);
+        self.analyzer
+            .process_samples(&samples, analysis_settings.resonator.reassign);
 
         let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
         if self.last_publish.elapsed() < publish_interval {
@@ -286,10 +289,14 @@ impl AnalysisPipeline {
         // tracker's onset response and lets the two sources settle the octave inside
         // the HMM (the panel no longer octave-locks). Empty when the bank is parked.
         let bank_pitch = if level >= BANK_FUSE_LEVEL {
-            shared.lock().ok().and_then(|s| s.fast_pitch).map(|(midi, strength)| {
-                let hz = analysis_settings.concert_pitch_hz * 2.0f32.powf((midi - 69.0) / 12.0);
-                (hz, strength)
-            })
+            shared
+                .lock()
+                .ok()
+                .and_then(|s| s.fast_pitch)
+                .map(|(midi, strength)| {
+                    let hz = analysis_settings.concert_pitch_hz * 2.0f32.powf((midi - 69.0) / 12.0);
+                    (hz, strength)
+                })
         } else {
             None
         };

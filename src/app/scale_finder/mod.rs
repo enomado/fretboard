@@ -338,5 +338,12 @@ fn draw_scale_finder_body(
 
     wheel::draw_chroma_wheel(&painter, snail_rect, ranking, style);
     wheel::draw_fifths_ring(&painter, fifths_rect, ranking, style);
-    panel::draw_method_panel(&painter, list_rect, ranking, selected_root_pc, selected_kind, style);
+    panel::draw_method_panel(
+        &painter,
+        list_rect,
+        ranking,
+        selected_root_pc,
+        selected_kind,
+        style,
+    );
 }

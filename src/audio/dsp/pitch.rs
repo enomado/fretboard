@@ -45,7 +45,7 @@ pub(crate) fn cmndf(window: &[f32], sample_rate: f32) -> Option<Cmndf> {
     }
 
     Some(Cmndf {
-        d:       cumulative,
+        d: cumulative,
         min_lag,
         max_lag: search_end,
     })

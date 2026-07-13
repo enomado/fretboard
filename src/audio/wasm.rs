@@ -20,11 +20,15 @@ use std::cell::{
 };
 use std::rc::Rc;
 
-use wasm_bindgen::JsCast;
-use wasm_bindgen::JsValue;
 use wasm_bindgen::closure::Closure;
-use wasm_bindgen_futures::JsFuture;
-use wasm_bindgen_futures::spawn_local;
+use wasm_bindgen::{
+    JsCast,
+    JsValue,
+};
+use wasm_bindgen_futures::{
+    JsFuture,
+    spawn_local,
+};
 use web_time::{
     Duration,
     Instant,
@@ -137,17 +141,18 @@ impl AudioEngine {
 
         // Worker → main: decode each snapshot into `latest`.
         let latest_for_cb = latest.clone();
-        let on_message = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
-            let bytes = js_sys::Uint8Array::new(&event.data()).to_vec();
-            if let Some(FromWorker::Snapshot(snapshot)) = decode::<FromWorker>(&bytes) {
-                let mut latest = latest_for_cb.borrow_mut();
-                latest.status = Some(snapshot.status);
-                latest.reading = snapshot.reading;
-                latest.resonator = snapshot.resonator;
-                latest.level = snapshot.level;
-                latest.waveform = snapshot.waveform;
-            }
-        });
+        let on_message =
+            Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
+                let bytes = js_sys::Uint8Array::new(&event.data()).to_vec();
+                if let Some(FromWorker::Snapshot(snapshot)) = decode::<FromWorker>(&bytes) {
+                    let mut latest = latest_for_cb.borrow_mut();
+                    latest.status = Some(snapshot.status);
+                    latest.reading = snapshot.reading;
+                    latest.resonator = snapshot.resonator;
+                    latest.level = snapshot.level;
+                    latest.waveform = snapshot.waveform;
+                }
+            });
         if let Some(worker) = worker.as_ref() {
             worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
         }
@@ -170,7 +175,12 @@ impl AudioEngine {
     }
 
     pub fn status(&self) -> AudioStatus {
-        self.inner.latest.borrow().status.clone().unwrap_or(AudioStatus::Idle)
+        self.inner
+            .latest
+            .borrow()
+            .status
+            .clone()
+            .unwrap_or(AudioStatus::Idle)
     }
 
     pub fn reading(&self) -> Option<TunerReading> {
@@ -218,13 +228,15 @@ impl AudioEngine {
         false
     }
 
-    pub fn set_monitor_enabled(&self, _enabled: bool) {}
+    pub fn set_monitor_enabled(&self, _enabled: bool) {
+    }
 
     pub fn monitor_gain(&self) -> f32 {
         0.0
     }
 
-    pub fn set_monitor_gain(&self, _gain: f32) {}
+    pub fn set_monitor_gain(&self, _gain: f32) {
+    }
 
     pub fn current_input_sample_rate(&self) -> u32 {
         self.inner.sample_rate.get()
@@ -257,7 +269,8 @@ impl AudioEngine {
     }
 
     /// No speaker output graph on wasm — test-tone playback is a no-op here.
-    pub fn play_test_note(&self, _midi: PNote) {}
+    pub fn play_test_note(&self, _midi: PNote) {
+    }
 
     // ── Drone: state round-trips for the UI/persist, but no audio on wasm yet. ──
     pub fn drone_state(&self) -> DroneState {
@@ -272,9 +285,11 @@ impl AudioEngine {
         false
     }
 
-    pub fn start_drone(&self) {}
+    pub fn start_drone(&self) {
+    }
 
-    pub fn stop_drone(&self) {}
+    pub fn stop_drone(&self) {
+    }
 
     pub fn request_resonator(&self) {
         // Re-assert the gate at most every RESONATOR_POST_INTERVAL; the UI calls
@@ -293,8 +308,10 @@ fn create_worker(latest: &Rc<RefCell<Latest>>) -> Option<web_sys::Worker> {
     match web_sys::Worker::new_with_options(WORKER_URL, &options) {
         Ok(worker) => Some(worker),
         Err(e) => {
-            latest.borrow_mut().status =
-                Some(AudioStatus::Error(format!("audio worker failed to start: {}", err_text(&e))));
+            latest.borrow_mut().status = Some(AudioStatus::Error(format!(
+                "audio worker failed to start: {}",
+                err_text(&e)
+            )));
             None
         }
     }
@@ -363,7 +380,11 @@ fn refresh_devices(inner: Rc<Inner>) {
             let device_id = info.device_id();
             let label = {
                 let raw = info.label();
-                if raw.is_empty() { "Микрофон".to_owned() } else { raw }
+                if raw.is_empty() {
+                    "Микрофон".to_owned()
+                } else {
+                    raw
+                }
             };
             options.push(AudioInputOption {
                 id: format!("{MIC_PREFIX}{device_id}"),
@@ -485,7 +506,10 @@ async fn run_capture(inner: Rc<Inner>, worker: web_sys::Worker, id: Option<Strin
 
     // Spin the worker pipelines up for this rate and hand it current settings.
     post_msg(&worker, &ToWorker::Init { sample_rate });
-    post_msg(&worker, &ToWorker::Settings(Box::new(inner.settings.borrow().clone())));
+    post_msg(
+        &worker,
+        &ToWorker::Settings(Box::new(inner.settings.borrow().clone())),
+    );
     post_msg(&worker, &ToWorker::Gain(inner.input_gain.get()));
 
     inner.sample_rate.set(sample_rate as u32);
@@ -506,7 +530,9 @@ async fn run_capture(inner: Rc<Inner>, worker: web_sys::Worker, id: Option<Strin
 /// Strip the `mic::` prefix to recover the MediaDevices deviceId, if this id
 /// names a specific microphone (vs the default / system entry).
 fn mic_device_id(id: &Option<String>) -> Option<String> {
-    id.as_deref().and_then(|s| s.strip_prefix(MIC_PREFIX)).map(str::to_owned)
+    id.as_deref()
+        .and_then(|s| s.strip_prefix(MIC_PREFIX))
+        .map(str::to_owned)
 }
 
 fn err_text(value: &JsValue) -> String {

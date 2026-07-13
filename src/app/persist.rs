@@ -50,6 +50,16 @@ pub(super) struct PersistentState {
     #[serde(default)]
     drone:             DroneState,
     workspace_tree:    egui_tiles::Tree<WorkspaceTab>,
+    /// Активная панель мобильного (Android) экрана. `serde(default)` — мягкая
+    /// миграция со старых RON без этого поля: берём снейл (прежнее поведение).
+    #[serde(default = "default_mobile_panel")]
+    mobile_panel:      WorkspaceTab,
+}
+
+/// Дефолт `mobile_panel` для мягкой миграции старых RON — снейл, т.е. ровно тот
+/// экран, что мобильная сборка показывала до появления селектора панелей.
+fn default_mobile_panel() -> WorkspaceTab {
+    WorkspaceTab::ResonatorSnail
 }
 
 impl App {
@@ -73,6 +83,7 @@ impl App {
         // A corrupt out-of-range value can't survive the contract — fail fast.
         self.test_note_midi = PNote::new(state.test_note_midi as u8).unwrap();
         self.workspace_tree = Some(state.workspace_tree);
+        self.mobile_panel = state.mobile_panel;
 
         // The engine is the source of truth for these at runtime (the App reads
         // them back through getters), so restore them there rather than caching
@@ -105,6 +116,7 @@ impl App {
             selected_input_id: self.audio.selected_input_id(),
             drone:             self.audio.drone_state(),
             workspace_tree:    self.workspace_tree.clone().unwrap(),
+            mobile_panel:      self.mobile_panel,
         }
     }
 }
@@ -135,6 +147,7 @@ mod tests {
             selected_input_id: Some("pulse::@DEFAULT_SOURCE@".to_owned()),
             drone:             crate::audio::DroneState::default(),
             workspace_tree:    default_workspace_tree(),
+            mobile_panel:      super::WorkspaceTab::PitchRoll,
         };
 
         let ron = ron::ser::to_string(&state).unwrap();
@@ -144,6 +157,8 @@ mod tests {
         assert_eq!(back.root_note, Note::G);
         assert_eq!(back.selected_input_id.as_deref(), Some("pulse::@DEFAULT_SOURCE@"));
         assert!(back.monitor_enabled);
+        // WorkspaceTab не выводит Debug — сравниваем через `==`, а не assert_eq.
+        assert!(back.mobile_panel == super::WorkspaceTab::PitchRoll);
         assert_eq!(
             back.analysis_settings.resonator.min_midi,
             AnalysisSettings::default().resonator.min_midi

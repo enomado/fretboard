@@ -103,18 +103,18 @@ type TrailPoint = Option<(f32, f32)>;
 #[derive(Default)]
 pub struct StaffTrainer {
     /// Finished notes, oldest → newest.
-    history: VecDeque<StaffNote>,
+    history:        VecDeque<StaffNote>,
     /// The note sounding right now (drawn emphasised at the right edge).
-    current: Option<HeldNote>,
+    current:        Option<HeldNote>,
     /// Recent continuous pitch, oldest → newest, for the trail behind the notes.
-    trail:   VecDeque<TrailPoint>,
+    trail:          VecDeque<TrailPoint>,
     /// The clef the staff is drawn in — user-selectable (default treble). One
     /// staff at a time: notes never migrate between clefs.
-    clef:    Clef,
+    clef:           Clef,
     /// The key signature drawn after the clef (default C major = none). It fixes
     /// the sharps/flats at the clef and, in turn, how each note is spelled and
     /// whether it carries its own accidental (see [`KeySignature::note_glyph`]).
-    key:     KeySignature,
+    key:            KeySignature,
     /// Last onset counter seen from the engine; a change means a fresh attack, used
     /// to split a re-bowed repeat of the same pitch into a new note.
     last_onset_seq: u64,
@@ -231,9 +231,11 @@ impl App {
                 }
                 let midi_f = 69.0 + 12.0 * (r.frequency_hz / reference).log2();
                 let midi = midi_f.round() as i32;
-                (MIDI_MIN..=MIDI_MAX)
-                    .contains(&midi)
-                    .then_some((midi, (midi_f - midi as f32) * 100.0, midi_f))
+                (MIDI_MIN..=MIDI_MAX).contains(&midi).then_some((
+                    midi,
+                    (midi_f - midi as f32) * 100.0,
+                    midi_f,
+                ))
             });
         let now = ui.input(|i| i.time);
         let onset_seq = reading.as_ref().map_or(0, |r| r.onset_seq);
@@ -260,19 +262,25 @@ impl App {
                     });
                     ui.with_layout(
                         eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
-                        |ui| match self.staff.current() {
-                            Some((midi, cents)) => pill(
-                                ui,
-                                &format!("{}  {:+.0}\u{00A2}", style.midi_name(midi), cents),
-                                Color32::from_rgb(20, 22, 26),
-                                intonation_color(cents),
-                            ),
-                            None => pill(
-                                ui,
-                                "\u{2014}",
-                                Color32::from_rgb(150, 156, 165),
-                                Color32::from_rgb(40, 44, 50),
-                            ),
+                        |ui| {
+                            match self.staff.current() {
+                                Some((midi, cents)) => {
+                                    pill(
+                                        ui,
+                                        &format!("{}  {:+.0}\u{00A2}", style.midi_name(midi), cents),
+                                        Color32::from_rgb(20, 22, 26),
+                                        intonation_color(cents),
+                                    )
+                                }
+                                None => {
+                                    pill(
+                                        ui,
+                                        "\u{2014}",
+                                        Color32::from_rgb(150, 156, 165),
+                                        Color32::from_rgb(40, 44, 50),
+                                    )
+                                }
+                            }
                         },
                     );
                 });
@@ -302,6 +310,23 @@ impl App {
                     eframe::egui::ComboBox::from_id_salt("staff_key_sig")
                         .selected_text(key_label(self.staff.key))
                         .show_ui(ui, |ui| {
+                            // The app's global 14 px widget rounding + 10 px item
+                            // spacing turn these short rows into oversized hover
+                            // "pills" that balloon above/below the row and appear to
+                            // float as the pointer moves. Scope a snug, squared-off
+                            // style to the popup so the highlight sits on its row.
+                            {
+                                let s = ui.style_mut();
+                                s.spacing.item_spacing.y = 2.0;
+                                s.spacing.button_padding.y = 3.0;
+                                for w in [
+                                    &mut s.visuals.widgets.hovered,
+                                    &mut s.visuals.widgets.active,
+                                    &mut s.visuals.widgets.inactive,
+                                ] {
+                                    w.corner_radius = CornerRadius::same(6);
+                                }
+                            }
                             for &(fifths, name) in CIRCLE_OF_FIFTHS.iter() {
                                 let k = KeySignature { fifths };
                                 ui.selectable_value(&mut self.staff.key, k, key_label(k))
@@ -367,7 +392,13 @@ fn draw_staff(
     let left = rect.left() + 12.0;
     let mut geom = StaffGeom {
         gap,
-        bottom_y: rect.center().y + 2.0 * gap,
+        // Anchor the staff ~3.6 gaps below the card's top edge — enough for the
+        // note-name header row plus a couple of ledger lines of high-register
+        // head-room — rather than centring it. Centring left ~5.5 gaps of dead
+        // space above the top line, so the (usually empty) staff read as having
+        // slid down to the bottom of the card. The remaining head-room now falls
+        // below, where the intonation bar and the low ledger lines live.
+        bottom_y: rect.top() + gap * 7.6,
         staff_left: left,
         clef_x: left + gap * 2.2,
         notes_left: left + gap * 6.2,
@@ -390,7 +421,14 @@ fn draw_staff(
     // Fast resonator waterfall on the very bottom layer: the low-latency
     // pitch-energy heat that flows into the notes far sooner than the YIN commit.
     draw_resonator_waterfall(
-        painter, &geom, clef, res_wf, res_min_midi, res_max_midi, style, right_x,
+        painter,
+        &geom,
+        clef,
+        res_wf,
+        res_min_midi,
+        res_max_midi,
+        style,
+        right_x,
     );
 
     // Live pitch "waterfall" trail behind the notes, aligned to the staff lines:
@@ -399,11 +437,7 @@ fn draw_staff(
 
     // Notes newest-last. Place right→left so a new note enters at the right and
     // older ones scroll toward the clef, dropping off once past `notes_left`.
-    let mut items: Vec<(i32, f32, bool)> = trainer
-        .history
-        .iter()
-        .map(|n| (n.midi, n.cents, false))
-        .collect();
+    let mut items: Vec<(i32, f32, bool)> = trainer.history.iter().map(|n| (n.midi, n.cents, false)).collect();
     if let Some((midi, cents)) = trainer.current() {
         items.push((midi, cents, true));
     }
@@ -416,7 +450,9 @@ fn draw_staff(
             continue;
         }
         let color = intonation_color(cents);
-        staff::draw_note(painter, &geom, x, midi, style, clef, key, color, staff_col, emphasize);
+        staff::draw_note(
+            painter, &geom, x, midi, style, clef, key, color, staff_col, emphasize,
+        );
         // Name *every* note above the staff: a header row of note letters (C, D,
         // F#, …), each aligned to its note's column, so the written line reads
         // back as named pitches. The label is the pitch-class name only (no

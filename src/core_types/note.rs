@@ -54,10 +54,8 @@ impl Default for AccidentalStyle {
 impl AccidentalStyle {
     /// The name of pitch class `pc` (0 = C, wrapping mod 12) in this spelling.
     pub fn pitch_class_name(self, pc: usize) -> &'static str {
-        const SHARPS: [&str; 12] =
-            ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-        const FLATS: [&str; 12] =
-            ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+        const SHARPS: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        const FLATS: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
         let table = match self {
             AccidentalStyle::Sharps => &SHARPS,
             AccidentalStyle::Flats => &FLATS,
@@ -333,10 +331,10 @@ mod tests {
         assert_eq!(f.alteration(6), Accidental::Flat); // B
         assert_eq!(f.alteration(2), Accidental::Natural); // E untouched
         // The accidental list is in the canonical order and length.
-        assert_eq!(d.accidentals().collect::<Vec<_>>(), vec![
-            (3, Accidental::Sharp),
-            (0, Accidental::Sharp),
-        ]);
+        assert_eq!(
+            d.accidentals().collect::<Vec<_>>(),
+            vec![(3, Accidental::Sharp), (0, Accidental::Sharp),]
+        );
     }
 
     #[test]

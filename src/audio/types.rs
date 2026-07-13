@@ -429,7 +429,10 @@ mod tests {
 
     #[test]
     fn drone_toggle_note_respects_polyphony_cap() {
-        let mut drone = DroneState { notes: Vec::new(), ..DroneState::default() };
+        let mut drone = DroneState {
+            notes: Vec::new(),
+            ..DroneState::default()
+        };
         // Пытаемся набить больше потолка — лишние тихо отбрасываются.
         for midi in 36..36 + (DRONE_MAX_NOTES as u8 + 5) {
             drone.toggle_note(PNote::new(midi).unwrap());

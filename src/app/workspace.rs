@@ -40,23 +40,7 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
                         let min_size = pane_rect.size() - vec2(pane_padding_f * 2.0, pane_padding_f * 2.0);
                         ui.set_min_size(vec2(min_size.x.max(0.0), min_size.y.max(0.0)));
 
-                        match pane {
-                            WorkspaceTab::Controls => self.app.draw_controls(ui),
-                            WorkspaceTab::FretboardControls => self.app.draw_fretboard_controls(ui),
-                            WorkspaceTab::InputScope => self.app.draw_input_scope_card(ui),
-                            WorkspaceTab::ConfigGeneral => self.app.draw_general_config_card(ui),
-                            WorkspaceTab::ConfigFft1 => self.app.draw_fft1_config_card(ui),
-                            WorkspaceTab::ConfigResonatorFft => self.app.draw_resonator_fft_config_card(ui),
-                            WorkspaceTab::LiveAnalysis => self.app.draw_tuner_card(ui),
-                            WorkspaceTab::ScaleFinder => self.app.draw_scale_finder_card(ui),
-                            WorkspaceTab::ResonatorBank => self.app.draw_resonator_bank_card(ui),
-                            WorkspaceTab::ResonatorSnail => self.app.draw_resonator_snail_card(ui),
-                            WorkspaceTab::ResonatorWaterfall => self.app.draw_resonator_waterfall_card(ui),
-                            WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
-                            WorkspaceTab::Drone => self.app.draw_drone_card(ui),
-                            WorkspaceTab::Staff => self.app.draw_staff_card(ui),
-                            WorkspaceTab::PitchRoll => self.app.draw_pitch_roll_card(ui),
-                        }
+                        self.app.draw_workspace_tab(ui, *pane);
                     });
             });
 
@@ -140,6 +124,48 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
 }
 
 impl App {
+    /// Единый диспетчер «панель → её отрисовка». Один источник истины для набора
+    /// панелей: им пользуется и десктопный воркспейс (в `pane_ui`), и мобильный
+    /// путь (одна панель на весь экран). Добавил панель в `WorkspaceTab` —
+    /// добавь ветку здесь, и она сразу доступна на обеих платформах.
+    pub(super) fn draw_workspace_tab(&mut self, ui: &mut Ui, tab: WorkspaceTab) {
+        match tab {
+            WorkspaceTab::Controls => self.draw_controls(ui),
+            WorkspaceTab::FretboardControls => self.draw_fretboard_controls(ui),
+            WorkspaceTab::InputScope => self.draw_input_scope_card(ui),
+            WorkspaceTab::ConfigGeneral => self.draw_general_config_card(ui),
+            WorkspaceTab::ConfigFft1 => self.draw_fft1_config_card(ui),
+            WorkspaceTab::ConfigResonatorFft => self.draw_resonator_fft_config_card(ui),
+            WorkspaceTab::LiveAnalysis => self.draw_tuner_card(ui),
+            WorkspaceTab::ScaleFinder => self.draw_scale_finder_card(ui),
+            WorkspaceTab::ResonatorBank => self.draw_resonator_bank_card(ui),
+            WorkspaceTab::ResonatorSnail => self.draw_resonator_snail_card(ui),
+            WorkspaceTab::ResonatorWaterfall => self.draw_resonator_waterfall_card(ui),
+            WorkspaceTab::Fretboard => self.draw_fretboard_card(ui),
+            WorkspaceTab::Drone => self.draw_drone_card(ui),
+            WorkspaceTab::Staff => self.draw_staff_card(ui),
+            WorkspaceTab::PitchRoll => self.draw_pitch_roll_card(ui),
+        }
+    }
+
+    /// Мобильная лента вкладок — тот самый «конфиг какую открывать», но все панели
+    /// видны сразу (а не спрятаны в дропдаун): тап переключает активную, выбор
+    /// пишется в `mobile_panel` и переживает перезапуск (персист в RON).
+    ///
+    /// Перенос на новые строки — `horizontal_wrapped`. Это безопасно, потому что
+    /// каждая вкладка — ОДИНОЧНЫЙ `selectable_label` (не вложенный фиксированный
+    /// `ui.horizontal`), а удвоение ширины ловится именно на «wrapped + вложенный
+    /// не-переносящий horizontal» (см. GOTCHA_egui_layout_width_doubling).
+    #[cfg(target_os = "android")]
+    fn draw_mobile_panel_tabs(&mut self, ui: &mut Ui) {
+        ui.horizontal_wrapped(|ui| {
+            for tab in WorkspaceTab::ALL {
+                ui.selectable_value(&mut self.mobile_panel, tab, tab.label());
+            }
+        });
+        ui.add_space(6.0);
+    }
+
     #[cfg(target_os = "android")]
     pub(super) fn render(&mut self, ui: &mut Ui) {
         // Frame heartbeat: if these numbers keep climbing in logcat the eframe
@@ -170,12 +196,25 @@ impl App {
             .show(ui, |ui| {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
-                // No scroll area here on purpose: a vertical ScrollArea hands its
-                // content unbounded height, and the snail fills available height —
-                // so it would inflate without limit. The CentralPanel's ui is
-                // already bounded to the screen, so the snail takes exactly the
-                // height left under the settings strip.
-                self.draw_mobile_snail_card(ui);
+
+                // «Конфиг какую панель открывать»: лента вкладок сверху (все панели
+                // видны сразу), активная панель под ней. Одна панель за раз — на
+                // узком экране это максимум места под контент.
+                self.draw_mobile_panel_tabs(ui);
+
+                match self.mobile_panel {
+                    // У снейла свой мобильный вариант: тянется на всю оставшуюся
+                    // высоту + встроенная полоса настроек, и НЕ в ScrollArea —
+                    // иначе (unbounded height) он бы раздувался без предела.
+                    WorkspaceTab::ResonatorSnail => self.draw_mobile_snail_card(ui),
+                    // Остальные панели — конечной высоты; вертикальный скролл на
+                    // случай, если контент не влезает в экран телефона.
+                    tab => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.draw_workspace_tab(ui, tab));
+                    }
+                }
             });
     }
 

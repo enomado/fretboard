@@ -38,11 +38,23 @@ pub fn install_fonts(ctx: &Context) {
             "../../assets/fonts/NotoMusic-Regular.ttf"
         ))),
     );
-    fonts
-        .families
-        .insert(FontFamily::Name(MUSIC_FAMILY.into()), vec![
-            "noto_music".to_owned(),
-        ]);
+    fonts.families.insert(
+        FontFamily::Name(MUSIC_FAMILY.into()),
+        vec!["noto_music".to_owned()],
+    );
+    // Also chain Noto Music as the *last* fallback of the normal text families so
+    // ♯/♭/♮ (U+266D..F) rendered in plain UI labels — the key-signature picker's
+    // "E♭  3♭", the note pills — resolve to a real glyph instead of tofu boxes.
+    // It must go last: egui derives a row's height from the family's *first*
+    // font, so appending Noto Music (whose em is ~2.35× tall) does not inflate
+    // line heights; it is consulted only for glyphs Ubuntu/Hack lack.
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("noto_music".to_owned());
+    }
     ctx.set_fonts(fonts);
 }
 

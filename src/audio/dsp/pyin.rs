@@ -70,10 +70,7 @@ impl ThresholdPrior {
         for w in &mut weights {
             *w /= sum;
         }
-        Self {
-            thresholds,
-            weights,
-        }
+        Self { thresholds, weights }
     }
 }
 
@@ -115,9 +112,11 @@ fn pyin_candidates(c: &Cmndf, prior: &ThresholdPrior, sample_rate: f32) -> (Vec<
         .into_iter()
         .filter_map(|(tau, p)| {
             let refined = parabolic_tau(&c.d, tau);
-            (refined > 0.0).then(|| Candidate {
-                frequency_hz: sample_rate / refined,
-                probability:  p,
+            (refined > 0.0).then(|| {
+                Candidate {
+                    frequency_hz: sample_rate / refined,
+                    probability:  p,
+                }
             })
         })
         .collect();

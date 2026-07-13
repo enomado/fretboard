@@ -207,7 +207,9 @@ impl App {
         painter.text(
             pos2(tooltip_rect.left() + 12.0, tooltip_rect.top() + 11.0),
             egui::Align2::LEFT_TOP,
-            hovered.note_name.name_styled(self.audio.analysis_settings().accidental),
+            hovered
+                .note_name
+                .name_styled(self.audio.analysis_settings().accidental),
             FontId::proportional(17.0),
             Color32::from_rgb(228, 220, 208),
         );
