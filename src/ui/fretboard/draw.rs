@@ -14,6 +14,7 @@ use eframe::egui::{
     vec2,
 };
 
+use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
 use crate::core_types::scale::Scale;
 use crate::ui::fretboard::Fretboard;
@@ -22,7 +23,7 @@ pub trait Mark {
     fn mark(&self, note: &PNote) -> Color32;
 }
 
-pub fn draw_fretboard<F>(painter: egui::Painter, fretboard: &Fretboard, mark: F)
+pub fn draw_fretboard<F>(painter: egui::Painter, fretboard: &Fretboard, mark: F, style: AccidentalStyle)
 where
     F: Mark,
 {
@@ -52,7 +53,7 @@ where
             painter.text(
                 pos,
                 egui::Align2::CENTER_CENTER,
-                note.to_anote().name(),
+                note.to_anote().name_styled(style),
                 FontId::monospace(12.),
                 color,
             );
@@ -65,6 +66,7 @@ pub fn draw_string_lines<M: Mark>(
     fretboard_rect: Rect,
     fretboard: &Fretboard,
     mark: M,
+    style: AccidentalStyle,
 ) {
     for stringg in fretboard.iter_strings() {
         let y = fretboard.string_pos(stringg);
@@ -76,7 +78,7 @@ pub fn draw_string_lines<M: Mark>(
         painter.text(
             pos2(fretboard_rect.x_range().min - 26., y),
             egui::Align2::LEFT_CENTER,
-            open.to_anote().name(),
+            open.to_anote().name_styled(style),
             FontId::monospace(12.0),
             color,
         );
@@ -99,8 +101,13 @@ pub fn draw_string_lines<M: Mark>(
 }
 
 // не-generic обёртки для jump table hotpatch (generic fn pointer не coerce в HRTB fn ptr)
-pub fn draw_fretboard_scale(painter: egui::Painter, fretboard: &Fretboard, scale: &Scale) {
-    draw_fretboard(painter, fretboard, scale);
+pub fn draw_fretboard_scale(
+    painter: egui::Painter,
+    fretboard: &Fretboard,
+    scale: &Scale,
+    style: AccidentalStyle,
+) {
+    draw_fretboard(painter, fretboard, scale, style);
 }
 
 pub fn draw_string_lines_scale(
@@ -108,8 +115,9 @@ pub fn draw_string_lines_scale(
     fretboard_rect: Rect,
     fretboard: &Fretboard,
     scale: &Scale,
+    style: AccidentalStyle,
 ) {
-    draw_string_lines(painter, fretboard_rect, fretboard, scale);
+    draw_string_lines(painter, fretboard_rect, fretboard, scale, style);
 }
 
 pub fn draw_fret_lines(painter: &egui::Painter, fretboard_rect: Rect, fretboard: &Fretboard) {

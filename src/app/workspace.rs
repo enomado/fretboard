@@ -54,6 +54,7 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
                             WorkspaceTab::ResonatorWaterfall => self.app.draw_resonator_waterfall_card(ui),
                             WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
                             WorkspaceTab::Drone => self.app.draw_drone_card(ui),
+                            WorkspaceTab::Staff => self.app.draw_staff_card(ui),
                         }
                     });
             });

@@ -10,10 +10,12 @@ use super::analysis_math::{
     NOTE_BUCKET_MIN_MIDI,
     SPIRAL_BINS_PER_SEMITONE,
     normalize_bars,
+    resonator_fundamental,
     resonator_note_labels,
     splat_linear,
 };
 use crate::audio::types::AnalysisSettings;
+use crate::core_types::note::AccidentalStyle;
 
 const RESONATOR_MIN_MIDI: usize = NOTE_BUCKET_MIN_MIDI;
 const RESONATOR_MAX_MIDI: usize = NOTE_BUCKET_MAX_MIDI;
@@ -63,10 +65,19 @@ pub(crate) struct ResonatorViewSettings {
     reference_hz:      f32,
 }
 
+// A resonator bin below this normalized magnitude is noise rather than a partial —
+// the floor for picking the played fundamental. Same idea (and value) as the
+// staff panel's `RES_WF_GATE` paint threshold.
+const FUNDAMENTAL_FLOOR: f32 = 0.18;
+
 #[derive(Clone, Debug)]
 pub(crate) struct ResonatorSnapshot {
     pub(crate) spectrum:    Vec<f32>,
     pub(crate) note_labels: Vec<String>,
+    /// Fast played-note prior for this snapshot: `(fractional_midi, strength)` of
+    /// the harmonic fundamental, or `None` when the bank is quiet. Rides to the UI
+    /// on `TunerReading::fast_pitch`.
+    pub(crate) fundamental: Option<(f32, f32)>,
 }
 
 #[derive(Debug)]
@@ -86,8 +97,8 @@ pub(crate) struct ResonatorAnalyzer {
 }
 
 impl ResonatorViewSettings {
-    pub(crate) fn note_labels(&self) -> Vec<String> {
-        resonator_note_labels(self.min_midi, self.max_midi)
+    pub(crate) fn note_labels(&self, style: AccidentalStyle) -> Vec<String> {
+        resonator_note_labels(self.min_midi, self.max_midi, style)
     }
 }
 
@@ -218,12 +229,12 @@ impl ResonatorAnalyzer {
         self.have_phase = true;
     }
 
-    pub(crate) fn snapshot(&self, reassign: bool) -> ResonatorSnapshot {
-        resonator_snapshot(&self.bank, &self.settings, &self.detuning_hz, reassign)
+    pub(crate) fn snapshot(&self, reassign: bool, style: AccidentalStyle) -> ResonatorSnapshot {
+        resonator_snapshot(&self.bank, &self.settings, &self.detuning_hz, reassign, style)
     }
 
-    pub(crate) fn note_labels(&self) -> Vec<String> {
-        self.settings.note_labels()
+    pub(crate) fn note_labels(&self, style: AccidentalStyle) -> Vec<String> {
+        self.settings.note_labels(style)
     }
 }
 
@@ -266,6 +277,7 @@ fn resonator_snapshot(
     settings: &ResonatorViewSettings,
     detuning_hz: &[f32],
     reassign: bool,
+    style: AccidentalStyle,
 ) -> ResonatorSnapshot {
     // Fallback (safety net): plain per-bin magnitude at the bin's nominal pitch,
     // at the bank's own resolution. This is the original, pre-reassignment path —
@@ -277,9 +289,16 @@ fn resonator_snapshot(
             bank.magnitudes()
         };
         normalize_bars(&mut spectrum, settings.gamma);
+        let fundamental = resonator_fundamental(
+            &spectrum,
+            settings.min_midi as f32,
+            settings.bins_per_semitone as f32,
+            FUNDAMENTAL_FLOOR,
+        );
         return ResonatorSnapshot {
             spectrum,
-            note_labels: settings.note_labels(),
+            note_labels: settings.note_labels(style),
+            fundamental,
         };
     }
 
@@ -316,9 +335,16 @@ fn resonator_snapshot(
     }
 
     normalize_bars(&mut spectrum, settings.gamma);
+    let fundamental = resonator_fundamental(
+        &spectrum,
+        settings.min_midi as f32,
+        OUTPUT_BINS_PER_SEMITONE as f32,
+        FUNDAMENTAL_FLOOR,
+    );
     ResonatorSnapshot {
         spectrum,
-        note_labels: settings.note_labels(),
+        note_labels: settings.note_labels(style),
+        fundamental,
     }
 }
 
@@ -357,7 +383,7 @@ mod tests {
             .collect();
         an.process_samples(&sig, true);
 
-        let snap = an.snapshot(true);
+        let snap = an.snapshot(true, AccidentalStyle::Sharps);
         let peak_midi = bin_midi(&an, peak_index(&snap.spectrum));
         assert!(
             (peak_midi - target_midi).abs() < 0.06,
@@ -388,13 +414,39 @@ mod tests {
         );
     }
 
+    /// End-to-end through the production path (analyzer → snapshot → fundamental):
+    /// a harmonic-rich tone like a bowed string must resolve to its *fundamental*
+    /// (A4 = 69), not an overtone, and land in-range. This is what feeds the staff's
+    /// `TunerReading::fast_pitch`.
+    #[test]
+    fn fundamental_on_harmonic_tone_resolves_to_root() {
+        let sr = 44100.0;
+        let mut an = ResonatorAnalyzer::new(sr);
+        let f0 = 440.0; // A4 = MIDI 69
+        // Fundamental + 2nd + 3rd + 4th partials, fundamental strongest.
+        let sig: Vec<f32> = (0..sr as usize)
+            .map(|i| {
+                let t = i as f32 / sr;
+                (TAU * f0 * t).sin()
+                    + 0.6 * (TAU * 2.0 * f0 * t).sin()
+                    + 0.4 * (TAU * 3.0 * f0 * t).sin()
+                    + 0.3 * (TAU * 4.0 * f0 * t).sin()
+            })
+            .collect();
+        an.process_samples(&sig, true);
+        let snap = an.snapshot(true, AccidentalStyle::Sharps);
+        let (midi, strength) = snap.fundamental.expect("fundamental should be detected");
+        assert!((midi - 69.0).abs() < 0.2, "expected ~A4 (69), got {midi}");
+        assert!(strength > FUNDAMENTAL_FLOOR);
+    }
+
     /// Empty / silent input must not panic and yields an all-zero spiral.
     #[test]
     fn silence_is_quiet() {
         let sr = 44100.0;
         let mut an = ResonatorAnalyzer::new(sr);
         an.process_samples(&vec![0.0; 4096], true);
-        let snap = an.snapshot(true);
+        let snap = an.snapshot(true, AccidentalStyle::Sharps);
         assert!(snap.spectrum.iter().all(|&v| v == 0.0));
     }
 
@@ -411,8 +463,8 @@ mod tests {
         an.process_samples(&sig, true);
 
         let span = RESONATOR_MAX_MIDI - RESONATOR_MIN_MIDI;
-        let nominal = an.snapshot(false);
-        let reassigned = an.snapshot(true);
+        let nominal = an.snapshot(false, AccidentalStyle::Sharps);
+        let reassigned = an.snapshot(true, AccidentalStyle::Sharps);
         assert_eq!(
             nominal.spectrum.len(),
             span * RESONATOR_DEFAULT_BINS_PER_SEMITONE + 1

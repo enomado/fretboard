@@ -7,6 +7,7 @@ mod live_analysis;
 mod persist;
 mod resonator_panel;
 mod scale_finder;
+mod staff_panel;
 mod workspace;
 
 use std::ops::Range;
@@ -188,12 +189,13 @@ enum WorkspaceTab {
     ResonatorWaterfall,
     Fretboard,
     Drone,
+    Staff,
 }
 
 impl WorkspaceTab {
     /// Полный реестр панелей — источник для меню «Panels» (открыть/закрыть)
     /// и для дефолтной раскладки. Порядок = порядок в меню.
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::Controls,
         Self::FretboardControls,
         Self::InputScope,
@@ -207,6 +209,7 @@ impl WorkspaceTab {
         Self::ResonatorSnail,
         Self::ResonatorWaterfall,
         Self::Drone,
+        Self::Staff,
     ];
 
     fn label(self) -> &'static str {
@@ -224,6 +227,7 @@ impl WorkspaceTab {
             Self::ResonatorWaterfall => "Resonator Waterfall",
             Self::Fretboard => "Fretboard",
             Self::Drone => "Drone",
+            Self::Staff => "Violin Staff",
         }
     }
 }
@@ -242,6 +246,9 @@ pub struct App {
     /// Решалка Scale Finder: рантайм-окно chroma по времени (не персистится,
     /// тикается только пока панель видима). См. [`scale_finder::solver`].
     scale_solver: scale_finder::solver::ScaleSolver,
+    /// Live-notation state for the Violin Staff panel: rolling history of played
+    /// notes + the note sounding now. Not persisted (a fresh session starts blank).
+    staff: staff_panel::StaffTrainer,
     workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
@@ -271,6 +278,7 @@ struct ResonatorTarget {
 impl App {
     pub fn new(cc: &CreationContext) -> Self {
         crate::ui::theme::apply_theme(&cc.egui_ctx);
+        crate::ui::theme::install_fonts(&cc.egui_ctx);
         let audio = AudioEngine::new();
         let audio_inputs = audio.available_inputs();
 
@@ -287,6 +295,7 @@ impl App {
             test_note_midi: PNote::new(24).unwrap(),
             scale_finder: ScaleFinderConfig::default(),
             scale_solver: scale_finder::solver::ScaleSolver::default(),
+            staff: staff_panel::StaffTrainer::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
         };
 

@@ -10,5 +10,6 @@
 
 pub mod fretboard;
 pub mod snail;
+pub mod staff;
 pub mod theme;
 pub mod waterfall;

@@ -1,3 +1,4 @@
+use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
 
 // Serialize/Deserialize so the wasm DSP web worker can ship readings back to the
@@ -18,6 +19,15 @@ pub struct TunerReading {
     pub resonator_waterfall:   Vec<Vec<f32>>,
     pub resonator_note_labels: Vec<String>,
     pub note_labels:           Vec<String>,
+    /// The fast played-note prior: `(fractional_midi, strength)` of the harmonic
+    /// fundamental the resonator bank hears right now, or `None` when the bank is
+    /// quiet. Published at the bank's fast cadence (~16 ms). Fused into pYIN as a
+    /// low-latency candidate (see `core`), so `frequency_hz` already reflects it.
+    pub fast_pitch:            Option<(f32, f32)>,
+    /// Monotonic count of detected note onsets (attacks). The UI diffs it against
+    /// the value it last saw to tell when a *new* attack occurred — used to split a
+    /// re-bowed repeat of the same pitch instead of merging it into the held note.
+    pub onset_seq:             u64,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -67,6 +77,12 @@ pub struct AnalysisSettings {
     pub spectrum_gamma:     f32,
     pub note_gamma:         f32,
     pub resonator:          ResonatorSettings,
+    /// Как писать чёрные клавиши в подписях нот везде в UI: диезами (C#) или
+    /// бемолями (Db). Глобальное свойство отображения — прокидывается во все
+    /// генераторы подписей. `serde(default)` — старые снимки без поля грузятся
+    /// как диезы (прежнее поведение подписей), а не падают на разборе.
+    #[serde(default)]
+    pub accidental:         AccidentalStyle,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -119,6 +135,7 @@ impl Default for AnalysisSettings {
             spectrum_gamma:     0.58,
             note_gamma:         0.72,
             resonator:          ResonatorSettings::default(),
+            accidental:         AccidentalStyle::default(),
         }
     }
 }
@@ -350,6 +367,7 @@ mod tests {
                 power:     false,
                 reassign:  true,
             },
+            accidental:         AccidentalStyle::Sharps,
         }
         .sanitized();
 

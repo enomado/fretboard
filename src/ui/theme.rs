@@ -1,7 +1,12 @@
+use std::sync::Arc;
+
 use eframe::egui::{
     Color32,
     Context,
     CornerRadius,
+    FontData,
+    FontDefinitions,
+    FontFamily,
     FontId,
     Stroke,
     Style,
@@ -11,6 +16,35 @@ use eframe::egui::{
 };
 
 pub const PANEL_FILL: Color32 = Color32::from_rgb(24, 27, 31);
+
+/// Name of the custom font family that carries the music glyphs (clef,
+/// accidentals, noteheads). Registered by [`install_fonts`].
+const MUSIC_FAMILY: &str = "music";
+
+/// A [`FontId`] in the embedded Noto Music family at the given pixel size — the
+/// only way to reach the clef/accidental glyphs. See [`install_fonts`].
+pub fn music_font(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(MUSIC_FAMILY.into()))
+}
+
+/// Register the embedded Noto Music font (SIL OFL 1.1) as a named family so the
+/// staff panel can draw a real treble clef (U+1D11E) and ♯/♭/♮ accidentals.
+/// Keeps egui's default families for all normal text; only adds "music".
+pub fn install_fonts(ctx: &Context) {
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "noto_music".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../../assets/fonts/NotoMusic-Regular.ttf"
+        ))),
+    );
+    fonts
+        .families
+        .insert(FontFamily::Name(MUSIC_FAMILY.into()), vec![
+            "noto_music".to_owned(),
+        ]);
+    ctx.set_fonts(fonts);
+}
 
 pub fn apply_theme(ctx: &Context) {
     let mut style: Style = (*ctx.global_style()).clone();

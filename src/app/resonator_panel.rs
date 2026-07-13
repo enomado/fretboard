@@ -20,6 +20,8 @@ use super::{
 };
 use crate::audio::ResonatorReading;
 #[cfg(target_os = "android")]
+use crate::core_types::note::AccidentalStyle;
+#[cfg(target_os = "android")]
 use crate::core_types::pitch::PNote;
 use crate::ui::snail::{
     self,
@@ -265,6 +267,25 @@ impl App {
         {
             changed = true;
         }
+
+        // Знаки альтерации: диезы/бемоли во всех подписях нот (улитка, резонаторы).
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Notes")
+                    .color(Color32::from_rgb(205, 194, 176))
+                    .strong(),
+            );
+            for (label, style) in [
+                ("C#", AccidentalStyle::Sharps),
+                ("Db", AccidentalStyle::Flats),
+            ] {
+                let selected = settings.accidental == style;
+                if ui.selectable_label(selected, label).clicked() && settings.accidental != style {
+                    settings.accidental = style;
+                    changed = true;
+                }
+            }
+        });
 
         if changed {
             self.audio.set_analysis_settings(settings);

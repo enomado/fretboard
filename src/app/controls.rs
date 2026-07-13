@@ -31,6 +31,7 @@ use crate::audio::{
     AnalysisSettings,
     AudioInputKind,
 };
+use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
 use crate::ui::theme::PANEL_FILL;
 
@@ -313,6 +314,47 @@ impl App {
                             .monospace(),
                     );
                     if pitch_changed {
+                        self.audio.set_analysis_settings(settings);
+                    }
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    // Знаки альтерации: диезы (C#) или бемоли (Db) во ВСЕХ подписях
+                    // нот приложения (улитки, ноты, резонаторы, тюнер, гриф).
+                    ui.label(
+                        RichText::new("Accidentals")
+                            .color(Color32::from_rgb(205, 194, 176))
+                            .strong(),
+                    );
+                    let mut settings = self.audio.analysis_settings();
+                    let mut changed = false;
+                    for (label, style) in [
+                        ("Sharps (C#)", AccidentalStyle::Sharps),
+                        ("Flats (Db)", AccidentalStyle::Flats),
+                    ] {
+                        let selected = settings.accidental == style;
+                        let button = egui::Button::new(label)
+                            .min_size(vec2(84.0, 26.0))
+                            .fill(if selected {
+                                Color32::from_rgb(112, 86, 72)
+                            } else {
+                                Color32::from_rgb(42, 46, 52)
+                            })
+                            .stroke(Stroke::new(
+                                1.0_f32,
+                                if selected {
+                                    Color32::from_rgb(207, 187, 166)
+                                } else {
+                                    Color32::from_rgb(84, 89, 97)
+                                },
+                            ))
+                            .corner_radius(CornerRadius::same(14));
+                        if ui.add(button).clicked() && settings.accidental != style {
+                            settings.accidental = style;
+                            changed = true;
+                        }
+                    }
+                    if changed {
                         self.audio.set_analysis_settings(settings);
                     }
                 });
@@ -760,7 +802,7 @@ impl App {
                 *changed = true;
             }
             ui.label(
-                RichText::new(midi_label(settings.resonator.min_midi))
+                RichText::new(midi_label(settings.resonator.min_midi, settings.accidental))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -783,7 +825,7 @@ impl App {
                 *changed = true;
             }
             ui.label(
-                RichText::new(midi_label(settings.resonator.max_midi))
+                RichText::new(midi_label(settings.resonator.max_midi, settings.accidental))
                     .color(Color32::from_rgb(226, 216, 201))
                     .monospace(),
             );
@@ -1066,10 +1108,6 @@ const RESONATOR_PARAM_HELP: &[(&str, &str)] = &[
     ),
 ];
 
-fn midi_label(midi: PNote) -> String {
-    const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    let midi = midi.as_u8() as usize;
-    let note_index = midi % 12;
-    let octave = midi as i32 / 12 - 1;
-    format!("{}{}", NOTE_NAMES[note_index], octave)
+fn midi_label(midi: PNote, style: AccidentalStyle) -> String {
+    style.midi_name(midi.as_u8() as i32)
 }

@@ -45,6 +45,7 @@ use super::{
     ScaleKind,
     pill,
 };
+use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PCNote;
 use crate::core_types::scale_detect::method_profile::{
     TonalProfile,
@@ -95,12 +96,8 @@ struct ScaleCandidate {
 }
 
 impl ScaleCandidate {
-    fn label(&self) -> String {
-        format!(
-            "{} {}",
-            crate::ui::snail::SPIRAL_PITCH_LABELS[self.root_pc],
-            self.kind.label()
-        )
+    fn label(&self, style: AccidentalStyle) -> String {
+        format!("{} {}", style.pitch_class_name(self.root_pc), self.kind.label())
     }
 }
 
@@ -256,7 +253,11 @@ impl App {
                             Some(top) => {
                                 pill(
                                     ui,
-                                    &format!("{:.0}%  {}", top.probability * 100.0, top.label()),
+                                    &format!(
+                                        "{:.0}%  {}",
+                                        top.probability * 100.0,
+                                        top.label(settings.accidental)
+                                    ),
                                     Color32::from_rgb(214, 206, 192),
                                     Color32::from_rgb(64, 68, 73),
                                 )
@@ -276,7 +277,13 @@ impl App {
                 ui.add_space(10.0);
                 self.draw_scale_finder_controls(ui, captured_secs);
                 ui.add_space(10.0);
-                draw_scale_finder_body(ui, ranking.as_ref(), selected_root_pc, selected_kind);
+                draw_scale_finder_body(
+                    ui,
+                    ranking.as_ref(),
+                    selected_root_pc,
+                    selected_kind,
+                    settings.accidental,
+                );
             });
     }
 }
@@ -286,6 +293,7 @@ fn draw_scale_finder_body(
     ranking: Option<&Ranking>,
     selected_root_pc: usize,
     selected_kind: ScaleKind,
+    style: AccidentalStyle,
 ) {
     use eframe::egui::{
         FontId,
@@ -328,7 +336,7 @@ fn draw_scale_finder_body(
     let snail_rect = Rect::from_min_size(wheel_rect.min, vec2(wheel_rect.width(), snail_h));
     let fifths_rect = Rect::from_min_max(pos2(wheel_rect.left(), snail_rect.bottom() + 6.0), wheel_rect.max);
 
-    wheel::draw_chroma_wheel(&painter, snail_rect, ranking);
-    wheel::draw_fifths_ring(&painter, fifths_rect, ranking);
-    panel::draw_method_panel(&painter, list_rect, ranking, selected_root_pc, selected_kind);
+    wheel::draw_chroma_wheel(&painter, snail_rect, ranking, style);
+    wheel::draw_fifths_ring(&painter, fifths_rect, ranking, style);
+    panel::draw_method_panel(&painter, list_rect, ranking, selected_root_pc, selected_kind, style);
 }

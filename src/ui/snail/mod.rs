@@ -17,9 +17,6 @@ use eframe::egui::{
 
 use crate::audio::AnalysisSettings;
 
-/// Labels for the 12 pitch-class spokes, starting at C at the top (-π/2).
-pub const SPIRAL_PITCH_LABELS: [&str; 12] = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
-
 /// One frame's worth of data to render on the spiral, plus the cosmetic strings.
 /// Borrows everything — the caller owns the audio reading it is sliced from.
 pub struct SpiralChart<'a> {
@@ -131,7 +128,16 @@ pub fn draw_spiral_chart_sized(
     let chart_rect = Rect::from_center_size(viz_rect.center(), vec2(square, square));
     let center = chart_rect.center();
     let inner_radius = square * 0.12;
-    let outer_radius = square * 0.47;
+    // The pitch-class labels sit at `outer_radius + 20*scale` and are centre-
+    // aligned, so they reach about `outer_radius + 20*scale + half a glyph` from
+    // the centre. The bare 0.47 factor leaves only 0.03*square of headroom — far
+    // less than this band once `scale` grows. On the *constrained* axis (height,
+    // when the pane is stretched wide) `square == viz_height`, so the C label at
+    // the top and the Gb label at the bottom landed outside the clip rect and
+    // vanished. Reserve the whole label band so the snail AND its ring of labels
+    // fit on the tight axis (the loose axis only ever has more room to spare).
+    let label_band = 20.0 * scale + 18.0 * scale * 0.6;
+    let outer_radius = (square * 0.47).min(square * 0.5 - label_band);
     let semitone_count = chart.note_labels.len().max(1);
     let spiral_bin_count = spectrum.len().max(1);
     // The bins→semitone divisor must come from the length of the data actually
@@ -170,7 +176,8 @@ pub fn draw_spiral_chart_sized(
         );
     }
 
-    for (pitch_class, pitch_label) in SPIRAL_PITCH_LABELS.iter().enumerate() {
+    for pitch_class in 0..12 {
+        let pitch_label = settings.accidental.pitch_class_name(pitch_class);
         let angle = pitch_class_angle(pitch_class);
         let direction = vec2(angle.cos(), angle.sin());
         let label_pos = center + direction * (outer_radius + 20.0 * scale);
@@ -192,7 +199,7 @@ pub fn draw_spiral_chart_sized(
         painter.text(
             label_pos,
             egui::Align2::CENTER_CENTER,
-            *pitch_label,
+            pitch_label,
             FontId::proportional(18.0 * scale),
             spoke_color,
         );

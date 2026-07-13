@@ -29,12 +29,10 @@ use web_time::{
 use crate::audio::dsp::analysis_math::{
     frequency_to_note,
     note_bucket_labels,
-    smooth_frequency,
 };
-use crate::audio::dsp::pitch::{
-    LOWEST_TRACKED_FREQUENCY,
-    detect_pitch_yin,
-};
+use crate::audio::dsp::onset::OnsetDetector;
+use crate::audio::dsp::pitch::LOWEST_TRACKED_FREQUENCY;
+use crate::audio::dsp::pyin::PitchTracker;
 use crate::audio::dsp::resonator::{
     ResonatorAnalyzer,
     ResonatorSnapshot,
@@ -46,6 +44,7 @@ use crate::audio::types::{
     AudioStatus,
     TunerReading,
 };
+use crate::core_types::note::AccidentalStyle;
 
 // ------------------------------------------------------------------
 // Конфигурация анализа
@@ -55,6 +54,10 @@ pub(crate) const WATERFALL_HISTORY: usize = 52;
 pub(crate) const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
 pub(crate) const SILENCE_RMS_THRESHOLD: f32 = 0.0;
 pub(crate) const INPUT_WAVEFORM_HISTORY: usize = 2048;
+/// Below this normalized window level the resonator bank's fast pitch is not fused
+/// into pYIN — the bank's column is normalized, so it reports *some* fundamental
+/// even for room noise; gating on real level keeps that noise out of the tracker.
+pub(crate) const BANK_FUSE_LEVEL: f32 = 0.02;
 
 // ------------------------------------------------------------------
 // Данные, которые UI читает через AudioEngine
@@ -69,6 +72,11 @@ pub(crate) struct SharedState {
     pub(crate) resonator_spectrum:  Vec<f32>,
     pub(crate) resonator_waterfall: VecDeque<Vec<f32>>,
     pub(crate) resonator_labels:    Vec<String>,
+    /// Latest fast played-note prior from the resonator bank, kept on the shared
+    /// state so both publish paths (the fast 16 ms snapshot and the 40 ms YIN
+    /// reading) stamp the *same* value onto `TunerReading::fast_pitch` — otherwise
+    /// the 40 ms path would blank it every frame it rebuilds the reading.
+    pub(crate) fast_pitch:          Option<(f32, f32)>,
     pub(crate) smoothed_frequency:  Option<f32>,
 }
 
@@ -84,6 +92,7 @@ impl SharedState {
             resonator_spectrum:  Vec::new(),
             resonator_waterfall: VecDeque::with_capacity(WATERFALL_HISTORY),
             resonator_labels:    Vec::new(),
+            fast_pitch:          None,
             smoothed_frequency:  None,
         }
     }
@@ -100,6 +109,7 @@ impl SharedState {
         self.resonator_spectrum.clear();
         self.resonator_waterfall.clear();
         self.resonator_labels.clear();
+        self.fast_pitch = None;
         self.smoothed_frequency = None;
         self.status = AudioStatus::Listening;
     }
@@ -127,6 +137,15 @@ pub(crate) struct AnalysisPipeline {
     last_analysis: Instant,
     planner:       FftPlanner<f32>,
     sample_rate:   f32,
+    // Probabilistic-YIN tracker: the octave-robust, HMM-smoothed pitch source that
+    // replaced plain YIN + the `smooth_frequency` EMA. Stateful (carries the
+    // Viterbi trellis across frames), so it lives on the per-stream pipeline.
+    pitch_tracker: PitchTracker,
+    // Energy-attack onset detector + a monotonic counter bumped on each onset. The
+    // UI diffs the counter to spot a new attack (splitting re-bowed repeats), so
+    // the value on the reading is a sequence number, not a per-frame flag.
+    onset:         OnsetDetector,
+    onset_seq:     u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -144,6 +163,11 @@ struct AnalysisFrame {
     // Камертон момента анализа: нота считается после сглаживания частоты
     // (в publish_*), а settings туда не доходят — несём значение во фрейме.
     concert_pitch_hz: f32,
+    // Стиль знаков альтерации (диезы/бемоли) на момент кадра — как и камертон,
+    // нужен при подписи нот в publish_*, куда settings не доходят.
+    accidental:       AccidentalStyle,
+    // Monotonic onset counter as of this frame (see `AnalysisPipeline::onset_seq`).
+    onset_seq:        u64,
 }
 
 impl ResonatorPipeline {
@@ -175,7 +199,8 @@ impl ResonatorPipeline {
         self.last_publish = Instant::now();
         publish_resonator_snapshot(
             shared,
-            self.analyzer.snapshot(analysis_settings.resonator.reassign),
+            self.analyzer
+                .snapshot(analysis_settings.resonator.reassign, analysis_settings.accidental),
             analysis_settings.resonator.history,
         );
     }
@@ -188,12 +213,14 @@ impl ResonatorPipeline {
         if let Ok(mut state) = shared.lock() {
             state.resonator_spectrum.clear();
             state.resonator_waterfall.clear();
-            state.resonator_labels = self.analyzer.note_labels();
+            state.resonator_labels = self.analyzer.note_labels(settings.accidental);
+            state.fast_pitch = None;
             let resonator_labels = state.resonator_labels.clone();
             if let Some(reading) = state.reading.as_mut() {
                 reading.resonator_spectrum.clear();
                 reading.resonator_waterfall.clear();
                 reading.resonator_note_labels = resonator_labels;
+                reading.fast_pitch = None;
             }
         }
     }
@@ -206,6 +233,9 @@ impl AnalysisPipeline {
             last_analysis: Instant::now() - ANALYSIS_INTERVAL,
             planner: FftPlanner::new(),
             sample_rate,
+            pitch_tracker: PitchTracker::new(),
+            onset: OnsetDetector::new(),
+            onset_seq: 0,
         }
     }
 
@@ -248,7 +278,55 @@ impl AnalysisPipeline {
         let previous_level = f32::from_bits(input_level.load(Ordering::Relaxed));
         let smoothed_level_value = smoothed_level(previous_level, level);
         input_level.store(smoothed_level_value.to_bits(), Ordering::Relaxed);
-        let frame = analyze_window(&window, self.sample_rate, &analysis_settings, &mut self.planner);
+
+        // Fuse the resonator bank's fast pitch into pYIN as a low-latency candidate,
+        // when the bank is running and the window carries real level. `fast_pitch`
+        // is a fractional MIDI in the bank's concert-pitch frame → absolute Hz here.
+        // The bank leads YIN's long window by ~100 ms, so this both quickens the
+        // tracker's onset response and lets the two sources settle the octave inside
+        // the HMM (the panel no longer octave-locks). Empty when the bank is parked.
+        let bank_pitch = if level >= BANK_FUSE_LEVEL {
+            shared.lock().ok().and_then(|s| s.fast_pitch).map(|(midi, strength)| {
+                let hz = analysis_settings.concert_pitch_hz * 2.0f32.powf((midi - 69.0) / 12.0);
+                (hz, strength)
+            })
+        } else {
+            None
+        };
+
+        // Note-onset (attack) detection off the window RMS. A new onset bumps the
+        // monotonic counter the UI diffs to split re-bowed repeats of one pitch.
+        let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
+        let is_onset = self.onset.detect(rms);
+        if is_onset {
+            self.onset_seq = self.onset_seq.wrapping_add(1);
+        }
+
+        // Pitch via probabilistic YIN (the stateful HMM tracker) — octave-robust and
+        // already smoothed, so `publish_analysis_reading` no longer runs the old EMA.
+        // On an onset the tracker enters its attack mode (fast bank leads the leap).
+        let pitch = if rms < SILENCE_RMS_THRESHOLD {
+            None
+        } else {
+            self.pitch_tracker
+                .process(&window, self.sample_rate, bank_pitch, is_onset)
+                .and_then(|(f, c)| {
+                    (LOWEST_TRACKED_FREQUENCY..=1200.0)
+                        .contains(&f)
+                        .then_some(PitchEstimate {
+                            frequency_hz: f,
+                            clarity:      c,
+                        })
+                })
+        };
+        let frame = analyze_window(
+            &window,
+            self.sample_rate,
+            &analysis_settings,
+            &mut self.planner,
+            pitch,
+            self.onset_seq,
+        );
         publish_analysis_reading(shared, frame);
     }
 }
@@ -275,22 +353,11 @@ fn analyze_window(
     sample_rate: f32,
     settings: &AnalysisSettings,
     planner: &mut FftPlanner<f32>,
+    pitch: Option<PitchEstimate>,
+    onset_seq: u64,
 ) -> AnalysisFrame {
-    let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
     let (spectrum, note_spectrum, spiral_spectrum) =
         spectrum_bars_for_window(window, sample_rate, settings, planner);
-    let pitch = if rms < SILENCE_RMS_THRESHOLD {
-        None
-    } else {
-        detect_pitch_yin(window, sample_rate).and_then(|(f, c)| {
-            (LOWEST_TRACKED_FREQUENCY..=1200.0)
-                .contains(&f)
-                .then_some(PitchEstimate {
-                    frequency_hz: f,
-                    clarity:      c,
-                })
-        })
-    };
 
     AnalysisFrame {
         pitch,
@@ -298,6 +365,8 @@ fn analyze_window(
         note_spectrum,
         spiral_spectrum,
         concert_pitch_hz: settings.concert_pitch_hz,
+        accidental: settings.accidental,
+        onset_seq,
     }
 }
 
@@ -322,11 +391,14 @@ fn push_limited_history<T>(history: &mut VecDeque<T>, item: T, max_len: usize) {
 
 fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFrame) {
     if let Ok(mut state) = shared.lock() {
+        // pYIN's HMM already smooths and octave-stabilises the pitch, so we take its
+        // frequency verbatim (no more EMA). `smoothed_frequency` is now just the
+        // last voiced pitch, held through a brief unvoiced gap so the note doesn't
+        // blink out between frames.
         let (smoothed_frequency, clarity) = match frame.pitch {
             Some(pitch) => {
-                let sf = smooth_frequency(state.smoothed_frequency, pitch.frequency_hz);
-                state.smoothed_frequency = Some(sf);
-                (sf, pitch.clarity)
+                state.smoothed_frequency = Some(pitch.frequency_hz);
+                (pitch.frequency_hz, pitch.clarity)
             }
             None => {
                 let Some(sf) = state.smoothed_frequency else {
@@ -336,7 +408,8 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
             }
         };
 
-        let (note_name, cents) = frequency_to_note(smoothed_frequency, frame.concert_pitch_hz);
+        let (note_name, cents) =
+            frequency_to_note(smoothed_frequency, frame.concert_pitch_hz, frame.accidental);
         push_limited_history(&mut state.waterfall, frame.spectrum.clone(), WATERFALL_HISTORY);
         push_limited_history(
             &mut state.note_waterfall,
@@ -362,7 +435,9 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
             resonator_spectrum: state.resonator_spectrum.clone(),
             resonator_waterfall: state.resonator_waterfall.iter().cloned().collect(),
             resonator_note_labels: state.resonator_labels.clone(),
-            note_labels: note_bucket_labels(),
+            note_labels: note_bucket_labels(frame.accidental),
+            fast_pitch: state.fast_pitch,
+            onset_seq: frame.onset_seq,
         });
         state.status = AudioStatus::Listening;
     }
@@ -376,8 +451,10 @@ fn publish_resonator_snapshot(
     if let Ok(mut state) = shared.lock() {
         state.resonator_spectrum = snapshot.spectrum;
         state.resonator_labels = snapshot.note_labels;
+        state.fast_pitch = snapshot.fundamental;
         let resonator_spectrum = state.resonator_spectrum.clone();
         let resonator_labels = state.resonator_labels.clone();
+        let fast_pitch = state.fast_pitch;
         push_limited_history(
             &mut state.resonator_waterfall,
             resonator_spectrum.clone(),
@@ -389,6 +466,7 @@ fn publish_resonator_snapshot(
             reading.resonator_spectrum = resonator_spectrum;
             reading.resonator_waterfall = resonator_waterfall;
             reading.resonator_note_labels = resonator_labels;
+            reading.fast_pitch = fast_pitch;
         }
     }
 }

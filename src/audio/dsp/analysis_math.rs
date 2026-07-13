@@ -5,15 +5,17 @@ pub(crate) const SPIRAL_BINS_PER_SEMITONE: usize = 8;
 pub(crate) const SPIRAL_BIN_COUNT: usize =
     (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
 
-const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+use crate::core_types::note::AccidentalStyle;
 
-pub(crate) fn frequency_to_note(frequency_hz: f32, reference_hz: f32) -> (String, f32) {
+pub(crate) fn frequency_to_note(
+    frequency_hz: f32,
+    reference_hz: f32,
+    style: AccidentalStyle,
+) -> (String, f32) {
     let midi = 69.0 + 12.0 * (frequency_hz / reference_hz).log2();
     let nearest = midi.round();
     let cents = (midi - nearest) * 100.0;
-    let note_index = ((nearest as i32).rem_euclid(12)) as usize;
-    let octave = (nearest as i32 / 12) - 1;
-    (format!("{}{}", NOTE_NAMES[note_index], octave), cents)
+    (style.midi_name(nearest as i32), cents)
 }
 
 pub(crate) fn parabolic_tau(values: &[f32], tau: usize) -> f32 {
@@ -28,29 +30,6 @@ pub(crate) fn parabolic_tau(values: &[f32], tau: usize) -> f32 {
         tau as f32
     } else {
         tau as f32 + 0.5 * (left - right) / denom
-    }
-}
-
-pub(crate) fn smooth_frequency(previous: Option<f32>, next: f32) -> f32 {
-    match previous {
-        Some(prev) => {
-            let corrected = correct_octave_jump(prev, next);
-            let ratio = (corrected / prev).max(prev / corrected);
-            let alpha = if ratio > 1.04 { 0.18 } else { 0.10 };
-            prev + (corrected - prev) * alpha
-        }
-        None => next,
-    }
-}
-
-fn correct_octave_jump(previous: f32, next: f32) -> f32 {
-    let ratio = next / previous;
-    if (1.85..=2.15).contains(&ratio) {
-        next * 0.5
-    } else if (0.46..=0.54).contains(&ratio) {
-        next * 2.0
-    } else {
-        next
     }
 }
 
@@ -153,22 +132,88 @@ pub(crate) fn splat_linear(bars: &mut [f32], position: f32, weight: f32) {
     }
 }
 
-pub(crate) fn note_bucket_labels() -> Vec<String> {
+pub(crate) fn note_bucket_labels(style: AccidentalStyle) -> Vec<String> {
     (NOTE_BUCKET_MIN_MIDI..=NOTE_BUCKET_MAX_MIDI)
-        .map(|m| midi_to_note_label(m as i32))
+        .map(|m| style.midi_name(m as i32))
         .collect()
 }
 
-pub(crate) fn resonator_note_labels(min_midi: usize, max_midi: usize) -> Vec<String> {
+pub(crate) fn resonator_note_labels(
+    min_midi: usize,
+    max_midi: usize,
+    style: AccidentalStyle,
+) -> Vec<String> {
     (min_midi..=max_midi)
-        .map(|m| midi_to_note_label(m as i32))
+        .map(|m| style.midi_name(m as i32))
         .collect()
 }
 
-fn midi_to_note_label(midi: i32) -> String {
-    let note_index = midi.rem_euclid(12) as usize;
-    let octave = midi / 12 - 1;
-    format!("{}{}", NOTE_NAMES[note_index], octave)
+/// How many harmonics [`resonator_fundamental`] sums when scoring a candidate as a
+/// fundamental. 5 is enough to out-vote a single loud overtone without dragging in
+/// noise from the far end of the bank.
+pub(crate) const RESONATOR_HARMONICS: usize = 5;
+
+/// Harmonic-aware fundamental from one reassigned resonator column — the *fast*
+/// pitch prior for the note detector.
+///
+/// `column` is a normalized (0..1) magnitude per output bin, bin `b` mapping to
+/// pitch `min_midi + b / bins_per_semitone`. A plain argmax picks whichever partial
+/// is loudest, which on a bowed string is often an overtone — an octave/fifth error.
+/// Instead we score every bin *as if it were the fundamental* by summing the energy
+/// at its first [`RESONATOR_HARMONICS`] harmonics (which sit at fixed
+/// `+12·log2(h)` semitone offsets on this log-pitch grid) and keep the best.
+///
+/// Two failure modes handled:
+/// - **Octave-up** (crowning an overtone): a real fundamental collects its *own*
+///   partials and outscores any single overtone, which collects only its sparser
+///   higher ones.
+/// - **Sub-octave** (half-pitch phantom): a bin an octave *below* the tone would
+///   score well purely from the real tone landing in it as a 2nd harmonic — so we
+///   require the candidate bin to carry real energy itself (`>= floor`), which a
+///   phantom fundamental does not.
+///
+/// Returns `(fractional_midi, strength)` where `strength` is the fundamental bin's
+/// own normalized magnitude (for a downstream silence gate), or `None` if nothing
+/// crosses `floor`.
+pub(crate) fn resonator_fundamental(
+    column: &[f32],
+    min_midi: f32,
+    bins_per_semitone: f32,
+    floor: f32,
+) -> Option<(f32, f32)> {
+    if column.len() < 2 || bins_per_semitone <= 0.0 {
+        return None;
+    }
+    let mut best_bin: Option<usize> = None;
+    let mut best_score = 0.0f32;
+    for b in 0..column.len() {
+        // The fundamental itself must carry energy — this is the sub-octave guard.
+        if column[b] < floor {
+            continue;
+        }
+        let mut score = 0.0;
+        for h in 1..=RESONATOR_HARMONICS {
+            // Harmonic h is +12·log2(h) semitones up → a fixed bin offset here.
+            // Weight 1/h so the fundamental and octave dominate the decision and
+            // higher partials only break ties.
+            let offset = (bins_per_semitone * 12.0 * (h as f32).log2()).round() as usize;
+            let idx = b + offset;
+            if idx >= column.len() {
+                break;
+            }
+            score += column[idx] / h as f32;
+        }
+        if score > best_score {
+            best_score = score;
+            best_bin = Some(b);
+        }
+    }
+    let bin = best_bin?;
+    // Sub-bin refine on the fundamental's own peak; clamp so a bin that is not a
+    // clean local extremum cannot fling the estimate more than half a bin.
+    let refined = parabolic_tau(column, bin).clamp(bin as f32 - 0.5, bin as f32 + 0.5);
+    let midi = min_midi + refined / bins_per_semitone;
+    Some((midi, column[bin]))
 }
 
 #[cfg(test)]
@@ -217,11 +262,50 @@ mod tests {
 
     #[test]
     fn note_bucket_labels_include_low_octaves() {
-        let labels = note_bucket_labels();
+        let labels = note_bucket_labels(AccidentalStyle::Sharps);
 
         assert_eq!(labels.first().map(String::as_str), Some("C0"));
         assert!(labels.iter().any(|label| label == "C1"));
         assert!(labels.iter().any(|label| label == "C2"));
+    }
+
+    /// One reassigned column with an A4 fundamental (bin 456) and a *louder* 2nd
+    /// harmonic an octave up (bin 552). A plain argmax would call it A5; the
+    /// harmonic scoring must keep it at A4.
+    #[test]
+    fn resonator_fundamental_picks_fundamental_over_louder_overtone() {
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32; // reassigned grid = 8/semitone
+        let min_midi = NOTE_BUCKET_MIN_MIDI as f32; // 12
+        let mut col = vec![0.0f32; SPIRAL_BIN_COUNT];
+        let a4 = ((69.0 - min_midi) * bps) as usize; // 456
+        let a5 = a4 + (12.0 * bps) as usize; // +12 semitones = 552
+        col[a4] = 0.6; // fundamental
+        col[a5] = 1.0; // louder overtone (would win a naive argmax)
+
+        let (midi, _strength) = resonator_fundamental(&col, min_midi, bps, 0.12).unwrap();
+        assert!((midi - 69.0).abs() < 0.2, "expected ~A4 (69), got {midi}");
+    }
+
+    /// A lone peak returns its own pitch, sub-bin refined.
+    #[test]
+    fn resonator_fundamental_lone_peak_returns_its_pitch() {
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        let min_midi = NOTE_BUCKET_MIN_MIDI as f32;
+        let mut col = vec![0.0f32; SPIRAL_BIN_COUNT];
+        let d5 = ((74.0 - min_midi) * bps) as usize;
+        // Split across two bins so the parabolic refine has something to interpolate.
+        col[d5] = 0.9;
+        col[d5 + 1] = 0.3;
+        let (midi, strength) = resonator_fundamental(&col, min_midi, bps, 0.12).unwrap();
+        assert!((midi - 74.0).abs() < 0.2, "expected ~D5 (74), got {midi}");
+        assert!(strength > 0.12);
+    }
+
+    /// Silence (all below the floor) yields no fundamental rather than a phantom.
+    #[test]
+    fn resonator_fundamental_silence_returns_none() {
+        let col = vec![0.05f32; SPIRAL_BIN_COUNT];
+        assert!(resonator_fundamental(&col, NOTE_BUCKET_MIN_MIDI as f32, 8.0, 0.12).is_none());
     }
 
     #[test]

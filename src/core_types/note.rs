@@ -23,6 +23,47 @@ impl Accidental {
     }
 }
 
+/// How black-key pitch classes are spelled when we render a note name: as
+/// sharps (C#, D#, …) or as flats (Db, Eb, …). This is a single global display
+/// preference threaded through every note-label producer (the snails, the note
+/// bars/waterfalls, the resonator bank, the tuner readout, the fretboard, the
+/// scale-finder wheels, the drone) so the whole app agrees on one spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum AccidentalStyle {
+    Sharps,
+    Flats,
+}
+
+impl Default for AccidentalStyle {
+    // Sharps: the spelling the analysis labels (note bars, resonator, tuner)
+    // already used before the toggle existed, so old configs read unchanged.
+    fn default() -> Self {
+        AccidentalStyle::Sharps
+    }
+}
+
+impl AccidentalStyle {
+    /// The name of pitch class `pc` (0 = C, wrapping mod 12) in this spelling.
+    pub fn pitch_class_name(self, pc: usize) -> &'static str {
+        const SHARPS: [&str; 12] =
+            ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        const FLATS: [&str; 12] =
+            ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+        let table = match self {
+            AccidentalStyle::Sharps => &SHARPS,
+            AccidentalStyle::Flats => &FLATS,
+        };
+        table[pc % 12]
+    }
+
+    /// A full name with octave for a MIDI note, e.g. `"C#4"` / `"Db4"`.
+    pub fn midi_name(self, midi: i32) -> String {
+        let pc = midi.rem_euclid(12) as usize;
+        let octave = midi / 12 - 1;
+        format!("{}{}", self.pitch_class_name(pc), octave)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Octave(pub u8);
 
@@ -101,6 +142,13 @@ impl ANote {
         let o = self.octave.name();
 
         format!("{}{}{}", n, a, o)
+    }
+
+    /// Name re-spelled in the given accidental style, computed from the note's
+    /// pitch (ignoring however `self.ass` happened to be spelled). Used by the
+    /// display surfaces that honour the global sharps/flats toggle.
+    pub fn name_styled(&self, style: AccidentalStyle) -> String {
+        style.midi_name(self.to_pitch().as_u8() as i32)
     }
 
     fn simple(&self) -> PCNote {

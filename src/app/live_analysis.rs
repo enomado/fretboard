@@ -290,6 +290,7 @@ impl App {
     }
 
     fn draw_tuner_meter(&self, ui: &mut Ui, reading: Option<&TunerTarget>, input_kind: AudioInputKind) {
+        let accidental = self.audio.analysis_settings().accidental;
         let desired_size = vec2(ui.available_width(), 120.0);
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
@@ -326,7 +327,7 @@ impl App {
                 painter.text(
                     pos2(rect.left() + 18.0, rect.top() + 18.0),
                     egui::Align2::LEFT_TOP,
-                    reading.note_name.name(),
+                    reading.note_name.name_styled(accidental),
                     FontId::proportional(30.0),
                     Color32::from_rgb(230, 223, 210),
                 );

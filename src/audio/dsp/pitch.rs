@@ -1,9 +1,18 @@
-use super::analysis_math::parabolic_tau;
-
 pub(crate) const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
-const YIN_THRESHOLD: f32 = 0.12;
 
-pub(crate) fn detect_pitch_yin(window: &[f32], sample_rate: f32) -> Option<(f32, f32)> {
+/// The cumulative mean normalized difference function (YIN step 3) plus the lag
+/// search bounds — the substrate probabilistic YIN ([`super::pyin`]) turns into
+/// weighted pitch candidates. `d[0] == 1`; `d[tau]` dips toward 0 near true
+/// periods.
+pub(crate) struct Cmndf {
+    pub(crate) d:       Vec<f32>,
+    pub(crate) min_lag: usize,
+    pub(crate) max_lag: usize,
+}
+
+/// Compute the CMNDF for one analysis window. `None` when the window is too short
+/// for even a single lag of the tracked range.
+pub(crate) fn cmndf(window: &[f32], sample_rate: f32) -> Option<Cmndf> {
     let min_lag = (sample_rate / 1000.0).max(1.0) as usize;
     let max_lag = (sample_rate / LOWEST_TRACKED_FREQUENCY) as usize;
     let search_end = max_lag.min(window.len().saturating_sub(1));
@@ -35,34 +44,16 @@ pub(crate) fn detect_pitch_yin(window: &[f32], sample_rate: f32) -> Option<(f32,
         };
     }
 
-    let mut best_tau = None;
-    for tau in min_lag..search_end {
-        if cumulative[tau] < YIN_THRESHOLD && cumulative[tau] <= cumulative[tau + 1] {
-            best_tau = Some(tau);
-            break;
-        }
-    }
-
-    let tau = best_tau.unwrap_or_else(|| {
-        (min_lag..=search_end)
-            .min_by(|l, r| cumulative[*l].total_cmp(&cumulative[*r]))
-            .unwrap_or(min_lag)
-    });
-
-    let tau = parabolic_tau(&cumulative, tau);
-    if !tau.is_finite() || tau <= 0.0 {
-        return None;
-    }
-    let tau = tau.clamp(min_lag as f32, search_end as f32);
-    let tau_index = tau.round().clamp(min_lag as f32, search_end as f32) as usize;
-    let clarity = (1.0 - cumulative[tau_index].clamp(0.0, 1.0)).clamp(0.0, 1.0);
-
-    Some((sample_rate / tau, clarity))
+    Some(Cmndf {
+        d:       cumulative,
+        min_lag,
+        max_lag: search_end,
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::detect_pitch_yin;
+    use super::cmndf;
 
     fn sine_wave(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
         (0..len)
@@ -73,46 +64,49 @@ mod tests {
             .collect()
     }
 
+    /// Frequency of the CMNDF's *first* dip below `threshold`, walked to its bottom
+    /// — YIN's period-selection rule and the substrate pYIN's candidate stage
+    /// integrates over thresholds. (The *global* min sits on a later period
+    /// multiple, which is exactly why one takes the first dip, not the deepest.)
+    fn first_dip_frequency(window: &[f32], sample_rate: f32, threshold: f32) -> f32 {
+        let c = cmndf(window, sample_rate).unwrap();
+        for tau in c.min_lag..c.max_lag {
+            if c.d[tau] < threshold {
+                let mut t = tau;
+                while t + 1 <= c.max_lag && c.d[t + 1] < c.d[t] {
+                    t += 1;
+                }
+                return sample_rate / t as f32;
+            }
+        }
+        panic!("no dip below {threshold}");
+    }
+
     #[test]
-    fn yin_handles_flat_windows_without_invalid_indices() {
+    fn cmndf_handles_flat_windows_without_invalid_indices() {
         let window = vec![1.0; 981];
-        let result = std::panic::catch_unwind(|| detect_pitch_yin(&window, 44_100.0));
+        let result = std::panic::catch_unwind(|| cmndf(&window, 44_100.0));
         assert!(result.is_ok());
     }
 
     #[test]
-    fn yin_detects_c2_on_raw_signal() {
-        let sample_rate = 44_100.0;
+    fn cmndf_dip_lands_on_c2_period() {
+        let sr = 44_100.0;
         let expected = 65.40639;
-        let window = sine_wave(expected, sample_rate, 6144);
-        let (detected, _clarity) = detect_pitch_yin(&window, sample_rate).unwrap();
-        assert!(
-            (detected - expected).abs() < 1.0,
-            "detected {detected} expected {expected}"
-        );
+        assert!((first_dip_frequency(&sine_wave(expected, sr, 6144), sr, 0.1) - expected).abs() < 1.0);
     }
 
     #[test]
-    fn yin_detects_c1_on_raw_signal() {
-        let sample_rate = 44_100.0;
+    fn cmndf_dip_lands_on_c1_period() {
+        let sr = 44_100.0;
         let expected = 32.7032;
-        let window = sine_wave(expected, sample_rate, 8192);
-        let (detected, _clarity) = detect_pitch_yin(&window, sample_rate).unwrap();
-        assert!(
-            (detected - expected).abs() < 1.0,
-            "detected {detected} expected {expected}"
-        );
+        assert!((first_dip_frequency(&sine_wave(expected, sr, 8192), sr, 0.1) - expected).abs() < 1.0);
     }
 
     #[test]
-    fn yin_detects_c3_on_raw_signal() {
-        let sample_rate = 44_100.0;
+    fn cmndf_dip_lands_on_c3_period() {
+        let sr = 44_100.0;
         let expected = 130.81278;
-        let window = sine_wave(expected, sample_rate, 6144);
-        let (detected, _clarity) = detect_pitch_yin(&window, sample_rate).unwrap();
-        assert!(
-            (detected - expected).abs() < 1.0,
-            "detected {detected} expected {expected}"
-        );
+        assert!((first_dip_frequency(&sine_wave(expected, sr, 6144), sr, 0.1) - expected).abs() < 1.0);
     }
 }

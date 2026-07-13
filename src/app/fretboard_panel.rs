@@ -57,6 +57,7 @@ impl App {
         let scale = self.scale_kind.to_scale(root_pc);
         let tuner_targets = self.filtered_tuner_targets(&tuning, &scale);
         let resonator_targets = self.resonator_fretboard_targets(&tuning);
+        let accidental = self.audio.analysis_settings().accidental;
 
         Frame::new()
             .fill(PANEL_FILL)
@@ -109,11 +110,11 @@ impl App {
                 };
 
                 draw_fret_lines(&painter, fretboard_rect, &fretboard);
-                draw_string_lines_scale(&painter, fretboard_rect, &fretboard, &scale);
+                draw_string_lines_scale(&painter, fretboard_rect, &fretboard, &scale, accidental);
                 if !resonator_targets.is_empty() {
                     self.draw_resonator_targets(&painter, &fretboard, &resonator_targets);
                 }
-                draw_fretboard_scale(painter.clone(), &fretboard, &scale);
+                draw_fretboard_scale(painter.clone(), &fretboard, &scale, accidental);
                 draw_positions(&painter, fretboard_rect, &fretboard);
                 if !tuner_targets.is_empty() {
                     self.draw_tuner_targets(&painter, &fretboard, &tuner_targets);
@@ -206,7 +207,7 @@ impl App {
         painter.text(
             pos2(tooltip_rect.left() + 12.0, tooltip_rect.top() + 11.0),
             egui::Align2::LEFT_TOP,
-            hovered.note_name.name(),
+            hovered.note_name.name_styled(self.audio.analysis_settings().accidental),
             FontId::proportional(17.0),
             Color32::from_rgb(228, 220, 208),
         );

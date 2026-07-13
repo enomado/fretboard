@@ -15,17 +15,22 @@ use super::{
     COLOR_SPIRAL,
     Ranking,
 };
+use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PCNote;
 use crate::core_types::scale_detect::PITCH_CLASS_COUNT;
 use crate::ui::snail::{
-    SPIRAL_PITCH_LABELS,
     pitch_class_angle,
     pitch_class_color,
 };
 
 /// Кольцо КВИНТ (метод D): 12 нот в квинтовом порядке + стрелка к центру тяжести
 /// chroma. Длина стрелки = сила тонального центра, ближайшая нота = его тоника.
-pub(super) fn draw_fifths_ring(painter: &egui::Painter, rect: Rect, ranking: &Ranking) {
+pub(super) fn draw_fifths_ring(
+    painter: &egui::Painter,
+    rect: Rect,
+    ranking: &Ranking,
+    style: AccidentalStyle,
+) {
     use std::f32::consts::FRAC_PI_2;
 
     let square = rect.width().min(rect.height());
@@ -47,7 +52,8 @@ pub(super) fn draw_fifths_ring(painter: &egui::Painter, rect: Rect, ranking: &Ra
         Stroke::new(1.0_f32, Color32::from_rgb(59, 64, 72)),
     );
 
-    for (pc, &label) in SPIRAL_PITCH_LABELS.iter().enumerate() {
+    for pc in 0..PITCH_CLASS_COUNT {
+        let label = style.pitch_class_name(pc);
         // Угол на круге квинт, C сверху: совпадает с координатами `fifths_point`,
         // повёрнутыми на -π/2 (там pc=C даёт направление +x, тут хотим вверх).
         let j = (7 * pc) % PITCH_CLASS_COUNT;
@@ -77,7 +83,12 @@ pub(super) fn draw_fifths_ring(painter: &egui::Painter, rect: Rect, ranking: &Ra
 
 /// 12-спицевое колесо pitch-классов: размер точки = энергия chroma, кольца-маркеры
 /// = ноты топ-кандидата, жирная спица = его тоника.
-pub(super) fn draw_chroma_wheel(painter: &egui::Painter, rect: Rect, ranking: &Ranking) {
+pub(super) fn draw_chroma_wheel(
+    painter: &egui::Painter,
+    rect: Rect,
+    ranking: &Ranking,
+    style: AccidentalStyle,
+) {
     let square = rect.width().min(rect.height());
     let chart = Rect::from_center_size(rect.center(), vec2(square, square));
     let center = chart.center();
@@ -117,7 +128,7 @@ pub(super) fn draw_chroma_wheel(painter: &egui::Painter, rect: Rect, ranking: &R
         painter.text(
             center + dir * (radius + 18.0),
             egui::Align2::CENTER_CENTER,
-            SPIRAL_PITCH_LABELS[pc],
+            style.pitch_class_name(pc),
             FontId::proportional(15.0),
             color,
         );
@@ -150,7 +161,7 @@ pub(super) fn draw_chroma_wheel(painter: &egui::Painter, rect: Rect, ranking: &R
     painter.text(
         pos2(center.x, chart.bottom() - 2.0),
         egui::Align2::CENTER_BOTTOM,
-        top.label(),
+        top.label(style),
         FontId::proportional(13.0),
         Color32::from_rgb(214, 206, 192),
     );

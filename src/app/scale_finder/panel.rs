@@ -22,11 +22,9 @@ use super::{
     dominant_method_color,
     top_indices,
 };
+use crate::core_types::note::AccidentalStyle;
 use crate::core_types::scale_detect::PITCH_CLASS_COUNT;
-use crate::ui::snail::{
-    SPIRAL_PITCH_LABELS,
-    pitch_class_color,
-};
+use crate::ui::snail::pitch_class_color;
 
 /// Правая колонка: вердикты трёх методов + слитый рейтинг с разбивкой по методам.
 pub(super) fn draw_method_panel(
@@ -35,6 +33,7 @@ pub(super) fn draw_method_panel(
     ranking: &Ranking,
     selected_root_pc: usize,
     selected_kind: ScaleKind,
+    style: AccidentalStyle,
 ) {
     // --- Три вердикта в строке ---
     painter.text(
@@ -58,7 +57,9 @@ pub(super) fn draw_method_panel(
     roots.sort_by(|&a, &b| ranking.root_ev[b].total_cmp(&ranking.root_ev[a]));
     let root_value = format!(
         "{} · {} · {}",
-        SPIRAL_PITCH_LABELS[roots[0]], SPIRAL_PITCH_LABELS[roots[1]], SPIRAL_PITCH_LABELS[roots[2]]
+        style.pitch_class_name(roots[0]),
+        style.pitch_class_name(roots[1]),
+        style.pitch_class_name(roots[2])
     );
 
     let mut y = rect.top() + 20.0;
@@ -69,7 +70,7 @@ pub(super) fn draw_method_panel(
         y,
         COLOR_SET,
         "NOTES",
-        &set_c.label(),
+        &set_c.label(style),
         set_c.scores.set,
     );
     y += verdict_h;
@@ -79,7 +80,7 @@ pub(super) fn draw_method_panel(
         y,
         COLOR_PROFILE,
         "TONAL",
-        &profile_c.label(),
+        &profile_c.label(style),
         profile_c.scores.profile,
     );
     y += verdict_h;
@@ -99,7 +100,7 @@ pub(super) fn draw_method_panel(
         y,
         COLOR_SPIRAL,
         "SPIRAL",
-        &spiral_c.label(),
+        &spiral_c.label(style),
         spiral_c.scores.spiral,
     );
     y += verdict_h;
@@ -159,7 +160,7 @@ pub(super) fn draw_method_panel(
         painter.text(
             pos2(row.left() + 8.0, row.center().y),
             egui::Align2::LEFT_CENTER,
-            candidate.label(),
+            candidate.label(style),
             FontId::proportional(13.0),
             Color32::from_rgb(222, 215, 203),
         );
@@ -184,7 +185,7 @@ pub(super) fn draw_method_panel(
             egui::Align2::LEFT_BOTTOM,
             format!(
                 "selected {} {} — #{} · {:.0}%",
-                SPIRAL_PITCH_LABELS[selected_root_pc],
+                style.pitch_class_name(selected_root_pc),
                 selected_kind.label(),
                 index + 1,
                 candidate.probability * 100.0

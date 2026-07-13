@@ -23,6 +23,7 @@ use crate::audio::{
     DroneState,
     Timbre,
 };
+use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
 use crate::ui::theme::PANEL_FILL;
 
@@ -50,7 +51,9 @@ impl App {
 
         // Камертон держим в синхроне с настройками анализа: дрон должен звучать по
         // тому же строю, что и тюнер/резонатор.
-        let reference_hz = self.audio.analysis_settings().concert_pitch_hz;
+        let analysis = self.audio.analysis_settings();
+        let reference_hz = analysis.concert_pitch_hz;
+        let accidental = analysis.accidental;
         if (drone.reference_hz - reference_hz).abs() > 1e-3 {
             drone.reference_hz = reference_hz;
             changed = true;
@@ -91,7 +94,7 @@ impl App {
                         RichText::new(if drone.notes.is_empty() {
                             "No notes selected".to_owned()
                         } else {
-                            chord_summary(&drone.notes)
+                            chord_summary(&drone.notes, accidental)
                         })
                         .color(VALUE_COLOR)
                         .monospace(),
@@ -205,7 +208,7 @@ impl App {
                 });
 
                 ui.add_space(6.0);
-                changed |= draw_keyboard(ui, &mut drone);
+                changed |= draw_keyboard(ui, &mut drone, accidental);
 
                 ui.add_space(8.0);
                 ui.label(
@@ -223,7 +226,7 @@ impl App {
 
 /// Тумблер-клавиатура C2..=B5: ряд на октаву, чёрные клавиши приглушены,
 /// выбранные подсвечены акцентом. Возвращает true, если набор изменился.
-fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState) -> bool {
+fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) -> bool {
     const BLACK_KEYS: [bool; 12] = [
         false, true, false, true, false, false, true, false, true, false, true, false,
     ];
@@ -247,7 +250,7 @@ fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState) -> bool {
                 };
                 let stroke = if selected { ACCENT_STROKE } else { IDLE_STROKE };
                 let text_color = if selected { VALUE_COLOR } else { Color32::from_rgb(188, 192, 198) };
-                let button = egui::Button::new(RichText::new(note_name(midi)).size(11.0).color(text_color))
+                let button = egui::Button::new(RichText::new(note_name(midi, style)).size(11.0).color(text_color))
                     .min_size(vec2(34.0, 24.0))
                     .fill(fill)
                     .stroke(Stroke::new(1.0_f32, stroke))
@@ -318,18 +321,15 @@ fn quick_button(ui: &mut Ui, label: &str) -> egui::Response {
     ui.add(button)
 }
 
-const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-
-fn note_name(midi: u8) -> String {
-    let octave = midi as i32 / 12 - 1;
-    format!("{}{}", NOTE_NAMES[(midi % 12) as usize], octave)
+fn note_name(midi: u8, style: AccidentalStyle) -> String {
+    style.midi_name(midi as i32)
 }
 
 /// Краткая сводка набора нот для строки транспорта, напр. «A2 · E3 · A3».
-fn chord_summary(notes: &[PNote]) -> String {
+fn chord_summary(notes: &[PNote], style: AccidentalStyle) -> String {
     notes
         .iter()
-        .map(|n| note_name(n.as_u8()))
+        .map(|n| note_name(n.as_u8(), style))
         .collect::<Vec<_>>()
         .join(" · ")
 }
