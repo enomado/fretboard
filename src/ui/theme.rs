@@ -92,3 +92,17 @@ fn visuals() -> Visuals {
 pub fn fretboard_fill() -> Color32 {
     Color32::from_rgb(42, 31, 24)
 }
+
+/// Intonation feedback colour: green (in tune) → red (far off) by absolute cents.
+/// Bolder than the app's muted `cents_color` because it is the violin trainer's
+/// primary feedback — shared by the staff panel and the pitch-roll panel so both
+/// grade intonation with one palette.
+pub fn intonation_color(cents: f32) -> Color32 {
+    match cents.abs() {
+        a if a < 5.0 => Color32::from_rgb(90, 220, 110),
+        a if a < 12.0 => Color32::from_rgb(160, 214, 92),
+        a if a < 22.0 => Color32::from_rgb(232, 204, 84),
+        a if a < 35.0 => Color32::from_rgb(236, 150, 72),
+        _ => Color32::from_rgb(232, 96, 84),
+    }
+}

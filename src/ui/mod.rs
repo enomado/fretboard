@@ -9,6 +9,7 @@
 //! rather than via re-exports, so it stays obvious where each renderer lives.
 
 pub mod fretboard;
+pub mod pianoroll;
 pub mod snail;
 pub mod staff;
 pub mod theme;

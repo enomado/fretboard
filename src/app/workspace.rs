@@ -55,6 +55,7 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
                             WorkspaceTab::Fretboard => self.app.draw_fretboard_card(ui),
                             WorkspaceTab::Drone => self.app.draw_drone_card(ui),
                             WorkspaceTab::Staff => self.app.draw_staff_card(ui),
+                            WorkspaceTab::PitchRoll => self.app.draw_pitch_roll_card(ui),
                         }
                     });
             });

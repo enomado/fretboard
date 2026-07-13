@@ -32,6 +32,7 @@ use eframe::egui::{
 use crate::core_types::note::{
     Accidental,
     AccidentalStyle,
+    KeySignature,
 };
 
 /// Placement of the staff inside a panel rect. All fields are screen pixels.
@@ -145,6 +146,79 @@ impl Clef {
             },
         }
     }
+
+    /// Where the key-signature accidentals sit on this clef's staff (see
+    /// [`KeySigLayout`] and [`key_sig_steps`]).
+    fn key_sig_layout(self) -> KeySigLayout {
+        match self {
+            // Treble: F♯ on the top line (F5 = step 8); B♭ on the middle line
+            // (B4 = step 4). These are the standard engraved heights.
+            Clef::Treble => KeySigLayout {
+                sharp_first: 8,
+                sharp_floor: 3,
+                flat_first:  4,
+                flat_ceil:   7,
+            },
+            // Bass: the whole pattern one staff line (two steps) lower than treble.
+            Clef::Bass => KeySigLayout {
+                sharp_first: 6,
+                sharp_floor: 1,
+                flat_first:  2,
+                flat_ceil:   5,
+            },
+            // Tenor C-clef: derived to keep the glyphs on the staff with the
+            // correct letters. (This is a clean derivation, not the rarely-used
+            // canonical tenor-clef exception, which nudges a couple of glyphs by
+            // an octave to further compress the run — a minor cosmetic difference.)
+            Clef::Tenor => KeySigLayout {
+                sharp_first: 9,
+                sharp_floor: 0,
+                flat_first:  5,
+                flat_ceil:   8,
+            },
+        }
+    }
+}
+
+/// Where a clef places a key signature's accidentals, as staff steps.
+///
+/// The accidentals march along the fifths cycle (F C G D A E B for sharps, its
+/// reverse for flats). Vertically each one steps by a fourth from the previous —
+/// *down* a fourth for sharps (`−3` steps), *up* a fourth for flats (`+3`) — but
+/// folds back by a fifth in the opposite direction when it would run off the
+/// staff, which is what produces the familiar zig-zag. `*_first` is the first
+/// accidental's step; the threshold (`sharp_floor` / `flat_ceil`) is the step the
+/// walk is not allowed to cross before folding.
+struct KeySigLayout {
+    sharp_first: i32,
+    sharp_floor: i32,
+    flat_first:  i32,
+    flat_ceil:   i32,
+}
+
+/// Staff steps of a key signature's accidentals, in draw order, under `clef`.
+/// Empty for C major. See [`KeySigLayout`] for the walk.
+pub fn key_sig_steps(clef: Clef, key: KeySignature) -> Vec<i32> {
+    let n = key.count().min(7);
+    if n == 0 {
+        return Vec::new();
+    }
+    let lay = clef.key_sig_layout();
+    let sharps = key.fifths >= 0;
+    let mut cur = if sharps { lay.sharp_first } else { lay.flat_first };
+    let mut steps = Vec::with_capacity(n);
+    steps.push(cur);
+    for _ in 1..n {
+        cur = if sharps {
+            let c = cur - 3; // down a fourth
+            if c < lay.sharp_floor { cur + 4 } else { c } // else fold up a fifth
+        } else {
+            let c = cur + 3; // up a fourth
+            if c > lay.flat_ceil { cur - 4 } else { c } // else fold down a fifth
+        };
+        steps.push(cur);
+    }
+    steps
 }
 
 /// The letter (0=C … 6=B) and accidental a pitch class is spelled with, in the
@@ -203,6 +277,13 @@ pub fn note_staff_step(midi: i32, style: AccidentalStyle, clef: Clef) -> (i32, A
     // Diatonic index of this note vs. the diatonic index of the clef's bottom line.
     let diatonic = letter + 7 * octave;
     (diatonic - clef.bottom_line_diatonic(), acc)
+}
+
+/// The staff letter (0 = C … 6 = B) a MIDI note is spelled with in `style`. This
+/// is the letter whose vertical slot the note occupies — what a key signature
+/// keys its accidental off (see [`KeySignature::note_glyph`]).
+pub fn note_letter(midi: i32, style: AccidentalStyle) -> usize {
+    spelling(midi.rem_euclid(12) as usize, style).0 as usize
 }
 
 /// Even staff steps that need a ledger line for a note at `step`.
@@ -271,6 +352,39 @@ pub fn draw_clef(painter: &Painter, geom: &StaffGeom, clef: Clef, color: Color32
     );
 }
 
+/// Draw the key signature — the run of sharps or flats — right after the clef,
+/// each at its engraved staff step ([`key_sig_steps`]). Returns the x just past
+/// the last accidental, where the note region may begin; for C major (no
+/// accidentals) it returns `geom.notes_left` unchanged.
+pub fn draw_key_signature(
+    painter: &Painter,
+    geom: &StaffGeom,
+    clef: Clef,
+    key: KeySignature,
+    color: Color32,
+) -> f32 {
+    let steps = key_sig_steps(clef, key);
+    if steps.is_empty() {
+        return geom.notes_left;
+    }
+    let gap = geom.gap;
+    let sign = key.accidental().glyph();
+    let advance = gap * 1.15;
+    // Start just clear of the clef glyph's ink.
+    let x0 = geom.clef_x + gap * 2.4;
+    for (i, &step) in steps.iter().enumerate() {
+        let x = x0 + i as f32 * advance;
+        painter.text(
+            pos2(x, geom.step_y(step)),
+            Align2::CENTER_CENTER,
+            sign,
+            crate::ui::theme::music_font(gap * 2.6),
+            color,
+        );
+    }
+    x0 + steps.len() as f32 * advance
+}
+
 /// Continuous vertical position of a fractional MIDI pitch on the staff — used
 /// by the live pitch trail. Interpolates between the two nearest semitone slots
 /// (the staff is diatonic, so the mapping is piecewise-linear, not uniform).
@@ -295,6 +409,7 @@ pub fn draw_note(
     midi: i32,
     style: AccidentalStyle,
     clef: Clef,
+    key: KeySignature,
     head_color: Color32,
     staff_color: Color32,
     emphasize: bool,
@@ -347,26 +462,22 @@ pub fn draw_note(
         );
     }
 
-    // Accidental glyph (♯/♭) to the left of the head, from the music font.
-    if let Some(sign) = accidental_sign(acc) {
+    // Accidental glyph to the left of the head. Under a key signature the note's
+    // own accidental is drawn only when it deviates from the signature: in-key
+    // notes carry nothing (the signature already implies them), a note contradicting
+    // the signature gets a ♮, and a chromatic note outside the key gets its ♯/♭.
+    let letter = note_letter(midi, style);
+    if let Some(glyph_acc) = key.note_glyph(letter, acc) {
         painter.text(
             pos2(x - rx - gap * 0.5, y),
             Align2::CENTER_CENTER,
-            sign,
+            glyph_acc.glyph(),
             crate::ui::theme::music_font(gap * 2.6),
             head_color,
         );
     }
 
     pos2(x, y)
-}
-
-fn accidental_sign(acc: Accidental) -> Option<&'static str> {
-    match acc {
-        Accidental::Natural => None,
-        Accidental::Sharp => Some("\u{266F}"),  // ♯
-        Accidental::Flat => Some("\u{266D}"),   // ♭
-    }
 }
 
 /// Fill a tilted ellipse (egui has no ellipse primitive) as a convex polygon.
@@ -429,6 +540,43 @@ mod tests {
         let (flat_step, flat_acc) = note_staff_step(66, AccidentalStyle::Flats, g); // Gb4 → G slot
         assert_eq!(flat_acc, Accidental::Flat);
         assert_eq!(flat_step, sharp_step + 1); // G sits one slot above F
+    }
+
+    #[test]
+    fn key_signature_glyph_positions() {
+        // Treble: the canonical engraved heights for a full seven-accidental run.
+        // Sharps F C G D A E B → steps 8 5 9 6 3 7 4; flats B E A D G C F → 4 7 3 6 2 5 1.
+        assert_eq!(
+            key_sig_steps(Clef::Treble, KeySignature { fifths: 7 }),
+            vec![8, 5, 9, 6, 3, 7, 4]
+        );
+        assert_eq!(
+            key_sig_steps(Clef::Treble, KeySignature { fifths: -7 }),
+            vec![4, 7, 3, 6, 2, 5, 1]
+        );
+        // Bass is the treble layout one line (two steps) lower.
+        assert_eq!(
+            key_sig_steps(Clef::Bass, KeySignature { fifths: 7 }),
+            vec![6, 3, 7, 4, 1, 5, 2]
+        );
+        // A partial signature is just the first N of the run (D major = first 2 sharps).
+        assert_eq!(key_sig_steps(Clef::Treble, KeySignature { fifths: 2 }), vec![8, 5]);
+        // C major draws nothing.
+        assert!(key_sig_steps(Clef::Treble, KeySignature { fifths: 0 }).is_empty());
+    }
+
+    #[test]
+    fn key_signature_absorbs_note_accidentals() {
+        // In G major the played F♯5 (MIDI 78) sits on the F slot with no glyph —
+        // the signature already carries it; a played F natural (77) gets a ♮.
+        let g = KeySignature { fifths: 1 };
+        let sharps = AccidentalStyle::Sharps;
+        assert_eq!(note_letter(78, sharps), 3); // F
+        assert_eq!(g.note_glyph(note_letter(78, sharps), Accidental::Sharp), None);
+        assert_eq!(
+            g.note_glyph(note_letter(77, sharps), Accidental::Natural),
+            Some(Accidental::Natural)
+        );
     }
 
     #[test]

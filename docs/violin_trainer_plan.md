@@ -34,6 +34,54 @@ single-line instrument and already gives cents for intonation.
 Key invariant: `ui::staff` owns *no* state and paints from borrowed inputs; all
 trainer state lives in `app::staff_panel`.
 
+## Pitch Roll panel (simpler sibling of the staff)  ✅ built + live-verified
+
+A second, deliberately simpler view added alongside the staff: a horizontal
+piano-roll "waterfall table". The staff's latency/octave work (Phases 1.3–1.6) is
+premature for the core idea, so this panel just *mirrors* the pitch — no capture
+state machine, no quantised noteheads.
+
+**Two layers, chosen deliberately (a live test drove it).** A single pitch *line*
+can't be both fast enough to show trills and octave-stable — those pull opposite
+ways, and a first cut using the fast bank pitch (`fast_pitch`) plus a threshold
+octave-reject filter was a hack the user rightly rejected ("won't get better without
+manual tuning"). The fix by construction is to stop forcing one decision:
+
+- **Spectral heat (ground truth, no decision).** The resonator bank's per-column
+  energy is painted at each bin's own pitch. It makes *no* single-pitch choice, so
+  there is no octave error to make: a strong overtone is just a fainter cell an
+  octave up (physically real), the fundamental the bright low cell. Fast (per bank
+  column) → trills/vibrato show at full resolution. This is literally the "waterfall
+  table" originally asked for.
+- **Melody line (a smooth guide on top).** The fused pYIN `frequency_hz`,
+  octave-stable and smoothed, coloured by intonation — reads the melody as one clean
+  curve. The heat underneath is the backstop: where the line's smoothing or a rare
+  octave slip disagrees with reality, the heat shows it.
+
+Files:
+- **`src/ui/pianoroll.rs`** — *stateless* renderer. Grid = **one row per semitone**
+  labelled with its note name (C-rows bold as octave anchors, accidental rows shaded
+  like piano black keys), time **right → left**. Layers bottom→top: rows → heat
+  (one [`Mesh`], `HEAT_GATE` sparsity, cool-blue ramp, silence = empty column = gap)
+  → intonation line (`theme::intonation_color`, shared with the staff). The **right
+  gutter** repeats the note scale, each label coloured by the energy at that pitch
+  in the *current* heat column (`draw_right_scale` / `label_heat_color`) — a live
+  per-note "what's sounding now" meter at the playhead.
+- **`src/app/pitch_roll_panel.rs`** — `PitchRoll` state: two aligned ring buffers
+  (line `samples` + `heat` columns, ~600 frames = visible span) + an **eased view
+  window** that auto-frames on the played range without per-frame jumpiness (min
+  span, padding, holds while silent). The line keeps a light octave-slip reject
+  (median-based, interval-keyed — heat is the truth backstop). Both layers gated on
+  input level so rests are clean (each bank column is normalized to its own max, so
+  without the gate silence would show noise). Unit-tested (framing; buffer caps;
+  slip rejected + trill kept; sustained leap accepted).
+- Wired as `WorkspaceTab::PitchRoll` ("Pitch Roll"); opens from the **Panels** menu.
+- **Live-verified** (render only) via the sway+grim recipe below with a temporary
+  `seed_demo` (rising line → rest → fast D5↔E5 trill → hold, with synthetic heat
+  columns): heat + line + gaps + trill-in-heat/smooth-line all render correctly;
+  harmonics fall above the framed view (clipped → no octave spikes). Demo reverted.
+  **Still needs a real-instrument pass** — dev env has no audio input.
+
 ---
 
 ## Phases

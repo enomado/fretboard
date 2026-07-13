@@ -5,6 +5,7 @@ mod drone_panel;
 mod fretboard_panel;
 mod live_analysis;
 mod persist;
+mod pitch_roll_panel;
 mod resonator_panel;
 mod scale_finder;
 mod staff_panel;
@@ -190,12 +191,13 @@ enum WorkspaceTab {
     Fretboard,
     Drone,
     Staff,
+    PitchRoll,
 }
 
 impl WorkspaceTab {
     /// Полный реестр панелей — источник для меню «Panels» (открыть/закрыть)
     /// и для дефолтной раскладки. Порядок = порядок в меню.
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 15] = [
         Self::Controls,
         Self::FretboardControls,
         Self::InputScope,
@@ -210,6 +212,7 @@ impl WorkspaceTab {
         Self::ResonatorWaterfall,
         Self::Drone,
         Self::Staff,
+        Self::PitchRoll,
     ];
 
     fn label(self) -> &'static str {
@@ -228,6 +231,7 @@ impl WorkspaceTab {
             Self::Fretboard => "Fretboard",
             Self::Drone => "Drone",
             Self::Staff => "Violin Staff",
+            Self::PitchRoll => "Pitch Roll",
         }
     }
 }
@@ -249,6 +253,9 @@ pub struct App {
     /// Live-notation state for the Violin Staff panel: rolling history of played
     /// notes + the note sounding now. Not persisted (a fresh session starts blank).
     staff: staff_panel::StaffTrainer,
+    /// Live pitch-roll state for the Pitch Roll panel: rolling continuous pitch +
+    /// the eased view window. Not persisted (a fresh session starts blank).
+    pitch_roll: pitch_roll_panel::PitchRoll,
     workspace_tree: Option<egui_tiles::Tree<WorkspaceTab>>,
 }
 
@@ -296,6 +303,7 @@ impl App {
             scale_finder: ScaleFinderConfig::default(),
             scale_solver: scale_finder::solver::ScaleSolver::default(),
             staff: staff_panel::StaffTrainer::default(),
+            pitch_roll: pitch_roll_panel::PitchRoll::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
         };
 

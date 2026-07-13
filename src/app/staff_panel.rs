@@ -34,13 +34,20 @@ use super::{
     App,
     pill,
 };
-use crate::core_types::note::AccidentalStyle;
+use crate::core_types::note::{
+    AccidentalStyle,
+    CIRCLE_OF_FIFTHS,
+    KeySignature,
+};
 use crate::ui::staff::{
     self,
     Clef,
     StaffGeom,
 };
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::theme::{
+    PANEL_FILL,
+    intonation_color,
+};
 
 /// Voiced clarity below which the fused pYIN pitch reads as "no note this frame"
 /// (silence / unvoiced). pYIN reports its voiced probability as `clarity`.
@@ -49,9 +56,13 @@ const CLARITY_GATE: f32 = 0.5;
 /// never declares silence on its own (`SILENCE_RMS_THRESHOLD == 0.0`), so without
 /// this gate the pitch detector latches onto room noise and "writes" ghost notes.
 const LEVEL_GATE: f32 = 0.02;
-/// Accepted pitch range. Kills sub-bass YIN octave errors (the ghostly ~37 Hz
-/// "D0"); C3..G7 covers the violin with margin.
-const MIDI_MIN: i32 = 48;
+/// Accepted pitch range — as wide as the pYIN tracker can actually produce, so no
+/// clef is clamped short. The low bound is the tracker's own grid floor, C1 (=
+/// `pyin::MIN_MIDI` = 24); the fused tracker is octave-correct now, so the old
+/// violin-only C3 floor — which existed to hide sub-bass octave ghosts — is no
+/// longer needed and was silently cutting off the whole bass/cello register (C2
+/// and down). The high bound clears the violin's top with margin.
+const MIDI_MIN: i32 = 24;
 const MIDI_MAX: i32 = 103;
 /// A held note shorter than this (seconds) is discarded as a glitch, not written.
 const MIN_NOTE_SECONDS: f64 = 0.06;
@@ -100,6 +111,10 @@ pub struct StaffTrainer {
     /// The clef the staff is drawn in — user-selectable (default treble). One
     /// staff at a time: notes never migrate between clefs.
     clef:    Clef,
+    /// The key signature drawn after the clef (default C major = none). It fixes
+    /// the sharps/flats at the clef and, in turn, how each note is spelled and
+    /// whether it carries its own accidental (see [`KeySignature::note_glyph`]).
+    key:     KeySignature,
     /// Last onset counter seen from the engine; a change means a fresh attack, used
     /// to split a re-bowed repeat of the same pitch into a new note.
     last_onset_seq: u64,
@@ -189,7 +204,11 @@ impl App {
         self.audio.request_resonator();
 
         let settings = self.audio.analysis_settings();
-        let style = settings.accidental;
+        // The key signature governs spelling: a sharp key spells the black notes as
+        // sharps, a flat key as flats. C major (no signature) has nothing to spell,
+        // so there the global sharps/flats preference still applies.
+        let key = self.staff.key;
+        let style = key.style().unwrap_or(settings.accidental);
         let reference = settings.concert_pitch_hz;
         let reading = self.audio.reading();
         let level = self.audio.input_level();
@@ -202,7 +221,7 @@ impl App {
         //
         // Gated on voiced clarity (pYIN's voiced probability) and absolute input
         // level, so room noise is not written as ghost notes. `MIDI_MIN..=MIDI_MAX`
-        // keeps it in the violin's range.
+        // keeps it within the range the tracker can produce (C1..≈G7).
         let pitch = (level >= LEVEL_GATE)
             .then(|| reading.as_ref())
             .flatten()
@@ -269,6 +288,26 @@ impl App {
                     for clef in Clef::ALL {
                         ui.selectable_value(&mut self.staff.clef, clef, clef.label());
                     }
+
+                    ui.add_space(18.0);
+
+                    // Key-signature picker — the circle of fifths. Selecting a key
+                    // both draws its sharps/flats at the clef and re-spells the
+                    // notes accordingly (see `KeySignature`).
+                    ui.label(
+                        RichText::new("Key")
+                            .size(12.0)
+                            .color(Color32::from_rgb(145, 151, 160)),
+                    );
+                    eframe::egui::ComboBox::from_id_salt("staff_key_sig")
+                        .selected_text(key_label(self.staff.key))
+                        .show_ui(ui, |ui| {
+                            for &(fifths, name) in CIRCLE_OF_FIFTHS.iter() {
+                                let k = KeySignature { fifths };
+                                ui.selectable_value(&mut self.staff.key, k, key_label(k))
+                                    .on_hover_text(format!("{name} major"));
+                            }
+                        });
                 });
 
                 ui.add_space(10.0);
@@ -290,6 +329,20 @@ impl App {
     }
 }
 
+/// Compact label for the key picker, e.g. `"C"`, `"G  1\u{266F}"`, `"E\u{266D}  3\u{266D}"`.
+/// The tonic name comes from the circle-of-fifths table; the suffix is the
+/// accidental count so the signature is readable without opening the dropdown.
+fn key_label(key: KeySignature) -> String {
+    let name = CIRCLE_OF_FIFTHS
+        .iter()
+        .find(|&&(f, _)| f == key.fifths)
+        .map_or("?", |&(_, n)| n);
+    match key.count() {
+        0 => name.to_string(),
+        n => format!("{name}  {n}{}", key.accidental().glyph()),
+    }
+}
+
 /// Paint the staff in `trainer.clef`, its clef glyph, the written notes (newest
 /// at the right) and the intonation bar into `rect`.
 ///
@@ -307,11 +360,12 @@ fn draw_staff(
     res_max_midi: i32,
 ) {
     let clef = trainer.clef;
+    let key = trainer.key;
     // Gap scales with height; the middle line sits at the vertical centre so there
     // is head-room for ledger lines both above and below.
     let gap = (rect.height() / 15.0).clamp(9.0, 20.0);
     let left = rect.left() + 12.0;
-    let geom = StaffGeom {
+    let mut geom = StaffGeom {
         gap,
         bottom_y: rect.center().y + 2.0 * gap,
         staff_left: left,
@@ -323,6 +377,11 @@ fn draw_staff(
     let staff_col = Color32::from_rgb(96, 104, 116);
     staff::draw_staff_lines(painter, &geom, staff_col);
     staff::draw_clef(painter, &geom, clef, Color32::from_rgb(216, 208, 196));
+
+    // Key signature between the clef and the notes; push the note region right so
+    // noteheads never collide with the signature (no-op for C major).
+    let ksig_right = staff::draw_key_signature(painter, &geom, clef, key, Color32::from_rgb(216, 208, 196));
+    geom.notes_left = geom.notes_left.max(ksig_right + gap * 0.8);
 
     // The current note (and the trail's newest sample) live at this x; notes step
     // left from here, the trail flows into it from the left.
@@ -357,17 +416,23 @@ fn draw_staff(
             continue;
         }
         let color = intonation_color(cents);
-        staff::draw_note(painter, &geom, x, midi, style, clef, color, staff_col, emphasize);
-        if emphasize {
-            // Name the live note under the staff.
-            painter.text(
-                pos2(x, geom.step_y(0) + gap * 2.7),
-                Align2::CENTER_TOP,
-                style.midi_name(midi),
-                FontId::proportional(gap * 1.15),
-                color,
-            );
-        }
+        staff::draw_note(painter, &geom, x, midi, style, clef, key, color, staff_col, emphasize);
+        // Name *every* note above the staff: a header row of note letters (C, D,
+        // F#, …), each aligned to its note's column, so the written line reads
+        // back as named pitches. The label is the pitch-class name only (no
+        // octave — "abcdef"), coloured to match the notehead's intonation; the
+        // note sounding right now is drawn a touch larger for emphasis. A fixed
+        // top row (rather than following each notehead's varying height) keeps the
+        // letters on one clean readable line above the staff.
+        let name = style.pitch_class_name(midi.rem_euclid(12) as usize);
+        let name_size = if emphasize { gap * 1.3 } else { gap * 1.05 };
+        painter.text(
+            pos2(x, rect.top() + gap * 0.5),
+            Align2::CENTER_TOP,
+            name,
+            FontId::proportional(name_size),
+            color,
+        );
     }
 
     // Intonation needle for the note currently sounding.
@@ -513,18 +578,6 @@ fn draw_resonator_waterfall(
                 Color32::from_rgba_unmultiplied(96, 176, 214, alpha),
             );
         }
-    }
-}
-
-/// Green (in tune) → red (far off) by absolute cents. Bolder than the app's
-/// muted `cents_color` because it is the trainer's primary feedback.
-fn intonation_color(cents: f32) -> Color32 {
-    match cents.abs() {
-        a if a < 5.0 => Color32::from_rgb(90, 220, 110),
-        a if a < 12.0 => Color32::from_rgb(160, 214, 92),
-        a if a < 22.0 => Color32::from_rgb(232, 204, 84),
-        a if a < 35.0 => Color32::from_rgb(236, 150, 72),
-        _ => Color32::from_rgb(232, 96, 84),
     }
 }
 
