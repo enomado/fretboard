@@ -41,6 +41,7 @@ use crate::core_types::note::{
     KeySignature,
 };
 use crate::ui::segmented::{
+    PillCombo,
     RowCaption,
     SegmentedButton,
 };
@@ -347,32 +348,15 @@ impl App {
                             .font_size(12.0)
                             .color(Color32::from_rgb(145, 151, 160)),
                     );
-                    eframe::egui::ComboBox::from_id_salt("staff_key_sig")
-                        .selected_text(key_label(self.staff.key))
-                        .show_ui(ui, |ui| {
-                            // The app's global 14 px widget rounding + 10 px item
-                            // spacing turn these short rows into oversized hover
-                            // "pills" that balloon above/below the row and appear to
-                            // float as the pointer moves. Scope a snug, squared-off
-                            // style to the popup so the highlight sits on its row.
-                            {
-                                let s = ui.style_mut();
-                                s.spacing.item_spacing.y = 2.0;
-                                s.spacing.button_padding.y = 3.0;
-                                for w in [
-                                    &mut s.visuals.widgets.hovered,
-                                    &mut s.visuals.widgets.active,
-                                    &mut s.visuals.widgets.inactive,
-                                ] {
-                                    w.corner_radius = CornerRadius::same(6);
-                                }
-                            }
-                            for &(fifths, name) in CIRCLE_OF_FIFTHS.iter() {
-                                let k = KeySignature { fifths };
-                                ui.selectable_value(&mut self.staff.key, k, key_label(k))
-                                    .on_hover_text(format!("{name} major"));
-                            }
-                        });
+                    // The snug popup style these short rows need is baked into
+                    // `PillCombo`, so it is no longer spelled out here.
+                    PillCombo::new("staff_key_sig", key_label(self.staff.key)).show(ui, |ui| {
+                        for &(fifths, name) in CIRCLE_OF_FIFTHS.iter() {
+                            let k = KeySignature { fifths };
+                            ui.selectable_value(&mut self.staff.key, k, key_label(k))
+                                .on_hover_text(format!("{name} major"));
+                        }
+                    });
                 });
 
                 ui.add_space(10.0);
@@ -670,6 +654,83 @@ mod tests {
 
     /// No onset this frame — the counter the engine last reported, unchanged.
     const NO_ONSET: u64 = 0;
+
+    /// TEMPORARY end-to-end latency probe: real `PitchTracker` on a real sliding
+    /// window → real `OctaveGate` → real `StaffTrainer`, driven at UI frame rate.
+    /// Reports the ms from the true note change until the staff *shows* the new
+    /// note. This is the number the user actually perceives.
+    #[test]
+    fn end_to_end_latency_probe() {
+        use std::f32::consts::TAU;
+
+        use crate::audio::dsp::pyin::PitchTracker;
+
+        fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+            let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
+            (0..len)
+                .map(|i| {
+                    let t = i as f32 / sample_rate;
+                    partials
+                        .iter()
+                        .enumerate()
+                        .map(|(h, a)| a * (TAU * frequency_hz * (h + 1) as f32 * t).sin())
+                        .sum::<f32>()
+                        / 3.0
+                })
+                .collect()
+        }
+
+        /// Drive the whole stack and return ms until the staff shows `to_hz`.
+        fn probe(from_hz: f32, to_hz: f32) -> f32 {
+            let sr = 48_000.0f32;
+            let window_size = 6144usize;
+            let analysis_hop = 1920usize; // ANALYSIS_INTERVAL = 40 ms
+            let hold = (sr * 0.6) as usize;
+            let mut sig = violin_tone(from_hz, sr, hold);
+            sig.extend(violin_tone(to_hz, sr, hold));
+            let change_ms = hold as f32 / sr * 1000.0;
+            let target_midi = (69.0 + 12.0 * (to_hz / 440.0).log2()).round() as i32;
+
+            let mut tracker = PitchTracker::new();
+            let mut staff = StaffTrainer::default();
+            // Latest reading published by the analysis thread, held between ticks.
+            let mut reading: Option<f32> = None;
+            let mut next_analysis = window_size;
+
+            // UI loop at 60 fps, exactly like `draw_staff_card`.
+            let frame_ms = 1000.0 / 60.0;
+            let mut t_ms = window_size as f32 / sr * 1000.0;
+            while t_ms < 1150.0 {
+                // The analysis thread publishes a new reading every 40 ms.
+                let now_samples = (t_ms * sr / 1000.0) as usize;
+                if now_samples >= next_analysis && next_analysis + window_size <= sig.len() {
+                    let win = &sig[next_analysis - window_size..next_analysis];
+                    reading = tracker.process(win, sr, None, false).map(|(f, _)| f);
+                    next_analysis += analysis_hop;
+                }
+                let pitch = reading.map(|f| {
+                    let midi_f = 69.0 + 12.0 * (f / 440.0).log2();
+                    (midi_f.round() as i32, 0.0, midi_f)
+                });
+                staff.update(pitch, LVL, t_ms as f64 / 1000.0, NO_ONSET);
+                if staff.current().map(|(m, _)| m) == Some(target_midi) {
+                    return t_ms - change_ms;
+                }
+                t_ms += frame_ms;
+            }
+            f32::INFINITY
+        }
+
+        println!("\n=== staff end-to-end latency (what the user sees) ===");
+        for (name, from, to) in [
+            ("A4->B4  (2nd,  gate passes)", 440.0f32, 493.88f32),
+            ("A4->D5  (4th,  gate passes)", 440.0, 587.33),
+            ("A4->E5  (5th,  GATE BLOCKS)", 440.0, 659.25),
+            ("A4->A5  (8ve,  GATE BLOCKS)", 440.0, 880.0),
+        ] {
+            println!("{name} -> {:>7.1} ms", probe(from, to));
+        }
+    }
 
     /// A one-frame blip shorter than `MIN_NOTE_SECONDS` is shown live but never
     /// committed to the written line.

@@ -33,6 +33,7 @@ use crate::audio::{
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
 use crate::ui::segmented::{
+    PillCombo,
     RowCaption,
     SegmentedButton,
 };
@@ -110,10 +111,9 @@ impl App {
                         .map(|option| option.label.clone())
                         .unwrap_or_else(|| "Choose input device".to_owned());
 
-                    egui::ComboBox::from_id_salt("audio_input_device")
-                        .selected_text(selected_input_label)
-                        .width(340.0)
-                        .show_ui(ui, |ui| {
+                    PillCombo::new("audio_input_device", selected_input_label)
+                        .min_width(340.0)
+                        .show(ui, |ui| {
                             for option in &self.audio_inputs {
                                 if ui
                                     .selectable_label(
@@ -370,13 +370,11 @@ impl App {
 
                 ui.horizontal_wrapped(|ui| {
                     ui.add(RowCaption::new("Tuning"));
-                    egui::ComboBox::from_id_salt("tuning")
-                        .selected_text(self.tuning_kind.label())
-                        .show_ui(ui, |ui| {
-                            for tuning in ALL_TUNINGS {
-                                ui.selectable_value(&mut self.tuning_kind, tuning, tuning.label());
-                            }
-                        });
+                    PillCombo::new("tuning", self.tuning_kind.label()).show(ui, |ui| {
+                        for tuning in ALL_TUNINGS {
+                            ui.selectable_value(&mut self.tuning_kind, tuning, tuning.label());
+                        }
+                    });
 
                     ui.separator();
 
@@ -391,13 +389,11 @@ impl App {
                     ui.separator();
 
                     ui.add(RowCaption::new("Scale"));
-                    egui::ComboBox::from_id_salt("scale")
-                        .selected_text(self.scale_kind.label())
-                        .show_ui(ui, |ui| {
-                            for scale in ALL_SCALES {
-                                ui.selectable_value(&mut self.scale_kind, scale, scale.label());
-                            }
-                        });
+                    PillCombo::new("scale", self.scale_kind.label()).show(ui, |ui| {
+                        for scale in ALL_SCALES {
+                            ui.selectable_value(&mut self.scale_kind, scale, scale.label());
+                        }
+                    });
                 });
             });
     }
@@ -512,9 +508,9 @@ impl App {
                     .color(Color32::from_rgb(205, 194, 176))
                     .strong(),
             );
-            egui::ComboBox::from_id_salt("analysis_window_size")
-                .selected_text(format_sample_count(settings.window_size))
-                .show_ui(ui, |ui| {
+            PillCombo::new("analysis_window_size", format_sample_count(settings.window_size)).show(
+                ui,
+                |ui| {
                     for preset in WINDOW_SIZE_PRESETS {
                         if ui
                             .selectable_value(&mut settings.window_size, preset, format_sample_count(preset))
@@ -523,7 +519,8 @@ impl App {
                             *changed = true;
                         }
                     }
-                });
+                },
+            );
 
             ui.separator();
 
@@ -605,18 +602,16 @@ impl App {
                     .color(Color32::from_rgb(205, 194, 176))
                     .strong(),
             );
-            egui::ComboBox::from_id_salt("analysis_fft_size")
-                .selected_text(format_sample_count(settings.fft_size))
-                .show_ui(ui, |ui| {
-                    for preset in FFT_SIZE_PRESETS {
-                        if ui
-                            .selectable_value(&mut settings.fft_size, preset, format_sample_count(preset))
-                            .changed()
-                        {
-                            *changed = true;
-                        }
+            PillCombo::new("analysis_fft_size", format_sample_count(settings.fft_size)).show(ui, |ui| {
+                for preset in FFT_SIZE_PRESETS {
+                    if ui
+                        .selectable_value(&mut settings.fft_size, preset, format_sample_count(preset))
+                        .changed()
+                    {
+                        *changed = true;
                     }
-                });
+                }
+            });
 
             ui.separator();
 

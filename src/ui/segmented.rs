@@ -44,10 +44,15 @@ use eframe::egui::{
     Color32,
     CornerRadius,
     FontId,
+    Popup,
+    PopupCloseBehavior,
     Response,
+    ScrollArea,
     Sense,
+    Shape,
     Stroke,
     StrokeKind,
+    TextWrapMode,
     Ui,
     Widget,
     pos2,
@@ -298,6 +303,180 @@ impl Widget for RowCaption<'_> {
             let pos = pos2(rect.left(), rect.center().y - band_mid);
             ui.painter().galley(pos, galley, self.color);
         }
+        response
+    }
+}
+
+/// The canonical dropdown — a pill-shaped combo box that shares the pills' height
+/// band and baseline.
+///
+/// `egui::ComboBox` cannot: it derives its height from the font (galley 16.125 px
+/// + 2×`button_padding.y` = 30.125 px, vs the pill's 28) and it centres the
+/// *galley box*, which — per the module docs — sits ~1 px above the ink. Stacked
+/// in a top-aligned `horizontal_wrapped` row, those two errors compound and land
+/// the selected text ~2 px below the [`RowCaption`] beside it. No styling of
+/// `ComboBox` can fix that: `button_padding` is applied symmetrically
+/// (`Rect::shrink2`), so there is no way to bias the text up by the ink offset.
+///
+/// So the button half is painted here — same [`PILL_HEIGHT`], same
+/// [`ink_band_mid`] rule, therefore the same baseline as pills and captions **by
+/// construction**. Only the button is ours; the popup is still egui's
+/// [`Popup::menu`], so keyboard handling, close-on-click and scrolling come along
+/// for free.
+pub struct PillCombo<'a> {
+    id_salt:       &'a str,
+    selected_text: String,
+    /// Lower bound on the pill's total width. `None` = the theme's
+    /// `spacing.combo_width`, which is what a bare `egui::ComboBox` would use —
+    /// absence genuinely means "no call-site opinion, defer to the theme".
+    min_width:     Option<f32>,
+    font_size:     f32,
+}
+
+/// Width reserved for the caret box at the pill's right end, and the gap that
+/// keeps the label clear of it.
+const CARET_BOX: f32 = 12.0;
+const CARET_GAP: f32 = 8.0;
+/// The caret triangle itself, inside [`CARET_BOX`].
+const CARET_W: f32 = 9.0;
+const CARET_H: f32 = 5.0;
+
+impl<'a> PillCombo<'a> {
+    /// `id_salt` names the widget for egui's memory (popup open-state), exactly
+    /// like `egui::ComboBox::from_id_salt`.
+    pub fn new(id_salt: &'a str, selected_text: impl Into<String>) -> Self {
+        Self {
+            id_salt,
+            selected_text: selected_text.into(),
+            min_width: None,
+            font_size: DEFAULT_FONT_SIZE,
+        }
+    }
+
+    /// Keep the pill from collapsing below `w` logical px. It still grows to fit a
+    /// long selection — same semantics as `egui::ComboBox::width`.
+    pub fn min_width(mut self, w: f32) -> Self {
+        self.min_width = Some(w);
+        self
+    }
+
+    /// Override the label font size (default matches `TextStyle::Button`, 14 px).
+    pub fn font_size(mut self, size: f32) -> Self {
+        self.font_size = size;
+        self
+    }
+
+    /// Draw the pill and, while open, its popup. `contents` fills the popup — put
+    /// `selectable_value` / `selectable_label` rows in it, as with `ComboBox`.
+    /// Returns the *button's* response (the popup's own is egui's business).
+    pub fn show(self, ui: &mut Ui, contents: impl FnOnce(&mut Ui)) -> Response {
+        let font_id = FontId::proportional(self.font_size);
+        let enabled = ui.is_enabled();
+        let text_color = if enabled {
+            PILL_TEXT
+        } else {
+            lerp_rgb(PILL_TEXT, PANEL_FILL, DISABLED_FADE)
+        };
+
+        // Laid out unwrapped so a long selection widens the pill rather than
+        // wrapping it — matching `ComboBox` under `TextWrapMode::Extend`, which is
+        // what a horizontal row gives it today.
+        let galley = ui
+            .painter()
+            .layout_no_wrap(self.selected_text, font_id.clone(), text_color);
+        let band_mid = ink_band_mid(ui, &font_id);
+
+        let min_width = self.min_width.unwrap_or_else(|| ui.spacing().combo_width);
+        let width =
+            (galley.size().x + 2.0 * H_PAD + CARET_GAP + CARET_BOX).max(min_width);
+
+        // `allocate_space` hands back an auto id we deliberately drop: the popup's
+        // open-state must survive across frames under a *stable* id, so the button
+        // interacts under the salt instead.
+        let (_auto_id, rect) = ui.allocate_space(vec2(width, PILL_HEIGHT));
+        let id = ui.make_persistent_id(self.id_salt);
+        let response = ui.interact(rect, id, Sense::click());
+
+        let popup_id = id.with("popup");
+        let is_open = Popup::is_id_open(ui.ctx(), popup_id);
+
+        if ui.is_rect_visible(rect) {
+            // An open popup keeps the pill lit, so the button does not go dark the
+            // moment the pointer leaves it for the list.
+            let lit = enabled && (response.hovered() || is_open);
+            let (fill, stroke) = if !enabled {
+                (
+                    lerp_rgb(PILL_IDLE_FILL, PANEL_FILL, DISABLED_FADE),
+                    lerp_rgb(PILL_IDLE_STROKE, PANEL_FILL, DISABLED_FADE),
+                )
+            } else if lit {
+                (
+                    lerp_rgb(PILL_IDLE_FILL, Color32::WHITE, HOVER_LIGHTEN),
+                    lerp_rgb(PILL_IDLE_STROKE, Color32::WHITE, HOVER_LIGHTEN),
+                )
+            } else {
+                (PILL_IDLE_FILL, PILL_IDLE_STROKE)
+            };
+
+            let radius = CornerRadius::same(PILL_RADIUS);
+            let painter = ui.painter();
+            painter.rect_filled(rect, radius, fill);
+            painter.rect_stroke(rect, radius, Stroke::new(1.0, stroke), StrokeKind::Inside);
+
+            // The label is left-aligned (a dropdown's selection reads from the left),
+            // but its *vertical* placement is the pill rule verbatim: ink band centred
+            // on the rect's centre.
+            painter.galley(
+                pos2(rect.left() + H_PAD, rect.center().y - band_mid),
+                galley,
+                text_color,
+            );
+
+            let caret_x = rect.right() - H_PAD - CARET_BOX * 0.5;
+            let caret_y = rect.center().y;
+            painter.add(Shape::convex_polygon(
+                vec![
+                    pos2(caret_x - CARET_W * 0.5, caret_y - CARET_H * 0.5),
+                    pos2(caret_x + CARET_W * 0.5, caret_y - CARET_H * 0.5),
+                    pos2(caret_x, caret_y + CARET_H * 0.5),
+                ],
+                text_color,
+                Stroke::NONE,
+            ));
+        }
+
+        let popup_height = ui.spacing().combo_height;
+        Popup::menu(&response)
+            .id(popup_id)
+            .width(rect.width())
+            .close_behavior(PopupCloseBehavior::CloseOnClick)
+            .show(|ui| {
+                ui.set_min_width(ui.available_width());
+
+                // The app's global 14 px widget rounding + 10 px item spacing turn
+                // these short rows into oversized hover "pills" that balloon above and
+                // below the row and appear to float as the pointer moves. Every combo
+                // popup wants the same snug, squared-off override, so it lives here
+                // rather than being re-typed per call site.
+                let style = ui.style_mut();
+                style.spacing.item_spacing.y = 2.0;
+                style.spacing.button_padding.y = 3.0;
+                for widget in [
+                    &mut style.visuals.widgets.hovered,
+                    &mut style.visuals.widgets.active,
+                    &mut style.visuals.widgets.inactive,
+                ] {
+                    widget.corner_radius = CornerRadius::same(6);
+                }
+                // A popup is often as narrow as its button; wrapping would break the
+                // labels absurdly early, so let them set the width instead.
+                style.wrap_mode = Some(TextWrapMode::Extend);
+
+                ScrollArea::vertical()
+                    .max_height(popup_height)
+                    .show(ui, contents);
+            });
+
         response
     }
 }
