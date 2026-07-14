@@ -659,8 +659,33 @@ in a comment while not implementing it** — which is what pushed the ring into 
 
 **Left alone, deliberately:** the staff's noteheads still step `gap * 3.2` per *note*,
 so a written note and the heat that produced it drift apart — a third ruler, but a real
-design question (notation is not a time plot), not a mistake. See the kickstart in
-`memory/kickstart_staff_draw_decomposition.md`.
+design question (notation is not a time plot), not a mistake. Answered in 1.11.
+
+### Phase 1.11 — the staff draw split, and the second ruler  ✅ DONE (`9985bce`)
+Landed as a **pure refactor**: seven regions in one 8-argument function became one
+function each, called in the order the ink lands (`staff_geom` → `draw_engraving` →
+`Waterfall::draw` → `draw_noteheads` → `draw_note_names` → the intonation bar), with
+`draw_staff` as the running order painting nothing itself. Two invariants became types:
+`TimeRuler` (the waterfall's **one** ruler — the thing 1.10's parallax was) and
+`Waterfall` (the frame context its two layers draw from, so neither can invent its own
+span). `BankRange` retires the swappable `res_min_midi`/`res_max_midi` pair.
+
+**DESIGN DECISION (user, 2026-07-15) — the staff keeps two rulers, on purpose.**
+The waterfall is placed by TIME; the noteheads by COUNT, one column per note. So a
+written note and the heat that produced it sit at different x and drift further apart
+the longer the note is held. **This is intended and is not to be "fixed".** Notation is
+a reading surface, not a time plot — a whole and an eighth take one width on paper.
+Rejected alternatives: placing the heads at `x_of(t)` (that is a piano roll, which the
+pitch-roll panel already is), and splitting the two into visually separate bands. The
+two rulers agree only at the playhead. This lives in `note_columns`' doc comment and is
+pinned by `the_written_line_is_placed_by_count_not_by_time` — the placement rule used to
+be buried inside a painting loop where nothing could check it.
+
+Behaviour holds by design: 1.8–1.10 are still unverified on the instrument, and a
+refactor that also moved pixels would make unverified indistinguishable from broken.
+Two knowing cosmetic deltas are listed in the commit message (cell width reads
+`px_per_second` directly; note names are drawn after all the heads, so the header row
+stays readable where a high head reaches into it). Tests 112 → 116.
 
 ### Phase 2 — Target / call-and-response mode  ⬜ NOT STARTED
 Show a **target** (a single note, then a short phrase/scale) the user must play;
