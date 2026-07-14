@@ -37,7 +37,7 @@ use crate::ui::segmented::{
     RowCaption,
     SegmentedButton,
 };
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::tokens::color;
 
 impl App {
     pub(super) fn draw_controls(&mut self, ui: &mut Ui) {
@@ -65,9 +65,9 @@ impl App {
             .any(|option| option.kind == AudioInputKind::Microphone);
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(18))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.set_min_width(frame_width - 32.0);
@@ -141,7 +141,7 @@ impl App {
                         RichText::new(
                             "Use the System source to capture monitor / loopback / Stereo Mix inputs",
                         )
-                        .color(Color32::from_rgb(145, 151, 160))
+                        .color(color::TEXT_HINT)
                         .size(12.0),
                     );
                 } else {
@@ -150,7 +150,7 @@ impl App {
                         RichText::new(
                             "System audio appears only if the OS exposes a monitor / loopback input device",
                         )
-                        .color(Color32::from_rgb(145, 151, 160))
+                        .color(color::TEXT_HINT)
                         .size(12.0),
                     );
                 }
@@ -159,7 +159,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Mic gain")
-                            .color(Color32::from_rgb(205, 194, 176))
+                            .color(color::TEXT_CAPTION)
                             .strong(),
                     );
 
@@ -174,7 +174,7 @@ impl App {
 
                     ui.label(
                         RichText::new(format!("{input_gain:.1}x"))
-                            .color(Color32::from_rgb(226, 216, 201))
+                            .color(color::TEXT_VALUE)
                             .monospace(),
                     );
                 });
@@ -206,7 +206,7 @@ impl App {
 
                     ui.label(
                         RichText::new(format!("{:>3.0}%", monitor_gain * 100.0))
-                            .color(Color32::from_rgb(226, 216, 201))
+                            .color(color::TEXT_VALUE)
                             .monospace(),
                     );
                 });
@@ -222,12 +222,12 @@ impl App {
                     } else {
                         "Monitor is disabled for monitor / loopback system inputs"
                     })
-                    .color(Color32::from_rgb(145, 151, 160))
+                    .color(color::TEXT_HINT)
                     .size(12.0),
                 );
                 ui.label(
                     RichText::new(input_source_debug_label(selected_input_id.as_deref()))
-                        .color(Color32::from_rgb(145, 151, 160))
+                        .color(color::TEXT_HINT)
                         .size(12.0)
                         .monospace(),
                 );
@@ -246,7 +246,7 @@ impl App {
                     }
                     ui.label(
                         RichText::new("Checks speaker output")
-                            .color(Color32::from_rgb(145, 151, 160))
+                            .color(color::TEXT_HINT)
                             .size(12.0),
                     );
                 });
@@ -257,7 +257,7 @@ impl App {
                     // свойство анализа, а не фретборда — потому живёт в Controls.
                     ui.label(
                         RichText::new("A4 pitch")
-                            .color(Color32::from_rgb(205, 194, 176))
+                            .color(color::TEXT_CAPTION)
                             .strong(),
                     );
                     let mut settings = self.audio.analysis_settings();
@@ -270,7 +270,7 @@ impl App {
                         .changed();
                     ui.label(
                         RichText::new(format!("{:.1} Hz", settings.concert_pitch_hz))
-                            .color(Color32::from_rgb(226, 216, 201))
+                            .color(color::TEXT_VALUE)
                             .monospace(),
                     );
                     if pitch_changed {
@@ -308,7 +308,7 @@ impl App {
                     .show(ui, |ui| {
                         ui.label(
                             RichText::new("Signal path diagnostics")
-                                .color(Color32::from_rgb(205, 194, 176))
+                                .color(color::TEXT_CAPTION)
                                 .strong()
                                 .size(12.0),
                         );
@@ -318,17 +318,17 @@ impl App {
                                 "Input path: {}",
                                 input_path_class_label(selected_input_id.as_deref())
                             ))
-                            .color(Color32::from_rgb(226, 216, 201))
+                            .color(color::TEXT_VALUE)
                             .size(12.0),
                         );
                         ui.label(
                             RichText::new(input_path_detail(selected_input_id.as_deref()))
-                                .color(Color32::from_rgb(145, 151, 160))
+                                .color(color::TEXT_HINT)
                                 .size(12.0),
                         );
                         ui.label(
                             RichText::new(format!("Input rate: {} Hz", input_sample_rate))
-                                .color(Color32::from_rgb(145, 151, 160))
+                                .color(color::TEXT_HINT)
                                 .size(12.0)
                                 .monospace(),
                         );
@@ -340,7 +340,7 @@ impl App {
                                     monitor_output_sample_rate,
                                 )
                             ))
-                            .color(Color32::from_rgb(145, 151, 160))
+                            .color(color::TEXT_HINT)
                             .size(12.0)
                             .monospace(),
                         );
@@ -361,9 +361,9 @@ impl App {
         let frame_width = ui.available_width();
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(18))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.set_min_width(frame_width - 32.0);
@@ -472,16 +472,8 @@ impl App {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new(title)
-                                .color(Color32::from_rgb(226, 216, 201))
-                                .strong(),
-                        );
-                        ui.label(
-                            RichText::new(subtitle)
-                                .color(Color32::from_rgb(145, 151, 160))
-                                .size(12.0),
-                        );
+                        ui.label(RichText::new(title).color(color::TEXT_VALUE).strong());
+                        ui.label(RichText::new(subtitle).color(color::TEXT_HINT).size(12.0));
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -503,11 +495,7 @@ impl App {
 
     fn draw_general_config_tab(&mut self, ui: &mut Ui, settings: &mut AnalysisSettings, changed: &mut bool) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Window")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Window").color(color::TEXT_CAPTION).strong());
             PillCombo::new("analysis_window_size", format_sample_count(settings.window_size)).show(
                 ui,
                 |ui| {
@@ -524,11 +512,7 @@ impl App {
 
             ui.separator();
 
-            ui.label(
-                RichText::new("Smooth")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Smooth").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [120.0, 18.0],
@@ -540,18 +524,14 @@ impl App {
             }
             ui.label(
                 RichText::new(settings.spectrum_smoothing.to_string())
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
         });
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Min Hz")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Min Hz").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [180.0, 18.0],
@@ -565,17 +545,13 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{:.0}", settings.min_frequency))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
 
             ui.add_space(10.0);
 
-            ui.label(
-                RichText::new("Max Hz")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Max Hz").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [180.0, 18.0],
@@ -589,7 +565,7 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{:.0}", settings.max_frequency))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
         });
@@ -597,11 +573,7 @@ impl App {
 
     fn draw_fft1_config_tab(&mut self, ui: &mut Ui, settings: &mut AnalysisSettings, changed: &mut bool) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("FFT")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("FFT").color(color::TEXT_CAPTION).strong());
             PillCombo::new("analysis_fft_size", format_sample_count(settings.fft_size)).show(ui, |ui| {
                 for preset in FFT_SIZE_PRESETS {
                     if ui
@@ -615,11 +587,7 @@ impl App {
 
             ui.separator();
 
-            ui.label(
-                RichText::new("Note spread")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Note spread").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -631,18 +599,14 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{:.2}", settings.note_spread))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
         });
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("FFT gamma")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("FFT gamma").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [160.0, 18.0],
@@ -654,17 +618,13 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{:.2}", settings.spectrum_gamma))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
 
             ui.add_space(10.0);
 
-            ui.label(
-                RichText::new("Note gamma")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Note gamma").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [160.0, 18.0],
@@ -676,7 +636,7 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{:.2}", settings.note_gamma))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
         });
@@ -689,11 +649,7 @@ impl App {
         changed: &mut bool,
     ) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Range")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Range").color(color::TEXT_CAPTION).strong());
 
             // Sliders bind a raw `u8` scratch; the validated `PNote` is rebuilt
             // on change (both ranges sit inside 0..=127, so `new` can't fail).
@@ -710,15 +666,11 @@ impl App {
             }
             ui.label(
                 RichText::new(midi_label(settings.resonator.min_midi, settings.accidental))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
 
-            ui.label(
-                RichText::new("to")
-                    .color(Color32::from_rgb(145, 151, 160))
-                    .strong(),
-            );
+            ui.label(RichText::new("to").color(color::TEXT_HINT).strong());
 
             let mut max_midi = settings.resonator.max_midi.as_u8();
             if ui
@@ -733,7 +685,7 @@ impl App {
             }
             ui.label(
                 RichText::new(midi_label(settings.resonator.max_midi, settings.accidental))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
 
@@ -741,7 +693,7 @@ impl App {
 
             ui.label(
                 RichText::new("Bins / semitone")
-                    .color(Color32::from_rgb(205, 194, 176))
+                    .color(color::TEXT_CAPTION)
                     .strong(),
             );
             if ui
@@ -755,18 +707,14 @@ impl App {
             }
             ui.label(
                 RichText::new(settings.resonator.bins.to_string())
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
         });
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Alpha")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Alpha").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -783,17 +731,13 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{:.3}", settings.resonator.alpha))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
 
             ui.add_space(10.0);
 
-            ui.label(
-                RichText::new("Beta")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Beta").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -807,17 +751,13 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{:.3}", settings.resonator.beta))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
 
             ui.add_space(10.0);
 
-            ui.label(
-                RichText::new("Gamma")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Gamma").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -829,7 +769,7 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{:.2}", settings.resonator.gamma))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
         });
@@ -848,11 +788,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            ui.label(
-                RichText::new("History")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("History").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [120.0, 18.0],
@@ -864,17 +800,13 @@ impl App {
             }
             ui.label(
                 RichText::new(settings.resonator.history.to_string())
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
 
             ui.add_space(10.0);
 
-            ui.label(
-                RichText::new("Update")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Update").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [120.0, 18.0],
@@ -886,7 +818,7 @@ impl App {
             }
             ui.label(
                 RichText::new(format!("{} ms", settings.resonator.update_ms))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
         });
@@ -896,9 +828,7 @@ impl App {
             if ui
                 .checkbox(
                     &mut settings.resonator.reassign,
-                    RichText::new("Δφ reassign")
-                        .color(Color32::from_rgb(205, 194, 176))
-                        .strong(),
+                    RichText::new("Δφ reassign").color(color::TEXT_CAPTION).strong(),
                 )
                 .on_hover_text(
                     "Place each partial at its true frequency via instantaneous-frequency \
@@ -916,24 +846,18 @@ impl App {
         // opened. Lives here (desktop tab) only — the Android strip in
         // `resonator_panel.rs` has no room for it.
         ui.add_space(10.0);
-        egui::CollapsingHeader::new(
-            RichText::new("What do these knobs do?").color(Color32::from_rgb(152, 158, 165)),
-        )
-        .default_open(false)
-        .show(ui, |ui| {
-            for (name, text) in RESONATOR_PARAM_HELP {
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.label(
-                        RichText::new(*name)
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
-                    ui.label(RichText::new(*text).color(Color32::from_rgb(152, 158, 165)));
-                });
-                ui.add_space(4.0);
-            }
-        });
+        egui::CollapsingHeader::new(RichText::new("What do these knobs do?").color(color::TEXT_HINT))
+            .default_open(false)
+            .show(ui, |ui| {
+                for (name, text) in RESONATOR_PARAM_HELP {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(RichText::new(*name).color(color::TEXT_CAPTION).strong());
+                        ui.label(RichText::new(*text).color(color::TEXT_HINT));
+                    });
+                    ui.add_space(4.0);
+                }
+            });
     }
 }
 

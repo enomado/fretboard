@@ -12,11 +12,7 @@ use super::{
     App,
     WorkspaceTab,
 };
-use crate::ui::segmented::{
-    PILL_ACCENT_FILL,
-    PILL_ACCENT_STROKE,
-};
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::tokens::color;
 
 pub(super) struct WorkspaceBehavior<'a> {
     app: &'a mut App,
@@ -32,7 +28,7 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         let pane_padding = 8;
         let pane_padding_f = f32::from(pane_padding);
         let pane_rect = ui.max_rect();
-        ui.painter().rect_filled(pane_rect, 0.0, PANEL_FILL);
+        ui.painter().rect_filled(pane_rect, 0.0, color::PANEL_FILL);
 
         egui::ScrollArea::both()
             .id_salt(("workspace_pane_scroll", tile_id))
@@ -74,7 +70,7 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
     }
 
     fn tab_bar_color(&self, _visuals: &egui::Visuals) -> Color32 {
-        Color32::from_rgb(18, 22, 27)
+        color::TAB_BAR_BG
     }
 
     fn tab_bg_color(
@@ -88,9 +84,9 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         // а вот idle у табов свой — темнее пилюльного, чтобы полоса табов читалась
         // как фон, а не как ряд кнопок.
         if state.active {
-            PILL_ACCENT_FILL
+            color::ACCENT_FILL
         } else {
-            Color32::from_rgb(34, 38, 44)
+            color::TAB_IDLE_FILL
         }
     }
 
@@ -104,15 +100,15 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         Stroke::new(
             1.0_f32,
             if state.active {
-                PILL_ACCENT_STROKE
+                color::ACCENT_STROKE
             } else {
-                Color32::from_rgb(76, 82, 90)
+                color::TAB_IDLE_STROKE
             },
         )
     }
 
     fn tab_bar_hline_stroke(&self, _visuals: &egui::Visuals) -> Stroke {
-        Stroke::new(1.0_f32, Color32::from_rgb(56, 61, 69))
+        Stroke::new(1.0_f32, color::TAB_HLINE)
     }
 
     fn tab_text_color(
@@ -123,9 +119,9 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         state: &egui_tiles::TabState,
     ) -> Color32 {
         if state.active {
-            Color32::from_rgb(235, 227, 216)
+            color::TAB_TEXT_ACTIVE
         } else {
-            Color32::from_rgb(188, 192, 198)
+            color::TAB_TEXT_IDLE
         }
     }
 }
@@ -232,7 +228,7 @@ impl App {
         egui::Panel::top("workspace_menu_bar")
             .frame(
                 Frame::new()
-                    .fill(Color32::from_rgb(18, 22, 27))
+                    .fill(color::TAB_BAR_BG)
                     .inner_margin(Margin::symmetric(8, 4)),
             )
             .show(ui, |ui| {

@@ -4,7 +4,8 @@
 //!   - `snail`     — the logarithmic pitch spiral,
 //!   - `waterfall` — spectrogram-style history strips,
 //!   - `segmented` — the canonical pill / segmented toggle button,
-//!   - `theme`     — shared colours and the egui style.
+//!   - `tokens`    — design tokens: the only home for raw colour/size literals,
+//!   - `theme`     — the egui style, built from `tokens`.
 //!
 //! Callers reach into these with explicit paths (e.g. `crate::ui::snail::draw_spiral_chart`)
 //! rather than via re-exports, so it stays obvious where each renderer lives.
@@ -15,4 +16,5 @@ pub mod segmented;
 pub mod snail;
 pub mod staff;
 pub mod theme;
+pub mod tokens;
 pub mod waterfall;

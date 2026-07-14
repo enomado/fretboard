@@ -45,10 +45,8 @@ use crate::ui::fretboard::{
     FretConfig,
     Fretboard,
 };
-use crate::ui::theme::{
-    PANEL_FILL,
-    fretboard_fill,
-};
+use crate::ui::theme::fretboard_fill;
+use crate::ui::tokens::color;
 
 impl App {
     pub(super) fn draw_fretboard_card(&self, ui: &mut Ui) {
@@ -60,9 +58,9 @@ impl App {
         let accidental = self.audio.analysis_settings().accidental;
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -211,7 +209,7 @@ impl App {
                 .note_name
                 .name_styled(self.audio.analysis_settings().accidental),
             FontId::proportional(17.0),
-            Color32::from_rgb(228, 220, 208),
+            color::TEXT_HEADING,
         );
         painter.text(
             pos2(tooltip_rect.left() + 12.0, tooltip_rect.top() + 34.0),

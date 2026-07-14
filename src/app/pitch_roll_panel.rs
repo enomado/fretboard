@@ -12,7 +12,6 @@
 use std::collections::VecDeque;
 
 use eframe::egui::{
-    Color32,
     CornerRadius,
     Frame,
     Margin,
@@ -28,7 +27,7 @@ use crate::ui::pianoroll::{
     self,
     PitchPoint,
 };
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::tokens::color;
 
 /// Input level (RMS-ish, 0..1) below this is silence — the engine never declares
 /// silence itself, so without this the detector traces room noise. Gates *both*
@@ -244,20 +243,16 @@ impl App {
         self.pitch_roll.update(pitch, level, heat_col);
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.vertical(|ui| {
-                    ui.label(
-                        RichText::new("Pitch Roll")
-                            .size(20.0)
-                            .color(Color32::from_rgb(228, 220, 208)),
-                    );
+                    ui.label(RichText::new("Pitch Roll").size(20.0).color(color::TEXT_HEADING));
                     ui.label(
                         RichText::new("Rows are notes; your pitch scrolls in from the right")
-                            .color(Color32::from_rgb(145, 151, 160))
+                            .color(color::TEXT_HINT)
                             .size(12.0),
                     );
                 });

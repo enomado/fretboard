@@ -16,6 +16,7 @@ use eframe::egui::{
 };
 
 use crate::audio::AnalysisSettings;
+use crate::ui::tokens::color;
 
 /// One frame's worth of data to render on the spiral, plus the cosmetic strings.
 /// Borrows everything — the caller owns the audio reading it is sliced from.
@@ -70,11 +71,11 @@ pub fn draw_spiral_chart_sized(
     let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
     let painter = ui.painter_at(rect);
 
-    painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+    painter.rect_filled(rect, 18.0, color::PLOT_BG);
     painter.rect_stroke(
         rect,
         18.0,
-        Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+        Stroke::new(1.0_f32, color::PLOT_STROKE),
         egui::StrokeKind::Inside,
     );
 
@@ -83,14 +84,14 @@ pub fn draw_spiral_chart_sized(
         egui::Align2::LEFT_TOP,
         chart.title,
         FontId::proportional(15.0),
-        Color32::from_rgb(201, 195, 184),
+        color::TEXT_BADGE,
     );
     painter.text(
         pos2(rect.right() - 14.0, rect.top() + 12.0),
         egui::Align2::RIGHT_TOP,
         chart.subtitle,
         FontId::proportional(12.0),
-        Color32::from_rgb(152, 158, 165),
+        color::TEXT_HINT,
     );
 
     let viz_rect = Rect::from_min_max(
@@ -104,7 +105,7 @@ pub fn draw_spiral_chart_sized(
             egui::Align2::CENTER_CENTER,
             chart.waiting_message,
             FontId::proportional(13.0),
-            Color32::from_rgb(139, 143, 149),
+            color::TEXT_HINT,
         );
         return;
     };
@@ -115,7 +116,7 @@ pub fn draw_spiral_chart_sized(
             egui::Align2::CENTER_CENTER,
             chart.empty_message,
             FontId::proportional(13.0),
-            Color32::from_rgb(139, 143, 149),
+            color::TEXT_HINT,
         );
         return;
     }

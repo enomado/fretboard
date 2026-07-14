@@ -26,13 +26,10 @@ use crate::audio::{
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
 use crate::ui::segmented::{
-    PILL_ACCENT_FILL,
-    PILL_ACCENT_STROKE,
-    PILL_IDLE_STROKE,
     RowCaption,
     SegmentedButton,
 };
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::tokens::color;
 
 // Диапазон тумблер-клавиатуры: C2..=B5 (4 октавы) — покрывает строй гитары/виолы
 // и удобные дрон-регистры, не разрастаясь по экрану.
@@ -42,9 +39,9 @@ const KEYBOARD_MAX_MIDI: u8 = 83; // B5
 // Палитра пилюль живёт в `ui::segmented` (единственный источник правды) — раньше
 // её копии лежали здесь и успели разъехаться. Клавиатура нот ниже берёт тот же
 // accent/idle, чтобы нажатая клавиша читалась ровно как выбранная пилюля.
-const LABEL_COLOR: Color32 = Color32::from_rgb(205, 194, 176);
-const VALUE_COLOR: Color32 = Color32::from_rgb(226, 216, 201);
-const HINT_COLOR: Color32 = Color32::from_rgb(145, 151, 160);
+const LABEL_COLOR: Color32 = color::TEXT_CAPTION;
+const VALUE_COLOR: Color32 = color::TEXT_VALUE;
+const HINT_COLOR: Color32 = color::TEXT_HINT;
 
 impl App {
     pub(super) fn draw_drone_card(&mut self, ui: &mut Ui) {
@@ -68,9 +65,9 @@ impl App {
         let playing = self.audio.drone_playing();
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(18))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
                 ui.set_min_width(frame_width - 32.0);
@@ -248,16 +245,16 @@ fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) ->
                 let selected = drone.notes.binary_search(&note).is_ok();
                 let is_black = BLACK_KEYS[(midi % 12) as usize];
                 let fill = if selected {
-                    PILL_ACCENT_FILL
+                    color::ACCENT_FILL
                 } else if is_black {
                     Color32::from_rgb(30, 33, 38)
                 } else {
                     Color32::from_rgb(48, 52, 58)
                 };
                 let stroke = if selected {
-                    PILL_ACCENT_STROKE
+                    color::ACCENT_STROKE
                 } else {
-                    PILL_IDLE_STROKE
+                    color::IDLE_STROKE
                 };
                 let text_color = if selected {
                     VALUE_COLOR

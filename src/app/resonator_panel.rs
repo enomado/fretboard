@@ -34,7 +34,7 @@ use crate::ui::snail::{
     self,
     SpiralChart,
 };
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::tokens::color;
 use crate::ui::waterfall;
 
 impl App {
@@ -63,9 +63,9 @@ impl App {
         let reading_ref = reading.as_ref();
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -73,7 +73,7 @@ impl App {
                         ui.label(
                             egui::RichText::new("Resonators")
                                 .size(if with_settings { 19.0 } else { 20.0 })
-                                .color(Color32::from_rgb(228, 220, 208)),
+                                .color(color::TEXT_HEADING),
                         );
                         // The long subtitle is a single non-wrapping line — on the
                         // phone it would distend the frame past the screen's right
@@ -83,7 +83,7 @@ impl App {
                                 egui::RichText::new(
                                     "Alexandre Francois's Resonate bank, streamed into our pitch spiral",
                                 )
-                                .color(Color32::from_rgb(152, 158, 165)),
+                                .color(color::TEXT_HINT),
                             );
                         }
                     });
@@ -93,8 +93,8 @@ impl App {
                             pill(
                                 ui,
                                 &format!("{} bins", reading.spectrum.len()),
-                                Color32::from_rgb(201, 195, 184),
-                                Color32::from_rgb(64, 68, 73),
+                                color::TEXT_BADGE,
+                                color::BADGE_FILL,
                             );
                         } else {
                             pill(
@@ -298,9 +298,9 @@ impl App {
         let reading_ref = reading.as_ref();
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -308,11 +308,11 @@ impl App {
                         ui.label(
                             egui::RichText::new("Resonator Bank")
                                 .size(20.0)
-                                .color(Color32::from_rgb(228, 220, 208)),
+                                .color(color::TEXT_HEADING),
                         );
                         ui.label(
                             egui::RichText::new("Continuous resonator state and current magnitudes")
-                                .color(Color32::from_rgb(152, 158, 165)),
+                                .color(color::TEXT_HINT),
                         );
                     });
 
@@ -321,8 +321,8 @@ impl App {
                             pill(
                                 ui,
                                 &format!("{} bins", reading.spectrum.len()),
-                                Color32::from_rgb(201, 195, 184),
-                                Color32::from_rgb(64, 68, 73),
+                                color::TEXT_BADGE,
+                                color::BADGE_FILL,
                             );
                         } else {
                             pill(
@@ -346,11 +346,11 @@ impl App {
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
-        painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_filled(rect, 18.0, color::PLOT_BG);
         painter.rect_stroke(
             rect,
             18.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+            Stroke::new(1.0_f32, color::PLOT_STROKE),
             egui::StrokeKind::Inside,
         );
 
@@ -359,14 +359,14 @@ impl App {
             egui::Align2::LEFT_TOP,
             "Bank waterfall + current frame",
             FontId::proportional(15.0),
-            Color32::from_rgb(201, 195, 184),
+            color::TEXT_BADGE,
         );
         painter.text(
             pos2(rect.right() - 14.0, rect.top() + 12.0),
             egui::Align2::RIGHT_TOP,
             "continuous resonator state, no FFT window grid",
             FontId::proportional(12.0),
-            Color32::from_rgb(152, 158, 165),
+            color::TEXT_HINT,
         );
 
         let content_top = rect.top() + 42.0;
@@ -389,7 +389,7 @@ impl App {
                 egui::Align2::CENTER_CENTER,
                 "The resonator bank starts filling as soon as audio reaches the input",
                 FontId::proportional(13.0),
-                Color32::from_rgb(139, 143, 149),
+                color::TEXT_HINT,
             );
             return;
         };
@@ -400,7 +400,7 @@ impl App {
                 egui::Align2::CENTER_CENTER,
                 "No resonator bins available for the current frame",
                 FontId::proportional(13.0),
-                Color32::from_rgb(139, 143, 149),
+                color::TEXT_HINT,
             );
             return;
         }
@@ -437,7 +437,7 @@ impl App {
             egui::Align2::LEFT_BOTTOM,
             "current resonator magnitudes",
             FontId::proportional(11.0),
-            Color32::from_rgb(152, 158, 165),
+            color::TEXT_HINT,
         );
     }
 
@@ -447,9 +447,9 @@ impl App {
         let reading_ref = reading.as_ref();
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -457,11 +457,11 @@ impl App {
                         ui.label(
                             egui::RichText::new("Resonator Waterfall")
                                 .size(20.0)
-                                .color(Color32::from_rgb(228, 220, 208)),
+                                .color(color::TEXT_HEADING),
                         );
                         ui.label(
                             egui::RichText::new("A full-screen spectrogram from the new resonator bank")
-                                .color(Color32::from_rgb(152, 158, 165)),
+                                .color(color::TEXT_HINT),
                         );
                     });
 
@@ -470,8 +470,8 @@ impl App {
                             pill(
                                 ui,
                                 &format!("{} frames", reading.waterfall.len()),
-                                Color32::from_rgb(201, 195, 184),
-                                Color32::from_rgb(64, 68, 73),
+                                color::TEXT_BADGE,
+                                color::BADGE_FILL,
                             );
                         } else {
                             pill(
@@ -499,7 +499,7 @@ impl App {
         painter.rect_stroke(
             rect,
             18.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+            Stroke::new(1.0_f32, color::PLOT_STROKE),
             egui::StrokeKind::Inside,
         );
 
@@ -509,7 +509,7 @@ impl App {
                 egui::Align2::CENTER_CENTER,
                 "Play audio to fill the resonator waterfall",
                 FontId::proportional(15.0),
-                Color32::from_rgb(139, 143, 149),
+                color::TEXT_HINT,
             );
             return;
         };
@@ -520,7 +520,7 @@ impl App {
                 egui::Align2::CENTER_CENTER,
                 "Waiting for the resonator bank to accumulate frames",
                 FontId::proportional(15.0),
-                Color32::from_rgb(139, 143, 149),
+                color::TEXT_HINT,
             );
             return;
         }
@@ -575,16 +575,8 @@ fn mobile_slider(
     body: impl FnOnce(&mut Ui, &mut bool) -> String,
 ) {
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(label)
-                .color(Color32::from_rgb(205, 194, 176))
-                .strong(),
-        );
+        ui.label(egui::RichText::new(label).color(color::TEXT_CAPTION).strong());
         let value = body(ui, changed);
-        ui.label(
-            egui::RichText::new(value)
-                .color(Color32::from_rgb(226, 216, 201))
-                .monospace(),
-        );
+        ui.label(egui::RichText::new(value).color(color::TEXT_VALUE).monospace());
     });
 }

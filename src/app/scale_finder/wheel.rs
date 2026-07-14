@@ -22,6 +22,7 @@ use crate::ui::snail::{
     pitch_class_angle,
     pitch_class_color,
 };
+use crate::ui::tokens::color;
 
 /// Кольцо КВИНТ (метод D): 12 нот в квинтовом порядке + стрелка к центру тяжести
 /// chroma. Длина стрелки = сила тонального центра, ближайшая нота = его тоника.
@@ -43,7 +44,7 @@ pub(super) fn draw_fifths_ring(
         egui::Align2::CENTER_TOP,
         "circle of fifths · center of effect",
         FontId::proportional(10.0),
-        Color32::from_rgb(150, 156, 164),
+        color::TEXT_HINT,
     );
 
     painter.circle_stroke(

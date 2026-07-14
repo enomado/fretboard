@@ -17,6 +17,7 @@ use super::{
     COLOR_SPIRAL,
 };
 use crate::core_types::scale_detect::MethodWeights;
+use crate::ui::tokens::color;
 
 impl App {
     /// Слайдеры прямо в панели (конфиг живёт с панелью — панель самодостаточна):
@@ -25,11 +26,7 @@ impl App {
     pub(super) fn draw_scale_finder_controls(&mut self, ui: &mut Ui, captured_secs: f32) {
         let config = &mut self.scale_finder;
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Method mix")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Method mix").color(color::TEXT_CAPTION).strong());
             weight_slider(ui, "notes", COLOR_SET, &mut config.weights.set);
             weight_slider(ui, "tonal", COLOR_PROFILE, &mut config.weights.profile);
             weight_slider(ui, "root", COLOR_ROOT, &mut config.weights.root);
@@ -41,11 +38,7 @@ impl App {
 
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Window")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.label(RichText::new("Window").color(color::TEXT_CAPTION).strong());
             // Окно интеграции В СЕКУНДАХ (решалка копит свой буфер по времени).
             // Логарифмический, чтобы и доли секунды, и 20 c были под рукой.
             ui.add_sized(
@@ -58,13 +51,13 @@ impl App {
             );
             ui.label(
                 RichText::new(format!("{:.1}s", config.window_seconds))
-                    .color(Color32::from_rgb(226, 216, 201))
+                    .color(color::TEXT_VALUE)
                     .monospace(),
             );
             // Сколько реально накоплено: окно наполняется с открытия панели.
             ui.label(
                 RichText::new(format!("· have {captured_secs:.1}s"))
-                    .color(Color32::from_rgb(150, 156, 164))
+                    .color(color::TEXT_HINT)
                     .size(12.0),
             );
         });
@@ -83,7 +76,7 @@ fn weight_slider(ui: &mut Ui, label: &str, color: Color32, value: &mut f32) {
     );
     ui.label(
         RichText::new(format!("{value:.2}"))
-            .color(Color32::from_rgb(226, 216, 201))
+            .color(color::TEXT_VALUE)
             .monospace(),
     );
 }

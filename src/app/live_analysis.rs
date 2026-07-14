@@ -37,7 +37,7 @@ use crate::ui::snail::{
     self,
     SpiralChart,
 };
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::tokens::color;
 use crate::ui::waterfall;
 
 impl App {
@@ -49,9 +49,9 @@ impl App {
         let selected_input_kind = self.selected_input_kind(selected_input_id.as_deref());
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -59,7 +59,7 @@ impl App {
                         ui.label(
                             egui::RichText::new("Input Scope")
                                 .size(20.0)
-                                .color(Color32::from_rgb(228, 220, 208)),
+                                .color(color::TEXT_HEADING),
                         );
                         ui.label(
                             egui::RichText::new(audio_status_label(&status, selected_input_kind))
@@ -71,8 +71,8 @@ impl App {
                         pill(
                             ui,
                             &format!("{} samples", waveform.len()),
-                            Color32::from_rgb(201, 195, 184),
-                            Color32::from_rgb(64, 68, 73),
+                            color::TEXT_BADGE,
+                            color::BADGE_FILL,
                         );
                     });
                 });
@@ -84,7 +84,7 @@ impl App {
                 ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new(input_source_debug_label(selected_input_id.as_deref()))
-                        .color(Color32::from_rgb(145, 151, 160))
+                        .color(color::TEXT_HINT)
                         .size(12.0)
                         .monospace(),
                 );
@@ -104,9 +104,9 @@ impl App {
         let target = tuner_targets.first();
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -114,7 +114,7 @@ impl App {
                         ui.label(
                             egui::RichText::new("Live analysis")
                                 .size(20.0)
-                                .color(Color32::from_rgb(228, 220, 208)),
+                                .color(color::TEXT_HEADING),
                         );
                         ui.label(
                             egui::RichText::new(audio_status_label(&status, selected_input_kind))
@@ -128,7 +128,7 @@ impl App {
                                 ui,
                                 &format!("clarity {:.2}", reading.clarity),
                                 Color32::from_rgb(206, 198, 183),
-                                Color32::from_rgb(64, 68, 73),
+                                color::BADGE_FILL,
                             );
                             ui.add_space(8.0);
                         }
@@ -159,11 +159,11 @@ impl App {
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
-        painter.rect_filled(rect, 14.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_filled(rect, 14.0, color::PLOT_BG);
         painter.rect_stroke(
             rect,
             14.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+            Stroke::new(1.0_f32, color::PLOT_STROKE),
             egui::StrokeKind::Inside,
         );
 
@@ -203,11 +203,11 @@ impl App {
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
-        painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_filled(rect, 18.0, color::PLOT_BG);
         painter.rect_stroke(
             rect,
             18.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+            Stroke::new(1.0_f32, color::PLOT_STROKE),
             egui::StrokeKind::Inside,
         );
 
@@ -216,14 +216,14 @@ impl App {
             egui::Align2::LEFT_TOP,
             "Raw waveform preview",
             FontId::proportional(15.0),
-            Color32::from_rgb(201, 195, 184),
+            color::TEXT_BADGE,
         );
         painter.text(
             pos2(rect.right() - 14.0, rect.top() + 12.0),
             egui::Align2::RIGHT_TOP,
             "recent mono samples after input gain",
             FontId::proportional(12.0),
-            Color32::from_rgb(152, 158, 165),
+            color::TEXT_HINT,
         );
 
         let plot_rect = Rect::from_min_max(
@@ -245,7 +245,7 @@ impl App {
                 egui::Align2::CENTER_CENTER,
                 "Waiting for input samples",
                 FontId::proportional(14.0),
-                Color32::from_rgb(139, 143, 149),
+                color::TEXT_HINT,
             );
             return;
         }
@@ -280,11 +280,11 @@ impl App {
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
-        painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_filled(rect, 18.0, color::PLOT_BG);
         painter.rect_stroke(
             rect,
             18.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+            Stroke::new(1.0_f32, color::PLOT_STROKE),
             egui::StrokeKind::Inside,
         );
 
@@ -359,7 +359,7 @@ impl App {
                     egui::Align2::CENTER_TOP,
                     waiting_prompt(input_kind),
                     FontId::proportional(13.0),
-                    Color32::from_rgb(139, 143, 149),
+                    color::TEXT_HINT,
                 );
             }
         }
@@ -375,11 +375,11 @@ impl App {
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
-        painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+        painter.rect_filled(rect, 18.0, color::PLOT_BG);
         painter.rect_stroke(
             rect,
             18.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+            Stroke::new(1.0_f32, color::PLOT_STROKE),
             egui::StrokeKind::Inside,
         );
 
@@ -388,7 +388,7 @@ impl App {
             egui::Align2::LEFT_TOP,
             "Spectrum + note waterfall",
             FontId::proportional(15.0),
-            Color32::from_rgb(201, 195, 184),
+            color::TEXT_BADGE,
         );
 
         if let Some(reading) = reading {
@@ -402,7 +402,7 @@ impl App {
                 egui::Align2::LEFT_TOP,
                 "Frequency waterfall",
                 FontId::proportional(11.0),
-                Color32::from_rgb(152, 158, 165),
+                color::TEXT_HINT,
             );
             waterfall::draw_waterfall(&painter, freq_rect, &reading.waterfall);
 
@@ -415,7 +415,7 @@ impl App {
                 egui::Align2::LEFT_TOP,
                 "Note waterfall",
                 FontId::proportional(11.0),
-                Color32::from_rgb(152, 158, 165),
+                color::TEXT_HINT,
             );
             waterfall::draw_note_waterfall(
                 &painter,
@@ -447,7 +447,7 @@ impl App {
                 egui::Align2::CENTER_CENTER,
                 "Waterfalls will appear when the tuner locks onto a note",
                 FontId::proportional(13.0),
-                Color32::from_rgb(139, 143, 149),
+                color::TEXT_HINT,
             );
         }
     }

@@ -25,6 +25,7 @@ use super::{
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::scale_detect::PITCH_CLASS_COUNT;
 use crate::ui::snail::pitch_class_color;
+use crate::ui::tokens::color;
 
 /// Правая колонка: вердикты трёх методов + слитый рейтинг с разбивкой по методам.
 pub(super) fn draw_method_panel(
@@ -112,7 +113,7 @@ pub(super) fn draw_method_panel(
         egui::Align2::LEFT_TOP,
         "Blended result — left edge marks the leading method",
         FontId::proportional(12.0),
-        Color32::from_rgb(150, 156, 164),
+        color::TEXT_HINT,
     );
     y += 18.0;
 
@@ -191,7 +192,7 @@ pub(super) fn draw_method_panel(
                 candidate.probability * 100.0
             ),
             FontId::proportional(12.0),
-            Color32::from_rgb(150, 156, 164),
+            color::TEXT_HINT,
         );
     }
 }

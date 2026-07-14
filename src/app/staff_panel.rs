@@ -49,10 +49,8 @@ use crate::ui::staff::{
     Clef,
     StaffGeom,
 };
-use crate::ui::theme::{
-    PANEL_FILL,
-    intonation_color,
-};
+use crate::ui::theme::intonation_color;
+use crate::ui::tokens::color;
 
 /// Input level (RMS-ish, 0..1) below this is treated as silence. The audio engine
 /// never declares silence on its own (`SILENCE_RMS_THRESHOLD == 0.0`), so without
@@ -234,9 +232,9 @@ impl App {
         self.staff.update(pitch, level, now, onset_seq);
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -244,11 +242,11 @@ impl App {
                         ui.label(
                             RichText::new("Violin Staff")
                                 .size(20.0)
-                                .color(Color32::from_rgb(228, 220, 208)),
+                                .color(color::TEXT_HEADING),
                         );
                         ui.label(
                             RichText::new("Play — your notes are written on the staff")
-                                .color(Color32::from_rgb(145, 151, 160))
+                                .color(color::TEXT_HINT)
                                 .size(12.0),
                         );
                     });
@@ -283,11 +281,7 @@ impl App {
                     // Both captions keep their smaller, dimmer secondary look; only the
                     // vertical band comes from `RowCaption`, so they line up with the
                     // pills instead of riding above them.
-                    ui.add(
-                        RowCaption::new("Clef")
-                            .font_size(12.0)
-                            .color(Color32::from_rgb(145, 151, 160)),
-                    );
+                    ui.add(RowCaption::new("Clef").font_size(12.0).color(color::TEXT_HINT));
                     // `selectable_value` drew a fill only when selected, leaving Bass and
                     // Tenor as bare text with no outline — the exact inconsistency the
                     // canonical pill exists to kill.
@@ -305,11 +299,7 @@ impl App {
                     // Key-signature picker — the circle of fifths. Selecting a key
                     // both draws its sharps/flats at the clef and re-spells the
                     // notes accordingly (see `KeySignature`).
-                    ui.add(
-                        RowCaption::new("Key")
-                            .font_size(12.0)
-                            .color(Color32::from_rgb(145, 151, 160)),
-                    );
+                    ui.add(RowCaption::new("Key").font_size(12.0).color(color::TEXT_HINT));
                     // The snug popup style these short rows need is baked into
                     // `PillCombo`, so it is no longer spelled out here.
                     PillCombo::new("staff_key_sig", key_label(self.staff.key)).show(ui, |ui| {

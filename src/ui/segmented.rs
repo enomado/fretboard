@@ -59,27 +59,24 @@ use eframe::egui::{
     vec2,
 };
 
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::tokens::{
+    color,
+    radius,
+    space,
+};
 
-/// Warm fill of a *selected* pill (the reference screenshot's brown).
-pub const PILL_ACCENT_FILL: Color32 = Color32::from_rgb(112, 86, 72);
-/// Light outline of a *selected* pill.
-pub const PILL_ACCENT_STROKE: Color32 = Color32::from_rgb(207, 187, 166);
-/// Dark fill of an *idle* (unselected) pill.
-pub const PILL_IDLE_FILL: Color32 = Color32::from_rgb(42, 46, 52);
-/// Muted outline of an *idle* pill.
-pub const PILL_IDLE_STROKE: Color32 = Color32::from_rgb(84, 89, 97);
-/// Default label colour on a pill (matches the app's warm off-white value text).
-pub const PILL_TEXT: Color32 = Color32::from_rgb(226, 216, 201);
-/// Colour of the caption that introduces a row of pills ("Source", "Root", …).
-pub const PILL_CAPTION: Color32 = Color32::from_rgb(205, 194, 176);
+// The pill's palette lives in `ui::tokens::color` (ACCENT_FILL / ACCENT_STROKE /
+// IDLE_FILL / IDLE_STROKE / TEXT_VALUE / TEXT_CAPTION). This module used to own
+// those constants and re-export them; that made two names for one value, which is
+// the very thing tokens exist to prevent. Callers take them from `tokens`.
 
 /// Fixed outer height of every pill. The whole point of the widget is that this
 /// is a hard number we centre text against, not something egui derives from font
-/// metrics per call site.
-const PILL_HEIGHT: f32 = 28.0;
+/// metrics per call site. Shared with captions/combos via the token so a row's
+/// controls cannot end up on different bands.
+const PILL_HEIGHT: f32 = space::ROW_H;
 /// Corner radius — the canonical value from the screenshot (others had drifted).
-const PILL_RADIUS: u8 = 14;
+const PILL_RADIUS: u8 = radius::PILL;
 /// Horizontal breathing room on each side of the label when the pill is sized to
 /// its text (i.e. when `min_width` does not dominate).
 const H_PAD: f32 = 14.0;
@@ -118,15 +115,15 @@ impl<'a> SegmentedButton<'a> {
     /// dark idle look. This is THE constructor for enum / binary selectors.
     pub fn new(text: &'a str, selected: bool) -> Self {
         let (fill, stroke) = if selected {
-            (PILL_ACCENT_FILL, PILL_ACCENT_STROKE)
+            (color::ACCENT_FILL, color::ACCENT_STROKE)
         } else {
-            (PILL_IDLE_FILL, PILL_IDLE_STROKE)
+            (color::IDLE_FILL, color::IDLE_STROKE)
         };
         Self {
             text,
             fill,
             stroke,
-            text_color: PILL_TEXT,
+            text_color: color::TEXT_VALUE,
             min_width: 0.0,
             font_size: DEFAULT_FONT_SIZE,
             text_dy: 0.0,
@@ -140,9 +137,9 @@ impl<'a> SegmentedButton<'a> {
     pub fn action(text: &'a str) -> Self {
         Self {
             text,
-            fill: PILL_IDLE_FILL,
-            stroke: PILL_IDLE_STROKE,
-            text_color: PILL_TEXT,
+            fill: color::IDLE_FILL,
+            stroke: color::IDLE_STROKE,
+            text_color: color::TEXT_VALUE,
             min_width: 0.0,
             font_size: DEFAULT_FONT_SIZE,
             text_dy: 0.0,
@@ -156,7 +153,7 @@ impl<'a> SegmentedButton<'a> {
             text,
             fill,
             stroke,
-            text_color: PILL_TEXT,
+            text_color: color::TEXT_VALUE,
             min_width: 0.0,
             font_size: DEFAULT_FONT_SIZE,
             text_dy: 0.0,
@@ -169,7 +166,7 @@ impl<'a> SegmentedButton<'a> {
         self
     }
 
-    /// Override the label colour (default [`PILL_TEXT`]).
+    /// Override the label colour (default [`color::TEXT_VALUE`]).
     pub fn text_color(mut self, c: Color32) -> Self {
         self.text_color = c;
         self
@@ -202,7 +199,7 @@ impl Widget for SegmentedButton<'_> {
         let text_color = if enabled {
             self.text_color
         } else {
-            lerp_rgb(self.text_color, PANEL_FILL, DISABLED_FADE)
+            lerp_rgb(self.text_color, color::PANEL_FILL, DISABLED_FADE)
         };
         let galley = ui
             .painter()
@@ -216,8 +213,8 @@ impl Widget for SegmentedButton<'_> {
             let hovered = enabled && response.hovered();
             let (fill, stroke) = if !enabled {
                 (
-                    lerp_rgb(self.fill, PANEL_FILL, DISABLED_FADE),
-                    lerp_rgb(self.stroke, PANEL_FILL, DISABLED_FADE),
+                    lerp_rgb(self.fill, color::PANEL_FILL, DISABLED_FADE),
+                    lerp_rgb(self.stroke, color::PANEL_FILL, DISABLED_FADE),
                 )
             } else if hovered {
                 (
@@ -270,12 +267,12 @@ impl<'a> RowCaption<'a> {
     pub fn new(text: &'a str) -> Self {
         Self {
             text,
-            color: PILL_CAPTION,
+            color: color::TEXT_CAPTION,
             font_size: DEFAULT_FONT_SIZE,
         }
     }
 
-    /// Override the caption colour (default [`PILL_CAPTION`]).
+    /// Override the caption colour (default [`color::TEXT_CAPTION`]).
     pub fn color(mut self, color: Color32) -> Self {
         self.color = color;
         self
@@ -373,9 +370,9 @@ impl<'a> PillCombo<'a> {
         let font_id = FontId::proportional(self.font_size);
         let enabled = ui.is_enabled();
         let text_color = if enabled {
-            PILL_TEXT
+            color::TEXT_VALUE
         } else {
-            lerp_rgb(PILL_TEXT, PANEL_FILL, DISABLED_FADE)
+            lerp_rgb(color::TEXT_VALUE, color::PANEL_FILL, DISABLED_FADE)
         };
 
         // Laid out unwrapped so a long selection widens the pill rather than
@@ -387,8 +384,7 @@ impl<'a> PillCombo<'a> {
         let band_mid = ink_band_mid(ui, &font_id);
 
         let min_width = self.min_width.unwrap_or_else(|| ui.spacing().combo_width);
-        let width =
-            (galley.size().x + 2.0 * H_PAD + CARET_GAP + CARET_BOX).max(min_width);
+        let width = (galley.size().x + 2.0 * H_PAD + CARET_GAP + CARET_BOX).max(min_width);
 
         // `allocate_space` hands back an auto id we deliberately drop: the popup's
         // open-state must survive across frames under a *stable* id, so the button
@@ -406,16 +402,16 @@ impl<'a> PillCombo<'a> {
             let lit = enabled && (response.hovered() || is_open);
             let (fill, stroke) = if !enabled {
                 (
-                    lerp_rgb(PILL_IDLE_FILL, PANEL_FILL, DISABLED_FADE),
-                    lerp_rgb(PILL_IDLE_STROKE, PANEL_FILL, DISABLED_FADE),
+                    lerp_rgb(color::IDLE_FILL, color::PANEL_FILL, DISABLED_FADE),
+                    lerp_rgb(color::IDLE_STROKE, color::PANEL_FILL, DISABLED_FADE),
                 )
             } else if lit {
                 (
-                    lerp_rgb(PILL_IDLE_FILL, Color32::WHITE, HOVER_LIGHTEN),
-                    lerp_rgb(PILL_IDLE_STROKE, Color32::WHITE, HOVER_LIGHTEN),
+                    lerp_rgb(color::IDLE_FILL, Color32::WHITE, HOVER_LIGHTEN),
+                    lerp_rgb(color::IDLE_STROKE, Color32::WHITE, HOVER_LIGHTEN),
                 )
             } else {
-                (PILL_IDLE_FILL, PILL_IDLE_STROKE)
+                (color::IDLE_FILL, color::IDLE_STROKE)
             };
 
             let radius = CornerRadius::same(PILL_RADIUS);
@@ -472,9 +468,7 @@ impl<'a> PillCombo<'a> {
                 // labels absurdly early, so let them set the width instead.
                 style.wrap_mode = Some(TextWrapMode::Extend);
 
-                ScrollArea::vertical()
-                    .max_height(popup_height)
-                    .show(ui, contents);
+                ScrollArea::vertical().max_height(popup_height).show(ui, contents);
             });
 
         response

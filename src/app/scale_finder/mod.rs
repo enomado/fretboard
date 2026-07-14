@@ -73,7 +73,7 @@ use crate::core_types::scale_detect::{
     mean_chroma,
     softmax_with_temperature,
 };
-use crate::ui::theme::PANEL_FILL;
+use crate::ui::tokens::color;
 
 const SOFTMAX_TEMPERATURE: f32 = 0.06;
 const RANKING_ROWS: usize = 5;
@@ -230,9 +230,9 @@ impl App {
         let selected_kind = self.scale_kind;
 
         Frame::new()
-            .fill(PANEL_FILL)
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(22))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(61, 66, 74)))
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -240,11 +240,11 @@ impl App {
                         ui.label(
                             RichText::new("Scale finder")
                                 .size(20.0)
-                                .color(Color32::from_rgb(228, 220, 208)),
+                                .color(color::TEXT_HEADING),
                         );
                         ui.label(
                             RichText::new("4 methods on the snail: notes · tonal · root · spiral")
-                                .color(Color32::from_rgb(152, 158, 165)),
+                                .color(color::TEXT_HINT),
                         );
                     });
 
@@ -259,7 +259,7 @@ impl App {
                                         top.label(settings.accidental)
                                     ),
                                     Color32::from_rgb(214, 206, 192),
-                                    Color32::from_rgb(64, 68, 73),
+                                    color::BADGE_FILL,
                                 )
                             }
                             None => {
@@ -305,11 +305,11 @@ fn draw_scale_finder_body(
     let (rect, _) = ui.allocate_exact_size(desired, Sense::hover());
     let painter = ui.painter_at(rect);
 
-    painter.rect_filled(rect, 18.0, Color32::from_rgb(29, 32, 37));
+    painter.rect_filled(rect, 18.0, color::PLOT_BG);
     painter.rect_stroke(
         rect,
         18.0,
-        Stroke::new(1.0_f32, Color32::from_rgb(72, 76, 82)),
+        Stroke::new(1.0_f32, color::PLOT_STROKE),
         egui::StrokeKind::Inside,
     );
 
@@ -319,7 +319,7 @@ fn draw_scale_finder_body(
             egui::Align2::CENTER_CENTER,
             "Play a sustained phrase — the snail will rank key, scale and mode",
             FontId::proportional(13.0),
-            Color32::from_rgb(139, 143, 149),
+            color::TEXT_HINT,
         );
         return;
     };
