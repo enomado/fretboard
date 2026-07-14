@@ -687,6 +687,83 @@ Two knowing cosmetic deltas are listed in the commit message (cell width reads
 `px_per_second` directly; note names are drawn after all the heads, so the header row
 stays readable where a high head reaches into it). Tests 112 → 116.
 
+### Phase 1.11 — SWIPE′ salience: the octave decision by construction  ⬜ DESIGNED, NOT BUILT
+Design: [`swipe_salience_design.md`](swipe_salience_design.md). Triggered by a live
+report — **on the G string, bow strokes throw the pitch to the phantom octave**.
+
+**The literature describes our bug literally, and on our frequencies.** Camacho's SWIPE
+thesis enumerates three scorings (Fig. 3-13): positive lobes only → *"peaks at sub and
+supraharmonics"*; add negative valleys → the supraharmonic peak *"has disappeared"*; add
+first-and-prime harmonics → *"a major peak only at the fundamental"*.
+`analysis_math::resonator_fundamental` is **panel C** — a reward-only comb
+(`score += column[b+offset(h)]/h`) that cannot subtract, so it has no way to punish 2·f0.
+The phantom octave is the supraharmonic peak, by construction.
+
+**And SWIPE was designed on our exact signal.** Its worked example for choosing the
+spectral warping is a spectrum with *"a missing fundamental and a salient second
+harmonic"* — fundamental at **190 Hz**, 2nd harmonic at **380 Hz**. The violin G is
+196/392: the instrument barely radiates its own open-G fundamental. For candidate G4=392,
+G3's *odd* harmonics (588, 980) land exactly in the kernel's negative valleys and cancel
+it; for candidate G3=196 every harmonic lands in a positive lobe **even when the 196 bin
+is empty**. Score comes from the harmonics, not the fundamental's own bin.
+
+**`FUNDAMENTAL_FLOOR = 0.18` is a crutch for the missing valleys, and it is what kills the
+G string.** Its comment says its job is blocking the sub-octave — which a reward-only comb
+needs, and which primes do properly. It is a hard cliff sitting exactly where a weak
+fundamental lives.
+
+**Second root cause — why nothing catches it, and it is the "просто от bow strokes" in the
+report.** `OnsetDetector` fires on every bow stroke *by design* (its doc: a re-articulated
+note "dips below the baseline and re-arms, so its second attack fires too" — the staff
+needs that). But `pyin::process` on an onset frame weights the bank at
+`ATTACK_BANK_WEIGHT = 2.0` **and drops the trellis** (`initialized = false`), so the frame
+is decided by emissions alone and the bank beats YIN's `p = 1.000`. **On a bow stroke pYIN
+outputs the bank's pitch.** The anchor then *agrees* with the bank's phantom octave, so
+`snap_to_anchor_octave` snaps to it, `octave_dispute` never counts, and `OctaveGate`'s
+median follows. Every layer built to catch the bank's octave error is fed by that error on
+exactly the frames where it fires.
+
+The docs say the opposite, confidently: `melody.rs` "provably contributes nothing"; this
+plan "harmless", "inert", "dead weight". That was measured for `BANK_WEIGHT` with the
+trellis **intact**; `ATTACK_BANK_WEIGHT` with the trellis **dropped** is a different
+regime and the measurement does not transfer. Phases 1.4–1.6's own trap in miniature — a
+number verified in one condition, restated as a property. **Kill the fusion first**: it is
+independent of the salience work, cheap, and an anchor that echoes the bank is not
+evidence no matter how good the bank gets.
+
+**Found on the way: a display slider steers the octave decision.** `normalize_bars(…,
+settings.gamma)` at `resonator.rs:337` feeds `resonator_fundamental` at `:338`, and
+`gamma` is the waterfall-contrast slider (`controls.rs:763`, `0.15..=2.4`). Same disease
+as 1.9's silence gate sharing the UI meter's smoothing: a UI filter steering DSP. Third
+instance of "a number verified once, then trusted forever" in this phase alone.
+
+**Why it fits here rather than fighting the app.** On a log-frequency grid the SWIPE′
+kernel depends only on `f'/f`, so it is **one fixed vector** and the whole salience curve
+is a single cross-correlation with the √-warped column. The harmonic set falls out of the
+grid resolution (`{1} ∪ primes ≤ 13` at 8 bins/semitone) instead of being picked. And the
+bank already is the per-candidate filter SWIPE fakes with pitch-dependent windows.
+
+**What it deletes** (by construction, not tuning): `FUNDAMENTAL_FLOOR`,
+`RESONATOR_HARMONICS`, the `1/h` weighting (the thesis tested `p ∈ {1/2,1,2}` and rejected
+our `p=1`), the detector's use of `gamma`/`power` — and then, pending verification, the
+whole repair layer above it: `snap_to_anchor_octave`, `YIN_OCTAVE_CONFIDENCE`,
+`OCTAVE_AGREE_SEMITONES`, `LEAP_CONFIRM_FRAMES`, `OctaveGate`. ~7 hand-picked constants,
+and the melody path's dependency on the slow pYIN anchor. The thesis's own claim:
+*"there are no free parameters in SWIPE and SWIPE′, at least in terms of 'magic numbers'"*,
+and SWIPE′ *"outperform[ed] all the algorithms on all the databases"* (12 competitors,
+speech + musical instruments).
+
+**This one does not have to join 1.8–1.10 in the unverified pile.** The defect is
+offline-reproducible: a synthetic violin-G column (`[0.08, 1.0, 0.7, 0.5, …]`) must decide
+G3, and today's code cannot pass — at 0.08 the fundamental never even becomes a candidate.
+Sweeping the fundamental to *exactly zero* and asserting the decision holds is the "by
+construction" claim made falsifiable. Full checklist in the design, §7.
+
+**Biggest risk, decide before cutting** (design §4.3, §8): the reassigned column is spiky
+where SWIPE expects a dense √-spectrum. The valleys should still collect the odd
+harmonics — that is where the reassigned spikes are — but measure it on a real column
+before building the rest.
+
 ### Phase 2 — Target / call-and-response mode  ⬜ NOT STARTED
 Show a **target** (a single note, then a short phrase/scale) the user must play;
 score hit/miss on pitch and grade the intonation. This turns the mirror into a
