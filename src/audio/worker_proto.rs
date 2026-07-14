@@ -8,6 +8,7 @@
 use crate::audio::types::{
     AnalysisSettings,
     AudioStatus,
+    MelodyFrame,
     ResonatorReading,
     TunerReading,
 };
@@ -44,6 +45,17 @@ pub(crate) struct WorkerSnapshot {
     pub(crate) resonator: Option<ResonatorReading>,
     pub(crate) level:     f32,
     pub(crate) waveform:  Vec<f32>,
+    /// The melody frames published since the **previous** snapshot — a delta, not a
+    /// history.
+    ///
+    /// The main thread cannot read the worker's ring (no shared memory), so the ring
+    /// is rebuilt up there from these. A delta rather than the whole thing because
+    /// that is the entire cost argument: the history is ~600 columns × ~480 bins, so
+    /// shipping it every publish would be ~70 MB/s, while the frames actually new
+    /// since the last post are 0–5 columns — three orders of magnitude less. No
+    /// acknowledgement is needed to make that safe: `postMessage` delivers in order,
+    /// so "since the last post" is unambiguous on both ends.
+    pub(crate) melody:    Vec<MelodyFrame>,
 }
 
 pub(crate) fn encode<T: serde::Serialize>(value: &T) -> Vec<u8> {

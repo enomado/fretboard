@@ -40,6 +40,8 @@ use crate::audio::types::{
     AudioInputOption,
     AudioStatus,
     DroneState,
+    MelodyFrame,
+    MelodyHistory,
     ResonatorReading,
     TunerReading,
 };
@@ -81,6 +83,12 @@ struct Latest {
     resonator: Option<ResonatorReading>,
     level:     f32,
     waveform:  Vec<f32>,
+    /// The melody line's history, rebuilt on this side from the deltas each snapshot
+    /// carries. Everything else in `Latest` is *replaced* by each snapshot; this one
+    /// accumulates, because it is a history and the worker only ever sends what is
+    /// new. Same [`MelodyHistory`] rules as the worker's own ring, so the two agree on
+    /// what is kept and for how long.
+    melody:    MelodyHistory,
 }
 
 /// Live capture objects. Dropping this stops the tracks, closes the context, and
@@ -151,6 +159,12 @@ impl AudioEngine {
                     latest.resonator = snapshot.resonator;
                     latest.level = snapshot.level;
                     latest.waveform = snapshot.waveform;
+                    // Accumulated, not replaced like everything else here: the worker
+                    // only ever sends what is new (`WorkerSnapshot::melody`), so this
+                    // side is where the history is rebuilt.
+                    for frame in snapshot.melody {
+                        latest.melody.push(frame);
+                    }
                 }
             });
         if let Some(worker) = worker.as_ref() {
@@ -189,6 +203,12 @@ impl AudioEngine {
 
     pub fn resonator_reading(&self) -> Option<ResonatorReading> {
         self.inner.latest.borrow().resonator.clone()
+    }
+
+    /// The melody line's recent history — the same contract as native's, served from
+    /// the ring the worker's deltas have been feeding. See [`MelodyFrame`].
+    pub fn melody_since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
+        self.inner.latest.borrow().melody.since(after)
     }
 
     pub fn analysis_settings(&self) -> AnalysisSettings {

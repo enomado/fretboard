@@ -49,6 +49,8 @@ use crate::audio::dsp::spectrum::spectrum_bars_for_window;
 use crate::audio::types::{
     AnalysisSettings,
     AudioStatus,
+    MelodyFrame,
+    MelodyHistory,
     NoteLine,
     TunerReading,
 };
@@ -128,6 +130,22 @@ pub(crate) struct SharedState {
     /// Here rather than only on the reading because the two planes run at different
     /// cadences on different threads — the same reason [`Self::octave_anchor`] is.
     pub(crate) onset_seq:           u64,
+    /// Every bank frame of the melody line, for the panels that draw its *history*
+    /// rather than its instant — read with [`SharedState::melody_since`].
+    ///
+    /// It exists because a panel sampling `melody_pitch` once per UI frame does not
+    /// see the melody: the bank publishes at ~62 Hz, so a 60 fps panel silently drops
+    /// a few percent of its frames and a 30 fps one drops **half**. The trills and
+    /// vibrato that are the whole point of the fast path were being decimated by the
+    /// renderer's clock. Same rule as `dsp::melody` and `dsp::segmenter` (see
+    /// `note_detection.md` §4), one layer further out: what the audio produced is not
+    /// the UI's to sample.
+    pub(crate) melody_history:      MelodyHistory,
+    /// Next [`MelodyFrame::seq`]. Monotonic for the life of the engine, and NOT
+    /// cleared by [`Self::reset`] — see the field's docs: it answers a delivery
+    /// question, and a consumer's cursor outlives any one stream. `MelodyFrame::t` is
+    /// the one that restarts, because it is about the audio.
+    pub(crate) melody_seq:          u64,
     pub(crate) smoothed_frequency:  Option<f32>,
 }
 
@@ -150,8 +168,16 @@ impl SharedState {
             segmenter:           NoteSegmenter::default(),
             note_line:           NoteLine::default(),
             onset_seq:           0,
+            melody_history:      MelodyHistory::default(),
+            melody_seq:          0,
             smoothed_frequency:  None,
         }
+    }
+
+    /// The melody line's frames newer than `after`, oldest → newest — see
+    /// [`MelodyHistory::since`] for why this is a cursor rather than a drain.
+    pub(crate) fn melody_since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
+        self.melody_history.since(after)
     }
 
     /// Drop all accumulated analysis and mark the engine as actively listening.
@@ -173,6 +199,12 @@ impl SharedState {
         self.segmenter = NoteSegmenter::default();
         self.note_line = NoteLine::default();
         self.onset_seq = 0;
+        // The frames go: they were heard through the previous device, and the new
+        // stream's sample clock starts over, so keeping them would splice two
+        // unrelated moments together. `melody_seq` deliberately does NOT go with
+        // them — a panel's cursor survives the switch, and rewinding the counter
+        // would make every frame of the new stream look already-seen to it.
+        self.melody_history.clear();
         self.smoothed_frequency = None;
         self.status = AudioStatus::Listening;
     }
@@ -309,6 +341,10 @@ impl ResonatorPipeline {
             state.melody_pitch = None;
             state.segmenter = NoteSegmenter::default();
             state.note_line = NoteLine::default();
+            // The heat columns in the history are the old grid's: a different length,
+            // and a different bin→pitch mapping. A panel drawing them against the new
+            // grid's `min_midi..max_midi` would paint them at the wrong pitch.
+            state.melody_history.clear();
             let resonator_labels = state.resonator_labels.clone();
             if let Some(reading) = state.reading.as_mut() {
                 reading.resonator_spectrum.clear();
@@ -604,6 +640,19 @@ fn publish_resonator_snapshot(
             .segmenter
             .update(melody_pitch.map(|(midi, _)| midi), onset_seq, now_seconds);
         state.note_line = note_line.clone();
+        // Everything this frame decided, kept as one record for the panels that draw a
+        // history. Stamped with the SAMPLE clock — the same `now_seconds` the segmenter
+        // just measured the note with, so the line a panel plots and the notes the
+        // engine wrote are on one ruler. See `MelodyFrame::t` for why not `seq`.
+        let seq = state.melody_seq;
+        state.melody_seq += 1;
+        state.melody_history.push(MelodyFrame {
+            seq,
+            t: now_seconds,
+            pitch: melody_pitch.map(|(midi, _)| midi),
+            level,
+            heat: resonator_spectrum.clone(),
+        });
         push_limited_history(
             &mut state.resonator_waterfall,
             resonator_spectrum.clone(),
@@ -698,6 +747,10 @@ mod tests {
             }
         }
 
+        fn melody_since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
+            self.shared.lock().unwrap().melody_since(after)
+        }
+
         fn note_line(&self) -> NoteLine {
             self.shared
                 .lock()
@@ -749,6 +802,76 @@ mod tests {
             line.history.iter().any(|n| n.midi == 69),
             "A4 should have been written to the line; history = {:?}",
             line.history
+        );
+    }
+
+    /// REGRESSION: the melody history is published on the **audio** clock, and a
+    /// consumer's cursor hands it over exactly once, in order.
+    ///
+    /// This is the wiring the panels' history now rests on, and like every other
+    /// `core::*` test here it exists because the DSP suite cannot see it: the frames
+    /// are stamped in `publish_resonator_snapshot` from the resonator pipeline's
+    /// sample count, delivered through `SharedState`, and read by a cursor the panel
+    /// owns. Nothing below this level touches any of that.
+    ///
+    /// What it pins, and why each one is a mistake somebody could actually make:
+    /// - **`t` rides the sample clock, not the wall clock.** The publish is *gated* on
+    ///   the wall clock, so frames land ~`update_ms` apart with real jitter; if `t`
+    ///   were read off `Instant` (or inferred from `seq`), the axis would be wrong in
+    ///   a way no unit test of the ring could see.
+    /// - **Each frame is handed out once.** A cursor that mis-compares would either
+    ///   replay frames (the roll would stutter and double its trill) or skip them.
+    /// - **Two cursors are independent.** The staff's trail is the next consumer, and
+    ///   a *drain* would have it steal frames from the roll.
+    #[test]
+    fn the_melody_history_is_published_on_the_audio_clock() {
+        let sr = 48_000.0f32;
+        let mut rig = Rig::new(sr);
+        rig.feed(&violin_tone(440.0, sr, (sr * 0.5) as usize), sr);
+
+        let all = rig.melody_since(None);
+        assert!(
+            all.len() >= 20,
+            "0.5 s at the bank's ~16 ms cadence should be ~30 frames, got {}",
+            all.len()
+        );
+
+        // Ordered, unique, and strictly advancing in time — the ring's invariant, seen
+        // from outside, through the real pipeline rather than a hand-built ring.
+        assert!(
+            all.windows(2).all(|w| w[1].seq > w[0].seq && w[1].t > w[0].t),
+            "history must be strictly increasing in both seq and t"
+        );
+
+        // The audio clock is the ruler: 0.5 s of samples must read as ~0.5 s of `t`,
+        // regardless of how the worker's wall-clock gate happened to space the
+        // publishes. Loose bounds — the point is that it tracks the audio at all, not
+        // that it is exact to the frame.
+        let played = all.last().unwrap().t - all.first().unwrap().t;
+        assert!(
+            (0.35..=0.5).contains(&played),
+            "0.5 s of audio produced {played:.3} s of history — `t` is not on the \
+             sample clock"
+        );
+
+        // A cursor hands each frame over exactly once…
+        let cursor = all[all.len() / 2].seq;
+        let rest = rig.melody_since(Some(cursor));
+        assert!(
+            rest.iter().all(|f| f.seq > cursor),
+            "melody_since handed back a frame the caller already had"
+        );
+        assert_eq!(
+            rest.len(),
+            all.iter().filter(|f| f.seq > cursor).count(),
+            "melody_since skipped frames past the cursor"
+        );
+        // …and reading with one cursor must not consume the history for another: this
+        // is a cursor, not a drain, precisely so a second panel can exist.
+        assert_eq!(
+            rig.melody_since(None).len(),
+            all.len(),
+            "reading with one cursor emptied the history for everyone else"
         );
     }
 

@@ -5,11 +5,18 @@
 //! staff panel it does not quantise into written noteheads — it just mirrors the
 //! raw pitch line, so glide, vibrato and intonation drift are visible directly.
 //!
-//! State (the rolling pitch samples + the eased view window) lives in
-//! [`PitchRoll`], held on `App`. The stateless grid/graph drawing lives in
-//! [`crate::ui::pianoroll`]; this module owns only the capture + auto-framing.
-
-use std::collections::VecDeque;
+//! State (the drained bank frames + the eased view window) lives in [`PitchRoll`],
+//! held on `App`. The stateless grid/graph drawing lives in
+//! [`crate::ui::pianoroll`]; this module owns only the history + auto-framing.
+//!
+//! **The history is the engine's, drained by cursor — not sampled per UI frame.**
+//! The panel used to push one `melody_pitch` reading per repaint into a 600-slot
+//! ring, which made the x axis a count of *renderer ticks*: its own comment admitted
+//! "~10 s at 60 fps, ~20 s at 30 fps". Worse than the wrong ruler, it was the wrong
+//! data — the bank publishes at ~62 Hz, so a 60 fps panel dropped a few percent of
+//! its frames and a 30 fps one dropped half, decimating the very trills and vibrato
+//! the fast path exists to show. Now every frame the engine published is drawn, at
+//! the audio time it was played (`MelodyFrame::t`).
 
 use eframe::egui::{
     CornerRadius,
@@ -23,9 +30,14 @@ use eframe::egui::{
 };
 
 use super::App;
+use crate::audio::{
+    MelodyFrame,
+    MelodyHistory,
+};
 use crate::ui::pianoroll::{
     self,
     PitchPoint,
+    RollColumn,
 };
 use crate::ui::tokens::color;
 
@@ -45,9 +57,14 @@ use crate::ui::tokens::color;
 /// ground truth a slip is supposed to be visible against. Blanking it there would hide
 /// the evidence the layer exists to show.
 const HEAT_LEVEL_GATE: f32 = 0.02;
-/// How many frames of pitch to keep — the graph fills the plot width with these,
-/// so this is also the visible time span (~10 s at 60 fps, ~20 s at 30 fps).
-const HISTORY_FRAMES: usize = 600;
+/// How much of the past the roll keeps, **in seconds of played audio** — exactly what
+/// the plot shows, read from the renderer so there is one number and not two.
+///
+/// It replaces a count of 600 UI frames, which was a span of seconds only if you knew
+/// the frame rate and it never changed ("~10 s at 60 fps, ~20 s at 30 fps"). Enforced
+/// against [`MelodyFrame::t`], so 30 fps, 60 fps and a stuttering frame all hold the
+/// same ten seconds.
+const VISIBLE_SECONDS: f64 = pianoroll::VISIBLE_SECONDS as f64;
 /// Padding (semitones) kept above/below the played range so the line never rides
 /// the very edge of the view.
 const VIEW_PAD: f32 = 2.5;
@@ -58,8 +75,13 @@ const MIN_SPAN: f32 = 14.0;
 /// glide rather than jump when the played range changes.
 const VIEW_EASE: f32 = 0.08;
 
-/// Frames of *recent* pitch the framing looks at — a fraction of `HISTORY_FRAMES`
-/// on purpose (~3 s at 60 fps against the buffer's ~10 s).
+/// Frames of *recent* pitch the framing looks at — a fraction of the visible span on
+/// purpose (~2.9 s at the bank's default 16 ms cadence, against the view's 10 s).
+///
+/// Bank frames, so unlike the old buffer this is stable against the frame rate; it is
+/// still a *count* rather than a duration, which is tolerable only because it decides
+/// nothing musical — it is how much recent pitch the view is framed on, and the view
+/// is allowed to be a little tighter or looser when the user retunes the cadence.
 ///
 /// Framing on the whole waterfall means a phrase played fifteen seconds ago still
 /// stretches the view, so the window only ever grows over a session: play low, then
@@ -87,13 +109,23 @@ const VIEW_SHRINK_SLACK: f32 = 3.0;
 
 /// Live pitch-roll state for the panel.
 pub struct PitchRoll {
-    /// Per-frame melody-line pitch (fused pYIN), oldest → newest, *after* spike
-    /// rejection. `None` = a silent frame or a rejected octave glitch (a gap).
-    samples: VecDeque<Option<PitchPoint>>,
-    /// Per-frame resonator column aligned 1:1 with `samples` (same index = same
-    /// instant), oldest → newest. An *empty* `Vec` marks a silent frame. This is
-    /// the spectral-heat ground truth; unlike the line it makes no octave decision.
-    heat:    VecDeque<Vec<f32>>,
+    /// The bank frames on screen, oldest → newest, trimmed to [`VISIBLE_SECONDS`] of
+    /// **played** time. Every frame the engine published while this panel was open —
+    /// none dropped, none doubled, whatever the frame rate did.
+    ///
+    /// The line and the heat live in the same record, so the two layers cannot fall
+    /// out of step: the heat is the ground truth the line is judged against, and it
+    /// can only do that job if it is the *same instant*.
+    ///
+    /// The engine's own [`MelodyHistory`], just held longer — the ring's rules
+    /// (ordered, unique, self-healing when the sample clock restarts) are the same
+    /// rules here, and a second hand-rolled `VecDeque` is exactly how one of them
+    /// would come to be implemented only in the other place.
+    frames:  MelodyHistory,
+    /// How far the panel has read the engine's history — the `seq` of the last frame
+    /// taken. The cursor is ours, not the engine's, so the staff can hold its own and
+    /// read the same frames (see `AudioEngine::melody_since`).
+    cursor:  Option<u64>,
     /// Eased fractional-MIDI window shown on screen (`view_lo` bottom, `view_hi`
     /// top). Auto-frames the graph on the played range without per-frame jumps.
     view_lo: f32,
@@ -105,8 +137,8 @@ impl Default for PitchRoll {
         // Default window ≈ violin open strings (G3=55 .. E5=76) with headroom, so
         // the panel looks sensible before the first note eases it to real data.
         Self {
-            samples: VecDeque::with_capacity(HISTORY_FRAMES),
-            heat:    VecDeque::with_capacity(HISTORY_FRAMES),
+            frames:  MelodyHistory::with_retention(VISIBLE_SECONDS),
+            cursor:  None,
             view_lo: 53.0,
             view_hi: 79.0,
         }
@@ -114,23 +146,29 @@ impl Default for PitchRoll {
 }
 
 impl PitchRoll {
-    /// Feed one UI frame. `pitch` is the melody-line pitch `Some(fractional_midi)`,
-    /// `None` for silence *or* a rejected octave slip — both already decided upstream
-    /// in `audio::dsp::melody`, which is the only place the octave is judged. `level`
-    /// fades the line; `heat_col` is this frame's resonator column (empty = silent →
-    /// a gap in the heat), passed through untouched as the spectral ground truth,
-    /// since it makes no octave decision of its own.
-    pub fn update(&mut self, pitch: Option<f32>, level: f32, heat_col: Vec<f32>) {
-        let accepted = pitch.map(|midi_f| PitchPoint { midi_f, level });
-        self.samples.push_back(accepted);
-        self.heat.push_back(heat_col);
-        while self.samples.len() > HISTORY_FRAMES {
-            self.samples.pop_front();
-        }
-        while self.heat.len() > HISTORY_FRAMES {
-            self.heat.pop_front();
+    /// Take everything the engine has published since the last read.
+    ///
+    /// `fresh` is oldest → newest and may be empty (the UI outruns the bank about
+    /// as often as not), one frame, or several (a stutter, or wasm's snapshots
+    /// arriving per ~85 ms sample block). All three are ordinary: the panel's history
+    /// is paced by the audio, and the repaint that drains it only decides *when* the
+    /// frames are collected, never how many there are.
+    pub fn update(&mut self, fresh: Vec<MelodyFrame>) {
+        let Some(last_seq) = fresh.last().map(|f| f.seq) else {
+            return; // nothing new — hold the view rather than let it drift
+        };
+        self.cursor = Some(last_seq);
+        // The ring does the trimming and the stream-restart healing (both are about
+        // `t`, and both are its rules, not the panel's).
+        for frame in fresh {
+            self.frames.push(frame);
         }
         self.reframe();
+    }
+
+    /// The newest frame's timestamp — the playhead, in audio time.
+    fn now(&self) -> Option<f64> {
+        self.frames.newest().map(|f| f.t)
     }
 
     /// Ease the view window toward what is being played *now*.
@@ -147,13 +185,12 @@ impl PitchRoll {
     /// is playing.
     fn reframe(&mut self) {
         // Rule 1: recent pitch only.
-        let recent = self.samples.len().saturating_sub(FRAMING_FRAMES);
+        let recent = self.frames.len().saturating_sub(FRAMING_FRAMES);
         let mut pitches: Vec<f32> = self
-            .samples
+            .frames
             .iter()
             .skip(recent)
-            .flatten()
-            .map(|point| point.midi_f)
+            .filter_map(|frame| frame.pitch)
             .collect();
         if pitches.is_empty() {
             return; // nothing played recently → keep the current framing
@@ -167,9 +204,9 @@ impl PitchRoll {
         let mut data_hi = quantile(VIEW_QUANTILE_HI);
         // …but never frame out the note sounding right now: it is the one sample the
         // player is actually looking at, and a quantile is free to exclude it.
-        if let Some(now) = self.samples.iter().rev().flatten().next() {
-            data_lo = data_lo.min(now.midi_f);
-            data_hi = data_hi.max(now.midi_f);
+        if let Some(now) = self.sounding() {
+            data_lo = data_lo.min(now);
+            data_hi = data_hi.max(now);
         }
 
         let mut target_lo = data_lo - VIEW_PAD;
@@ -199,10 +236,44 @@ impl PitchRoll {
         // *off screen*. So growing is not eased at all — the view snaps open just far
         // enough to hold the current note. Shrinking keeps the glide, which is what
         // makes the motion read as calm: the view opens instantly and closes gently.
-        if let Some(now) = self.samples.iter().rev().flatten().next() {
-            self.view_lo = self.view_lo.min(now.midi_f - VIEW_PAD);
-            self.view_hi = self.view_hi.max(now.midi_f + VIEW_PAD);
+        if let Some(now) = self.sounding() {
+            self.view_lo = self.view_lo.min(now - VIEW_PAD);
+            self.view_hi = self.view_hi.max(now + VIEW_PAD);
         }
+    }
+
+    /// The most recent pitch the engine actually gave us — the note sounding now,
+    /// looking back past any silent/rejected frames at the tail.
+    fn sounding(&self) -> Option<f32> {
+        self.frames.iter().rev().find_map(|frame| frame.pitch)
+    }
+
+    /// The frames as the renderer wants them: aged against the playhead, with the
+    /// heat gated for display.
+    ///
+    /// The gate is **display only**, and is not the engine's silence gate wearing a
+    /// disguise (see [`HEAT_LEVEL_GATE`]). It stays here because it decides nothing:
+    /// the line's `pitch` arrives already gated and already octave-judged.
+    fn columns(&self, now: f64) -> Vec<RollColumn<'_>> {
+        self.frames
+            .iter()
+            .map(|frame| {
+                RollColumn {
+                    age_s: (now - frame.t) as f32,
+                    pitch: frame.pitch.map(|midi_f| {
+                        PitchPoint {
+                            midi_f,
+                            level: frame.level,
+                        }
+                    }),
+                    heat:  if frame.level >= HEAT_LEVEL_GATE {
+                        frame.heat.as_slice()
+                    } else {
+                        &[]
+                    },
+                }
+            })
+            .collect()
     }
 }
 
@@ -218,38 +289,21 @@ impl App {
         let style = settings.accidental;
         let res_min_midi = settings.resonator.min_midi.as_u8() as i32;
         let res_max_midi = settings.resonator.max_midi.as_u8() as i32;
-        let reading = self.audio.reading();
-        let level = self.audio.input_level();
 
-        // MELODY LINE source = `melody_pitch`: the resonator bank's fast fine pitch
-        // with its octave pinned by pYIN (see `audio::dsp::melody`). Octave-stable
-        // like pYIN, but it follows a note change in 8–29 ms instead of ~128 ms.
+        // SOURCE = the engine's melody history, taken by cursor: every bank frame
+        // published since the last repaint, each carrying the line's pitch, the heat
+        // column of that same instant, and the audio time it was played.
         //
-        // NOT `reading.frequency_hz` (pYIN alone) — that is what this panel used to
-        // read, and it put the line ~128 ms behind the heat drawn right beside it.
+        // NOT `reading()` sampled per frame. That is the *instant*, and asking for it
+        // once per repaint silently made the renderer the sampler: at 60 fps against
+        // the bank's ~62 Hz a few percent of frames were dropped, at 30 fps half of
+        // them — decimating the trills and vibrato this panel exists to show, and
+        // making its x axis a count of frames rather than a span of seconds.
         //
-        // Arrives finished: silence-gated and octave-decided in the engine. No range
-        // clamp either — the melody line's range simply *is* the bank's, because the
-        // bank is where the pitch comes from. The panel used to carry its own C1..G7
-        // window "matching the pYIN tracker's grid", a second opinion about the range
-        // that could only ever drift from the first.
-        let pitch = reading
-            .as_ref()
-            .and_then(|r| r.melody_pitch)
-            .map(|(midi_f, _)| midi_f);
-        // HEAT source = the resonator bank's newest column (fast, per bank column),
-        // painted as-is so trills/overtones show with no octave decision. Blanked
-        // (empty column) when the input is silent, so rests are clean gaps rather
-        // than normalized noise (each column is normalized to its own max).
-        let heat_col = if level >= HEAT_LEVEL_GATE {
-            reading
-                .as_ref()
-                .and_then(|r| r.resonator_waterfall.last().cloned())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        self.pitch_roll.update(pitch, level, heat_col);
+        // Both layers arrive finished: the line is silence-gated and octave-decided in
+        // `audio::dsp::melody`, the heat is raw ground truth by design.
+        let fresh = self.audio.melody_since(self.pitch_roll.cursor);
+        self.pitch_roll.update(fresh);
 
         Frame::new()
             .fill(color::PANEL_FILL)
@@ -271,20 +325,30 @@ impl App {
                 let width = ui.available_width();
                 let (rect, _resp) = ui.allocate_exact_size(vec2(width, 360.0), Sense::hover());
                 let painter = ui.painter_at(rect);
-                // `make_contiguous` needs `&mut`; the view fields and the two
-                // buffers are disjoint, so borrowck permits reading them together.
-                let (view_lo, view_hi) = (self.pitch_roll.view_lo, self.pitch_roll.view_hi);
-                let heat = self.pitch_roll.heat.make_contiguous();
-                let samples = self.pitch_roll.samples.make_contiguous();
+                // The playhead is the newest frame's own timestamp, not "now": there is
+                // no reading of the clock here at all, so a late repaint draws the same
+                // picture, just later.
+                let Some(now) = self.pitch_roll.now() else {
+                    pianoroll::draw_pitch_roll(
+                        &painter,
+                        rect,
+                        &[],
+                        res_min_midi,
+                        res_max_midi,
+                        self.pitch_roll.view_lo,
+                        self.pitch_roll.view_hi,
+                        style,
+                    );
+                    return;
+                };
                 pianoroll::draw_pitch_roll(
                     &painter,
                     rect,
-                    samples,
-                    heat,
+                    &self.pitch_roll.columns(now),
                     res_min_midi,
                     res_max_midi,
-                    view_lo,
-                    view_hi,
+                    self.pitch_roll.view_lo,
+                    self.pitch_roll.view_hi,
                     style,
                 );
             });
@@ -295,18 +359,144 @@ impl App {
 mod tests {
     use super::*;
 
-    /// Feed the line only; the heat layer is exercised by the renderer, not here.
-    fn line(roll: &mut PitchRoll, pitch: Option<f32>, level: f32) {
-        roll.update(pitch, level, Vec::new());
+    /// The bank's default publish cadence (`ResonatorSettings::update_ms` = 16 ms).
+    const BANK_CADENCE_S: f64 = 0.016;
+
+    /// A stand-in for the engine's publishing side: hands out bank frames on the
+    /// audio clock, so a test can choose the *audio* cadence and the *delivery*
+    /// batching independently — which is the whole point of the change.
+    struct Bank {
+        seq: u64,
+        t:   f64,
+    }
+
+    impl Bank {
+        fn new() -> Self {
+            Self { seq: 0, t: 0.0 }
+        }
+
+        /// The next frame, one cadence later. Heat is left empty: it rides the same
+        /// record by construction now, so there is nothing here for a test to check
+        /// that the type system does not already.
+        fn frame(&mut self, pitch: Option<f32>, level: f32) -> MelodyFrame {
+            self.t += BANK_CADENCE_S;
+            self.seq += 1;
+            MelodyFrame {
+                seq: self.seq,
+                t: self.t,
+                pitch,
+                level,
+                heat: Vec::new(),
+            }
+        }
+    }
+
+    /// Feed the line one frame at a time (delivery = the bank's own cadence).
+    fn line(bank: &mut Bank, roll: &mut PitchRoll, pitch: Option<f32>, level: f32) {
+        let frame = bank.frame(pitch, level);
+        roll.update(vec![frame]);
+    }
+
+    /// REGRESSION, and the reason this whole path exists: **the history is paced by
+    /// the audio, not by the renderer**.
+    ///
+    /// The panel used to sample `melody_pitch` once per repaint, which made the UI the
+    /// sampler: against the bank's ~62 Hz, a 60 fps panel dropped a few percent of the
+    /// frames and a 30 fps one dropped *half*. What it dropped was exactly what the
+    /// fast path is for — this feeds a trill, the fastest thing a violinist does, and
+    /// checks that a panel repainting half as often still holds every alternation.
+    ///
+    /// Both rolls are fed the identical audio; only the *batching* differs.
+    #[test]
+    fn history_is_paced_by_the_audio_not_the_frame_rate() {
+        // A D5↔E5 trill at the bank's cadence: every frame is a note change.
+        let mut bank = Bank::new();
+        let played: Vec<MelodyFrame> = (0..240)
+            .map(|i| bank.frame(Some(if i % 2 == 0 { 74.0 } else { 76.0 }), 0.5))
+            .collect();
+
+        // 60 fps: roughly one bank frame per repaint. 30 fps: two.
+        let mut fast = PitchRoll::default();
+        for frame in played.iter() {
+            fast.update(vec![frame.clone()]);
+        }
+        let mut slow = PitchRoll::default();
+        for pair in played.chunks(2) {
+            slow.update(pair.to_vec());
+        }
+
+        let pitches =
+            |roll: &PitchRoll| -> Vec<Option<f32>> { roll.frames.iter().map(|f| f.pitch).collect() };
+        assert_eq!(
+            pitches(&slow),
+            pitches(&fast),
+            "a panel repainting half as often must still hold every frame the bank \
+             published — dropping them is what decimated the trill"
+        );
+        assert_eq!(slow.frames.len(), played.len(), "no frame lost, none doubled");
+        assert_eq!(
+            slow.cursor,
+            Some(played.last().unwrap().seq),
+            "cursor tracks the last frame taken"
+        );
+    }
+
+    /// REGRESSION: the visible span is **seconds of audio**, whatever the cadence.
+    ///
+    /// The old ring held 600 frames, which its own comment admitted was "~10 s at
+    /// 60 fps, ~20 s at 30 fps" — a ruler that changed length depending on how busy
+    /// the renderer was. `update_ms` is user-adjustable over a 10× range too, so even
+    /// the *bank's* frames are not a fixed span. Only time is.
+    #[test]
+    fn the_visible_span_is_seconds_not_frames() {
+        let mut bank = Bank::new();
+        let mut roll = PitchRoll::default();
+        // Play for well over the visible span, so the trim is doing the work.
+        for _ in 0..((15.0 / BANK_CADENCE_S) as usize) {
+            line(&mut bank, &mut roll, Some(69.0), 0.5);
+        }
+        let held = roll.now().unwrap() - roll.frames.oldest().unwrap().t;
+        assert!(
+            held <= VISIBLE_SECONDS && held > VISIBLE_SECONDS - 4.0 * BANK_CADENCE_S,
+            "history spans {held:.3} s of audio; it must be {VISIBLE_SECONDS} s"
+        );
+    }
+
+    /// A new stream restarts the sample clock, so the old stream's frames must go —
+    /// otherwise the roll would splice two unrelated moments together and draw the
+    /// join as a glide. Enforced by the ring being strictly increasing in `t`, which
+    /// needs no epoch counter to stay in sync with.
+    #[test]
+    fn a_restarted_clock_clears_the_history() {
+        let mut bank = Bank::new();
+        let mut roll = PitchRoll::default();
+        for _ in 0..50 {
+            line(&mut bank, &mut roll, Some(69.0), 0.5);
+        }
+        // The engine reset: same monotonic `seq` (a panel's cursor survives a device
+        // switch), but the sample clock starts over.
+        roll.update(vec![MelodyFrame {
+            seq:   bank.seq + 1,
+            t:     0.0,
+            pitch: Some(60.0),
+            level: 0.5,
+            heat:  Vec::new(),
+        }]);
+        assert_eq!(
+            roll.frames.len(),
+            1,
+            "the previous stream's frames must not survive it"
+        );
     }
 
     /// Silence keeps the framing put (no drift while nothing plays).
     #[test]
     fn silence_holds_the_view() {
+        let mut bank = Bank::new();
         let mut roll = PitchRoll::default();
         let (lo, hi) = (roll.view_lo, roll.view_hi);
         for _ in 0..30 {
-            line(&mut roll, None, 0.0);
+            line(&mut bank, &mut roll, None, 0.0);
         }
         assert_eq!(roll.view_lo, lo);
         assert_eq!(roll.view_hi, hi);
@@ -315,9 +505,9 @@ mod tests {
     /// A sustained note eases the window to frame it, keeping the min span.
     #[test]
     fn note_reframes_within_min_span() {
-        let mut roll = PitchRoll::default();
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         for _ in 0..400 {
-            line(&mut roll, Some(69.0), 0.5); // A4
+            line(&mut bank, &mut roll, Some(69.0), 0.5); // A4
         }
         assert!(
             roll.view_lo < 69.0 && roll.view_hi > 69.0,
@@ -338,12 +528,12 @@ mod tests {
     /// октавы".
     #[test]
     fn old_phrase_does_not_keep_the_view_stretched() {
-        let mut roll = PitchRoll::default();
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         for _ in 0..200 {
-            line(&mut roll, Some(48.0), 0.5); // C3, low phrase
+            line(&mut bank, &mut roll, Some(48.0), 0.5); // C3, low phrase
         }
         for _ in 0..600 {
-            line(&mut roll, Some(84.0), 0.5); // C6, settle up high
+            line(&mut bank, &mut roll, Some(84.0), 0.5); // C6, settle up high
         }
         let span = roll.view_hi - roll.view_lo;
         assert!(
@@ -370,16 +560,14 @@ mod tests {
 
         // A modest panel: the plot is the tight case, so if it labels, taller ones do.
         const PLOT_H: f32 = 250.0;
-        let mut roll = PitchRoll::default();
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         // A realistic phrase: a violin first position wandering over a fifth or so.
-        for (i, midi) in [67.0f32, 69.0, 71.0, 72.0, 74.0, 71.0, 69.0]
+        for midi in [67.0f32, 69.0, 71.0, 72.0, 74.0, 71.0, 69.0]
             .iter()
             .cycle()
             .take(600)
-            .enumerate()
         {
-            let _ = i;
-            line(&mut roll, Some(*midi), 0.5);
+            line(&mut bank, &mut roll, Some(*midi), 0.5);
         }
         let span = roll.view_hi - roll.view_lo;
         let row_h = PLOT_H / span;
@@ -394,14 +582,14 @@ mod tests {
     /// quantile bounds are for.
     #[test]
     fn a_lone_slip_does_not_stretch_the_view() {
-        let mut roll = PitchRoll::default();
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         for _ in 0..400 {
-            line(&mut roll, Some(69.0), 0.5); // steady A4
+            line(&mut bank, &mut roll, Some(69.0), 0.5); // steady A4
         }
         let span_before = roll.view_hi - roll.view_lo;
-        line(&mut roll, Some(81.0), 0.5); // one slipped frame, an octave up
+        line(&mut bank, &mut roll, Some(81.0), 0.5); // one slipped frame, an octave up
         for _ in 0..200 {
-            line(&mut roll, Some(69.0), 0.5);
+            line(&mut bank, &mut roll, Some(69.0), 0.5);
         }
         let span_after = roll.view_hi - roll.view_lo;
         assert!(
@@ -414,13 +602,13 @@ mod tests {
     /// quantiles would exclude.
     #[test]
     fn current_note_is_never_framed_out() {
-        let mut roll = PitchRoll::default();
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         for _ in 0..400 {
-            line(&mut roll, Some(60.0), 0.5); // settled on C4
+            line(&mut bank, &mut roll, Some(60.0), 0.5); // settled on C4
         }
         // Leap up and hold briefly — far too few frames to move the quantiles.
         for _ in 0..3 {
-            line(&mut roll, Some(79.0), 0.5); // G5
+            line(&mut bank, &mut roll, Some(79.0), 0.5); // G5
         }
         assert!(
             roll.view_hi > 79.0 - VIEW_PAD,
@@ -432,13 +620,13 @@ mod tests {
     /// Hysteresis: a settled note must not make the rows creep frame after frame.
     #[test]
     fn settled_note_does_not_creep() {
-        let mut roll = PitchRoll::default();
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         for _ in 0..800 {
-            line(&mut roll, Some(69.0), 0.5);
+            line(&mut bank, &mut roll, Some(69.0), 0.5);
         }
         let (lo, hi) = (roll.view_lo, roll.view_hi);
         for _ in 0..60 {
-            line(&mut roll, Some(69.0), 0.5);
+            line(&mut bank, &mut roll, Some(69.0), 0.5);
         }
         assert!(
             (roll.view_lo - lo).abs() < 0.5 && (roll.view_hi - hi).abs() < 0.5,
@@ -448,15 +636,23 @@ mod tests {
         );
     }
 
-    /// Old samples fall off once the buffer is full.
+    /// The history stays bounded while playing forever — the trim actually runs.
+    ///
+    /// It used to be a count (`HISTORY_FRAMES`), which is why the span was a lie; the
+    /// bound this asserts is the one that matters, and `the_visible_span_is_seconds_
+    /// not_frames` above pins what it means in seconds.
     #[test]
-    fn buffer_is_capped() {
-        let mut roll = PitchRoll::default();
-        for _ in 0..(HISTORY_FRAMES + 50) {
-            line(&mut roll, Some(60.0), 0.4);
+    fn history_stays_bounded() {
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
+        let ceiling = (VISIBLE_SECONDS / BANK_CADENCE_S) as usize + 1;
+        for _ in 0..(ceiling + 400) {
+            line(&mut bank, &mut roll, Some(60.0), 0.4);
         }
-        assert_eq!(roll.samples.len(), HISTORY_FRAMES);
-        assert_eq!(roll.heat.len(), HISTORY_FRAMES);
+        assert!(
+            roll.frames.len() <= ceiling,
+            "history grew to {} frames, past the {ceiling} that fit in {VISIBLE_SECONDS} s",
+            roll.frames.len()
+        );
     }
 
     /// A rejected frame reads as a gap, exactly like silence.
@@ -467,13 +663,19 @@ mod tests {
     /// point where the engine gave it none.
     #[test]
     fn a_rejected_frame_is_a_gap() {
-        let mut roll = PitchRoll::default();
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         for _ in 0..5 {
-            line(&mut roll, Some(69.0), 0.5);
+            line(&mut bank, &mut roll, Some(69.0), 0.5);
         }
-        line(&mut roll, None, 0.5); // engine rejected this frame (slip or silence)
-        assert!(roll.samples.back().unwrap().is_none(), "rejected frame is a gap");
-        line(&mut roll, Some(71.0), 0.5);
-        assert!(roll.samples.back().unwrap().is_some(), "next real frame is drawn");
+        line(&mut bank, &mut roll, None, 0.5); // engine rejected this frame (slip or silence)
+        assert!(
+            roll.frames.newest().unwrap().pitch.is_none(),
+            "rejected frame is a gap"
+        );
+        line(&mut bank, &mut roll, Some(71.0), 0.5);
+        assert!(
+            roll.frames.newest().unwrap().pitch.is_some(),
+            "next real frame is drawn"
+        );
     }
 }

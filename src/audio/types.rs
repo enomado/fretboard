@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
 
@@ -71,6 +73,150 @@ pub struct NoteLine {
     /// The note sounding right now — drawn emphasised at the playhead, not yet
     /// written (it may still turn out to be too short to count).
     pub current: Option<StaffNote>,
+}
+
+/// One published bank frame of the melody line, exactly as the engine decided it.
+///
+/// The unit the melody panels read *history* in, as opposed to [`TunerReading`],
+/// which is the instant. Both of a pitch roll's layers ride the **same** frame, so
+/// they cannot drift apart: the line and the heat under it are aligned 1:1 by
+/// construction rather than by two `push_back`s next to each other agreeing to be.
+/// That alignment is the heat's whole job — it is the ground truth the line is
+/// checked against by eye, and a heat column from a different instant would be a
+/// lie rather than a wobble.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MelodyFrame {
+    /// Delivery cursor: "have I seen this frame?".
+    ///
+    /// Monotonic for the life of the engine and pointedly **not** reset with the
+    /// stream — a consumer holding a cursor across a device switch must never be
+    /// handed a number it has already seen, or it would silently skip the new
+    /// stream's first frames.
+    pub seq:   u64,
+    /// When it was played: seconds on the **sample clock** (`samples_seen /
+    /// sample_rate`), the same clock the note segmenter's durations ride.
+    ///
+    /// This, and not [`Self::seq`], is the time axis. The bank's publish is gated on
+    /// the *wall* clock (`last_publish.elapsed() >= update_ms`) and then fires on the
+    /// first sample batch after the interval expires, so frames land ~16 ms apart
+    /// **with jitter** — `seq × update_ms` would be just another wrong ruler, in the
+    /// same family as counting UI frames. Unlike `seq` it restarts with the stream,
+    /// because it describes the audio rather than the delivery.
+    pub t:     f64,
+    /// The melody line's note, or `None` for silence *or* a rejected octave slip —
+    /// decided in `dsp::melody`, and deliberately the same `None` for both (see
+    /// `dsp::segmenter` for why a rejected frame must read as a gap, not a change).
+    pub pitch: Option<f32>,
+    /// The absolute input level the engine gated **this** frame on. Carried rather
+    /// than read live so a panel fades a point by the level of the moment it is
+    /// drawing, not of the moment it happens to be drawing at.
+    pub level: f32,
+    /// The bank's heat column for this instant, raw: normalized to its own max, no
+    /// octave decision, no silence gate. The ground truth, passed through untouched.
+    pub heat:  Vec<f32>,
+}
+
+/// How much melody history the **engine** keeps for the panels, in seconds.
+///
+/// Short on purpose. The panels keep their own, much longer, view history; this only
+/// has to bridge the gap between two of their reads, and two seconds is far more than
+/// any plausible UI stall at ~240 KB. Keeping the panel's whole ~10 s span here would
+/// cost 1.2 MB and buy nothing: the bank parks when no panel is asking, so there is
+/// never a backlog waiting to fill a freshly opened panel anyway.
+pub const MELODY_HISTORY_SECONDS: f64 = 2.0;
+
+/// The melody line's recent past: a ring of [`MelodyFrame`]s trimmed by **time**.
+///
+/// One implementation, three users, deliberately — the engine's own history, the wasm
+/// main thread's copy of it (the pipelines live in a worker, which can only post
+/// deltas up), and the pitch roll's much longer view buffer. They keep different
+/// spans, which is what [`Self::with_retention`] is for, but the rules about *what a
+/// history is* — ordered, unique, self-healing across a stream restart — are written
+/// once. Three hand-rolled `VecDeque`s is how the invariant below gets implemented
+/// twice and forgotten the third time.
+pub struct MelodyHistory {
+    frames:         VecDeque<MelodyFrame>,
+    retain_seconds: f64,
+}
+
+impl Default for MelodyHistory {
+    /// The engine's retention — see [`MELODY_HISTORY_SECONDS`].
+    fn default() -> Self {
+        Self::with_retention(MELODY_HISTORY_SECONDS)
+    }
+}
+
+impl MelodyHistory {
+    /// A history keeping `retain_seconds` of **played audio** (not of wall time, and
+    /// not a frame count).
+    pub fn with_retention(retain_seconds: f64) -> Self {
+        Self {
+            frames: VecDeque::new(),
+            retain_seconds,
+        }
+    }
+
+    /// Append one frame, keeping both invariants.
+    pub fn push(&mut self, frame: MelodyFrame) {
+        // INVARIANT: strictly increasing in `t`. A new stream builds a fresh pipeline,
+        // so its sample clock restarts at zero; dropping every frame not older than
+        // the incoming one therefore clears a stale stream out **by construction**,
+        // with no epoch counter to keep in sync with anything. While a stream runs the
+        // clock only goes forward and this pops nothing.
+        while self.frames.back().is_some_and(|f| f.t >= frame.t) {
+            self.frames.pop_back();
+        }
+        let cutoff = frame.t - self.retain_seconds;
+        self.frames.push_back(frame);
+        // Trimmed by TIME, never by a frame count: `ResonatorSettings::update_ms` is
+        // user-adjustable over a 10× range (8..80 ms), so a ring measured in frames is
+        // not a span of seconds — which is the exact mistake this history exists to
+        // undo, one level up.
+        while self.frames.front().is_some_and(|f| f.t < cutoff) {
+            self.frames.pop_front();
+        }
+    }
+
+    /// Every frame newer than `after` (all of them for `None`), oldest → newest.
+    ///
+    /// A **cursor**, not a drain: the caller remembers where it got to, so any number
+    /// of panels can read the same history independently. A drain would mean whichever
+    /// panel polled first stole the frames from the rest — and a second consumer is
+    /// expected (the staff's trail is the same shape).
+    pub fn since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
+        self.frames
+            .iter()
+            .filter(|f| after.is_none_or(|seq| f.seq > seq))
+            .cloned()
+            .collect()
+    }
+
+    /// Oldest → newest.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &MelodyFrame> + ExactSizeIterator {
+        self.frames.iter()
+    }
+
+    /// The frame at the playhead.
+    pub fn newest(&self) -> Option<&MelodyFrame> {
+        self.frames.back()
+    }
+
+    /// The frame at the far (left) edge.
+    pub fn oldest(&self) -> Option<&MelodyFrame> {
+        self.frames.front()
+    }
+
+    pub fn len(&self) -> usize {
+        self.frames.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    pub fn clear(&mut self) {
+        self.frames.clear();
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

@@ -52,6 +52,7 @@ pub(super) mod imp {
         AudioStatus,
         DroneMode,
         DroneState,
+        MelodyFrame,
         ResonatorReading,
         Timbre,
         TunerReading,
@@ -236,6 +237,24 @@ pub(super) mod imp {
 
         pub fn reading(&self) -> Option<TunerReading> {
             self.shared.lock().ok().and_then(|g| g.reading.clone())
+        }
+
+        /// The melody line's recent history: every bank frame newer than `after`,
+        /// oldest → newest. `None` for a cold start.
+        ///
+        /// `after` is the **caller's own** cursor (the `seq` of the last frame it took),
+        /// not a mark the engine keeps — so any number of panels can each read the whole
+        /// history without stealing frames from one another. See [`MelodyFrame`].
+        ///
+        /// This is how a panel draws the melody without decimating it: `reading()` is
+        /// the instant, and sampling *that* per UI frame drops bank frames on the floor
+        /// (half of them at 30 fps). Like every consumer of the bank, the caller must be
+        /// calling [`Self::request_resonator`] or the history simply stops growing.
+        pub fn melody_since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
+            self.shared
+                .lock()
+                .map(|g| g.melody_since(after))
+                .unwrap_or_default()
         }
 
         pub fn resonator_reading(&self) -> Option<ResonatorReading> {

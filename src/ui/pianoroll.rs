@@ -19,9 +19,14 @@
 //! colours each name by the energy at that pitch in the current heat column — a
 //! live per-note meter of what is sounding right now at the playhead.
 //!
+//! **Time is the x axis, literally.** Each column carries its own age in seconds
+//! ([`RollColumn::age_s`]) and is placed by it, so the ruler across the bottom means
+//! what it says and a column the engine never published leaves a gap of exactly its
+//! own width. Columns used to be laid out by *index* — evenly spaced, whatever they
+//! were — which quietly made the axis a count of renderer ticks.
+//!
 //! Pure renderer: it owns no state and paints from borrowed slices over a `Rect`.
-//! The rolling samples/heat and the eased view window live in
-//! [`crate::app::pitch_roll_panel`].
+//! The history and the eased view window live in [`crate::app::pitch_roll_panel`].
 
 use eframe::egui::epaint::Vertex;
 use eframe::egui::{
@@ -51,6 +56,23 @@ pub struct PitchPoint {
     pub level:  f32,
 }
 
+/// One published bank frame, ready to draw: how long ago it sounded, what the melody
+/// line was, and the spectral heat of that same instant.
+///
+/// The two layers ride one column because the heat is only useful as the *ground
+/// truth the line is checked against* — a heat column from a neighbouring instant
+/// would not disagree with the line honestly, it would just be misaligned. Keeping
+/// them in one record is what makes that impossible rather than merely intended.
+pub struct RollColumn<'a> {
+    /// Seconds between this column and the playhead, ≥ 0 — the x position.
+    pub age_s: f32,
+    /// The melody line's pitch here, or `None` for silence *or* a rejected octave
+    /// slip (the engine decides both; the renderer draws a gap for either).
+    pub pitch: Option<PitchPoint>,
+    /// The bank's energy per bin. **Empty** = draw nothing (a rest).
+    pub heat:  &'a [f32],
+}
+
 /// Width of the left gutter that carries the note-name labels, in pixels.
 const LABEL_W: f32 = 46.0;
 /// Width of the right gutter, a second note scale coloured by the *current* heat
@@ -69,21 +91,25 @@ const PLAYHEAD: Color32 = Color32::from_rgb(70, 76, 86);
 /// A translucent black rather than a colour: it must darken whatever heat is
 /// already painted under it, not replace it.
 const ACCIDENTAL_ROW_SHADE: Color32 = Color32::from_black_alpha(46);
+/// The time ruler's lines and labels. File-local, like [`PLAYHEAD`], and for the same
+/// reason: only this panel has a time axis, and `ui::tokens` is the vocabulary for
+/// chrome that is spoken in more than one module. Deliberately dim — the ruler is for
+/// reading the melody against, not for looking at.
+const TIME_GRID_LINE: Color32 = Color32::from_rgb(46, 51, 59);
+const TIME_GRID_LABEL: Color32 = Color32::from_rgb(84, 90, 100);
 
 /// Paint the pitch roll into `rect`.
 ///
-/// `samples` are per-frame melody-line pitches oldest → newest (`None` = a silent
-/// frame → a gap in the line). `heat` is the aligned per-frame resonator column
-/// (an *empty* `Vec` marks a silent frame); `res_min_midi`/`res_max_midi` are the
-/// bank's pitch range, together mapping each heat bin to a pitch. `view_lo`/`view_hi`
-/// are the fractional MIDI numbers at the bottom/top edges of the plot (the eased
-/// auto-framing window), so a rising melody scrolls the rows smoothly.
+/// `columns` are the published bank frames oldest → newest, each carrying its own
+/// age, the line's pitch and the heat of that instant. `res_min_midi`/`res_max_midi`
+/// are the bank's pitch range, which maps each heat bin to a pitch. `view_lo`/
+/// `view_hi` are the fractional MIDI numbers at the bottom/top edges of the plot (the
+/// eased auto-framing window), so a rising melody scrolls the rows smoothly.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pitch_roll(
     painter: &Painter,
     rect: Rect,
-    samples: &[Option<PitchPoint>],
-    heat: &[Vec<f32>],
+    columns: &[RollColumn<'_>],
     res_min_midi: i32,
     res_max_midi: i32,
     view_lo: f32,
@@ -98,13 +124,28 @@ pub fn draw_pitch_roll(
     let span = (view_hi - view_lo).max(1.0);
     // Pitch → y: higher pitch is higher on screen (smaller y).
     let y_of = |midi_f: f32| plot.bottom() - (midi_f - view_lo) / span * plot.height();
+    // Age → x: the playhead is "now" at the right edge, the past runs left at a fixed
+    // number of pixels per second. This is the whole axis fix — a column lands where
+    // its *time* says, not where its position in the buffer says.
+    let px_per_second = plot.width() / VISIBLE_SECONDS;
+    let x_of = |age_s: f32| plot.right() - age_s * px_per_second;
 
     painter.rect_filled(plot, 0.0, color::HEAT_BG);
 
-    // Layer order: grid rows (bottom) → spectral heat → melody line (top).
+    // Layer order: grid rows + time ruler (bottom) → spectral heat → melody line.
     draw_rows(painter, rect, plot, view_lo, view_hi, span, &y_of, style);
-    draw_heat(painter, plot, span, heat, res_min_midi, res_max_midi, &y_of);
-    draw_graph(painter, plot, samples, &y_of);
+    draw_time_grid(painter, plot, &x_of);
+    draw_heat(
+        painter,
+        plot,
+        span,
+        columns,
+        res_min_midi,
+        res_max_midi,
+        &y_of,
+        &x_of,
+    );
+    draw_graph(painter, plot, columns, &y_of, &x_of);
     draw_right_scale(
         painter,
         plot,
@@ -113,10 +154,51 @@ pub fn draw_pitch_roll(
         span,
         &y_of,
         style,
-        heat,
+        columns,
         res_min_midi,
         res_max_midi,
     );
+}
+
+/// Seconds of played audio across the plot — the x axis, and the one definition of
+/// it.
+///
+/// The panel trims its history to exactly this, by reading it from here rather than
+/// keeping a number of its own (same as [`LABEL_MIN_ROW_H`], which ties the framing to
+/// what the rows can actually say). Two copies would be two opinions about the span,
+/// and the moment they drifted the ruler would quietly start lying — which is the
+/// failure this whole change is undoing, not one to re-introduce a layer down.
+pub const VISIBLE_SECONDS: f32 = 10.0;
+
+/// Spacing of the time gridlines, seconds.
+const TIME_GRID_SECONDS: f32 = 2.0;
+
+/// The time ruler: a labelled vertical line every [`TIME_GRID_SECONDS`] back from the
+/// playhead.
+///
+/// It is what makes the axis checkable by eye rather than by argument — the thing
+/// this panel spent its whole life not having. A trill's rate, a note's length and a
+/// bow change all become measurable off the screen instead of inferred.
+fn draw_time_grid(painter: &Painter, plot: Rect, x_of: &impl Fn(f32) -> f32) {
+    let mut age = TIME_GRID_SECONDS;
+    while age <= VISIBLE_SECONDS {
+        let x = x_of(age);
+        if x < plot.left() {
+            break;
+        }
+        painter.line_segment(
+            [pos2(x, plot.top()), pos2(x, plot.bottom())],
+            Stroke::new(1.0, TIME_GRID_LINE),
+        );
+        painter.text(
+            pos2(x + 3.0, plot.bottom() - 3.0),
+            Align2::LEFT_BOTTOM,
+            format!("-{age:.0}s"),
+            FontId::proportional(9.0),
+            TIME_GRID_LABEL,
+        );
+        age += TIME_GRID_SECONDS;
+    }
 }
 
 /// The right-hand note scale: the same rows as the left gutter, but each label is
@@ -132,14 +214,14 @@ fn draw_right_scale(
     span: f32,
     y_of: &impl Fn(f32) -> f32,
     style: AccidentalStyle,
-    heat: &[Vec<f32>],
+    columns: &[RollColumn<'_>],
     res_min_midi: i32,
     res_max_midi: i32,
 ) {
     // "Now" = the newest *non-empty* column, so a one-frame dropout doesn't blink
     // the whole scale dark.
-    let current = heat.iter().rev().find(|c| !c.is_empty());
-    let bin_count = current.map_or(0, Vec::len);
+    let current = columns.iter().rev().map(|c| c.heat).find(|c| !c.is_empty());
+    let bin_count = current.map_or(0, <[f32]>::len);
     let mapped = bin_count >= 2 && res_max_midi > res_min_midi;
     let bins_per_semitone = if mapped {
         (bin_count - 1) as f32 / (res_max_midi - res_min_midi) as f32
@@ -274,9 +356,8 @@ pub(crate) const LABEL_MIN_ROW_H: f32 = 9.0;
 const HEAT_GATE: f32 = 0.16;
 
 /// The spectral heat field: each frame's resonator column painted at every bin's
-/// own pitch height. Columns march left from the playhead exactly like the melody
-/// line (same per-frame cadence → the two layers align in time). An *empty* column
-/// is a silent frame (gated out by the panel) → nothing painted, a clean gap.
+/// own pitch height, at the x its own age puts it. An *empty* column is a silent
+/// frame (gated out by the panel) → nothing painted, a clean gap.
 ///
 /// All cells go into one [`Mesh`] (a single draw call) instead of thousands of
 /// `rect_filled` shapes — the whole grid is visible here (unlike the staff, which
@@ -285,38 +366,51 @@ const HEAT_GATE: f32 = 0.16;
 /// Bin → pitch: the bank spans `res_min_midi..=res_max_midi`; bins-per-semitone is
 /// derived from a column's length (it changes with the reassignment toggle, so we
 /// read it rather than assume it), the same way the staff's waterfall does.
+#[allow(clippy::too_many_arguments)]
 fn draw_heat(
     painter: &Painter,
     plot: Rect,
     span: f32,
-    heat: &[Vec<f32>],
+    columns: &[RollColumn<'_>],
     res_min_midi: i32,
     res_max_midi: i32,
     y_of: &impl Fn(f32) -> f32,
+    x_of: &impl Fn(f32) -> f32,
 ) {
-    let bin_count = heat.iter().find(|c| !c.is_empty()).map_or(0, Vec::len);
+    let bin_count = columns
+        .iter()
+        .map(|c| c.heat)
+        .find(|c| !c.is_empty())
+        .map_or(0, <[f32]>::len);
     if bin_count < 2 || res_max_midi <= res_min_midi {
         return;
     }
     let bins_per_semitone = (bin_count - 1) as f32 / (res_max_midi - res_min_midi) as f32;
-    let n = heat.len();
-    let dx = plot.width() / n.max(1) as f32;
-    // A cell spans one column in x and one bin in y, with slight overdraw to close
-    // hairline seams at fractional sizes.
-    let cell_w = dx + 0.6;
+    let n = columns.len();
+    let oldest = columns[0].age_s;
+    // A cell is one *frame*, so it is as wide as the gap between frames — measured,
+    // not assumed: the bank's cadence is a user setting (8..80 ms) and the publish
+    // jitters around it anyway. The mean is robust enough here (a dropped frame moves
+    // it by one 600th) and, crucially, keeps a cell an *instant* rather than an
+    // interval: a frame the engine never published then leaves a hole exactly its own
+    // width, instead of its neighbour smearing across the missing time. +0.6 closes
+    // the hairline seams fractional sizes leave.
+    let mean_gap_s = if n >= 2 { oldest / (n - 1) as f32 } else { 0.0 };
+    let cell_w = mean_gap_s * plot.width() / VISIBLE_SECONDS + 0.6;
     let px_per_semitone = span.recip() * plot.height();
     let cell_h = (px_per_semitone / bins_per_semitone + 0.6).max(1.5);
 
     let mut mesh = Mesh::default();
     let uv = egui::epaint::WHITE_UV;
-    for (i, col) in heat.iter().enumerate() {
-        if col.is_empty() {
+    for column in columns {
+        if column.heat.is_empty() {
             continue; // silent frame → gap
         }
-        let age = (n - 1 - i) as f32; // 0 = newest, at the playhead
-        let cx = plot.right() - age * dx;
-        let recency = 1.0 - age / n as f32; // older columns fade
-        for (bin, &value) in col.iter().enumerate() {
+        let cx = x_of(column.age_s);
+        // Older columns fade. Keyed off time, so the fade is a real half-life rather
+        // than "how much of the buffer ago" — the same reading regardless of cadence.
+        let recency = 1.0 - (column.age_s / VISIBLE_SECONDS).clamp(0.0, 1.0);
+        for (bin, &value) in column.heat.iter().enumerate() {
             if value < HEAT_GATE {
                 continue;
             }
@@ -351,12 +445,18 @@ fn heat_color(value: f32, recency: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(r, g, b, a)
 }
 
-/// The played-pitch graph: consecutive non-silent samples joined into a line that
+/// The played-pitch graph: consecutive non-silent frames joined into a line that
 /// flows in from the left and ends at the playhead (right edge). Each segment is
-/// coloured by that sample's intonation and faded by its level; a silent frame
+/// coloured by that frame's intonation and faded by its level; a silent frame
 /// breaks the line so rests show as gaps.
-fn draw_graph(painter: &Painter, plot: Rect, samples: &[Option<PitchPoint>], y_of: &impl Fn(f32) -> f32) {
-    if !samples.iter().any(Option::is_some) {
+fn draw_graph(
+    painter: &Painter,
+    plot: Rect,
+    columns: &[RollColumn<'_>],
+    y_of: &impl Fn(f32) -> f32,
+    x_of: &impl Fn(f32) -> f32,
+) {
+    if !columns.iter().any(|c| c.pitch.is_some()) {
         painter.text(
             plot.center(),
             Align2::CENTER_CENTER,
@@ -367,19 +467,27 @@ fn draw_graph(painter: &Painter, plot: Rect, samples: &[Option<PitchPoint>], y_o
         return;
     }
 
-    let n = samples.len();
-    // Newest sample sits at the right edge; older ones step left by `dx` per frame,
-    // so the whole buffer fills the plot width exactly.
-    let dx = plot.width() / n.max(1) as f32;
+    // A stretch of missing frames is not a straight glide between the two frames that
+    // bracket it — we simply do not know what happened in there. So the line breaks
+    // over a gap much longer than the cadence, exactly as it does over silence: the
+    // panel would rather show a hole than invent a segment. `mean_gap` is measured for
+    // the same reason `draw_heat`'s is; 3× is loose enough to survive the publish
+    // jitter and tight enough to catch a real drop.
+    let n = columns.len();
+    let mean_gap_s = if n >= 2 {
+        columns[0].age_s / (n - 1) as f32
+    } else {
+        0.0
+    };
+    let max_join_s = mean_gap_s * 3.0;
 
-    let mut prev: Option<Pos2> = None;
-    for (i, sample) in samples.iter().enumerate() {
-        let Some(point) = sample else {
-            prev = None; // silence → break the line
+    let mut prev: Option<(Pos2, f32)> = None;
+    for column in columns {
+        let Some(point) = column.pitch else {
+            prev = None; // silence (or a rejected slip) → break the line
             continue;
         };
-        let age = (n - 1 - i) as f32; // 0 = newest
-        let x = plot.right() - age * dx;
+        let x = x_of(column.age_s);
         // Clamp to the plot so a note briefly outside the eased window rides the
         // edge instead of drawing off into space; the window normally keeps it in.
         let y = y_of(point.midi_f).clamp(plot.top(), plot.bottom());
@@ -391,11 +499,13 @@ fn draw_graph(painter: &Painter, plot: Rect, samples: &[Option<PitchPoint>], y_o
         let alpha = (60.0 + point.level.clamp(0.0, 1.0).sqrt() * 195.0).clamp(0.0, 255.0) as u8;
         let color = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
 
-        if let Some(from) = prev {
+        if let Some((from, from_age)) = prev
+            && from_age - column.age_s <= max_join_s
+        {
             painter.line_segment([from, here], Stroke::new(2.0, color));
         }
         painter.circle_filled(here, 1.8, color);
-        prev = Some(here);
+        prev = Some((here, column.age_s));
     }
 
     // Playhead: a faint vertical marker at the "now" edge.

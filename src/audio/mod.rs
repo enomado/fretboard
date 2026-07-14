@@ -33,6 +33,8 @@ pub use types::{
     AudioStatus,
     DroneMode,
     DroneState,
+    MelodyFrame,
+    MelodyHistory,
     NoteLine,
     ResonatorReading,
     ResonatorSettings,

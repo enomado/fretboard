@@ -58,6 +58,10 @@ struct WorkerState {
     input_gain:         Arc<AtomicU32>,
     input_level:        Arc<AtomicU32>,
     resonator_deadline: Instant,
+    /// `seq` of the last melody frame put on the wire. The worker's own cursor into
+    /// `shared.melody_history`, so each snapshot carries only what is new — see
+    /// [`WorkerSnapshot::melody`]. `None` until the first frame is posted.
+    melody_posted:      Option<u64>,
 }
 
 impl WorkerState {
@@ -69,6 +73,7 @@ impl WorkerState {
             input_gain:         Arc::new(AtomicU32::new(1.0f32.to_bits())),
             input_level:        Arc::new(AtomicU32::new(0.0f32.to_bits())),
             resonator_deadline: Instant::now(),
+            melody_posted:      None,
         }
     }
 }
@@ -148,9 +153,9 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
     }
 }
 
-fn snapshot(state: &WorkerState) -> FromWorker {
+fn snapshot(state: &mut WorkerState) -> FromWorker {
     let level = f32::from_bits(state.input_level.load(Ordering::Relaxed));
-    let (status, reading, resonator, waveform) = match state.shared.lock() {
+    let (status, reading, resonator, waveform, melody) = match state.shared.lock() {
         Ok(shared) => {
             (
                 shared.status.clone(),
@@ -163,6 +168,7 @@ fn snapshot(state: &WorkerState) -> FromWorker {
                     }
                 }),
                 shared.input_waveform.iter().copied().collect(),
+                shared.melody_since(state.melody_posted),
             )
         }
         Err(_) => {
@@ -171,15 +177,23 @@ fn snapshot(state: &WorkerState) -> FromWorker {
                 None,
                 None,
                 Vec::new(),
+                Vec::new(),
             )
         }
     };
+    // Advance the cursor only over what is actually going on the wire, so a snapshot
+    // that found nothing new (the usual case — posts are per sample block, publishes
+    // are per ~16 ms) leaves it alone rather than skipping a frame.
+    if let Some(last) = melody.last() {
+        state.melody_posted = Some(last.seq);
+    }
     FromWorker::Snapshot(Box::new(WorkerSnapshot {
         status,
         reading,
         resonator,
         level,
         waveform,
+        melody,
     }))
 }
 
