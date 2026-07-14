@@ -192,11 +192,14 @@ A rejected slip and silence both arrive here as `None`, deliberately — see §5
 Panels do **no DSP**. They read decided values and draw them.
 
 - **staff** — `note_line` (the written notes, decided upstream) for the notation, plus
-  `melody_pitch` for the decorative trail.
-- **pitch roll** — `melody_pitch` (the line) + the raw resonator column (the heat).
+  `melody_since` for the waterfall behind them.
+- **pitch roll** — `melody_since`: the line and the heat, from the same frames.
   The heat makes no octave decision at all, deliberately: it is the ground truth the
   line is checked against by eye. If the line disagrees with the heat under it, the
   line is wrong.
+
+Neither reads a *history* off `TunerReading` any more — that is the instant, and
+sampling it per repaint is what §4 is about.
 - **fretboard / tuner / scale finder** — `frequency_hz`.
 
 ---
@@ -221,17 +224,50 @@ the same code behaved differently at 30 fps and 60 fps:
 - note segmentation — moved into `segmenter` (Phase 1.9), where `now` comes from the
   sample count, so a note's length is sample-accurate rather than frame-quantised.
 
-**No decision is left on the UI clock.** What remains sampled per UI frame is
-*decoration*, and is only tolerable because nothing is decided from it:
+**Nothing is left on the UI clock — not even the decoration.** The panels' *history*
+came off it last (`MelodyHistory`, below); what the UI frame decides now is only when
+the pixels happen.
 
-- the staff's pitch **trail** — a fading glow; a dropped frame costs one dot;
-- the pitch roll's **history** — 600 frames wide, so its time axis is still not time
-  (its own comment admits "~10 s at 60 fps, ~20 s at 30 fps"). The *line's* values are
-  decided upstream and merely sampled late; the axis they are plotted against is the
-  wrong ruler. Fixing it needs an engine-side history the panel drains by sequence
-  rather than per frame, and a decision about the heat's cost: the two layers must stay
-  aligned 1:1, and 600 columns × ~480 bins on every reading is ~70 MB/s of copying.
-  Not yet done.
+That last step was filed as cosmetic and was not. A panel sampling `melody_pitch` once
+per repaint makes the **renderer the sampler**: the bank publishes at ~62 Hz, so a
+60 fps panel dropped a few percent of its frames and a 30 fps one dropped **half** —
+decimating exactly the trills and vibrato the fast path exists for, and making both
+panels' x axis a count of renderer ticks ("~10 s at 60 fps, ~20 s at 30 fps"). The
+staff was worse: its trail counted 240 UI frames across the width while the bank heat
+*under* it counted 52 bank columns, so the two layers of one sound scrolled at ~200
+and ~375 px/s. Reported live as "два водопада… один медленнее другой быстрее".
+
+### `dsp::melody` → `MelodyFrame` → the panels
+
+Every bank frame is published as one record — `seq`, `t`, `pitch`, `level`, `heat` —
+and panels read it with a **cursor** (`AudioEngine::melody_since(after)`).
+
+- **`t` is the ruler, not `seq`.** The publish is *gated on the wall clock*
+  (`last_publish.elapsed() >= update_ms`) and fires on the first sample batch after the
+  interval expires, so frames land ~16 ms apart **with jitter**: `seq × update_ms`
+  would be a third wrong ruler. `t` comes off the sample count — the same clock §2b
+  measures note durations with, so the line a panel plots and the notes the engine
+  wrote are on one clock. A frame that never arrived then leaves a hole exactly where
+  it belongs, and the line breaks over it rather than inventing a glide.
+- **One frame carries both layers.** The heat is only the ground truth the line is
+  checked against if it is the *same instant*; in one record it cannot be otherwise.
+- **A cursor, not a drain.** Each consumer keeps its own, so the staff and the roll
+  read the same frames instead of stealing them from each other.
+- **`seq` survives `reset()`, `t` does not.** One answers "have I seen this frame", the
+  other "when was it played": a panel's cursor outlives a device switch, the audio
+  clock does not. A ring strictly increasing in `t` therefore heals itself across a
+  stream restart with no epoch counter.
+- **Trimmed by time, never by a frame count** — `update_ms` is user-adjustable over
+  8..80 ms, so a ring measured in frames is not a span of seconds. That *is* the bug.
+- **The heat is cheap because of the cursor.** The whole history is ~600 columns ×
+  ~480 bins ≈ 70 MB/s if copied per read; a delta is 1–2 columns ≈ 0.23 MB/s. On wasm
+  the worker cannot share memory, so it posts the delta and the main thread rebuilds
+  the ring — same API both platforms.
+
+**Still on a ruler of its own: the staff's noteheads.** They step left by a fixed
+`gap * 3.2` per *note*, so a written note and the heat that produced it drift apart —
+a third parallax, and unlike the other two it is a genuine design question (notation
+is not a time plot), not a mistake. Untouched.
 
 ---
 
@@ -318,6 +354,9 @@ deliberate price of not re-breaking octave wandering.
 | `resonator::bank_latency_probe` | bank follows a change ≤ 40 ms |
 | `segmenter::end_to_end_latency_probe` | the line shows a note ≤ 60 ms (≤ 100 ms octave), through the *real* bank + tracker + melody + segmenter |
 | `core::engine_writes_a_played_note_end_to_end` | a note reaches `note_line` through the real **engine wiring** — both pipelines, the level atomic, the onset hand-off, the sample clock |
+| `core::the_melody_history_is_published_on_the_audio_clock` | `t` tracks the audio through the real pipelines; a cursor hands each frame over once; two cursors are independent |
+| `pitch_roll_panel::history_is_paced_by_the_audio_not_the_frame_rate` | a panel repainting half as often still holds **every** bank frame (fed a trill, the case that dies first) |
+| `pitch_roll_panel::the_visible_span_is_seconds_not_frames` | the visible span is seconds of audio, not a buffer length |
 | `core::the_silence_gate_keeps_room_noise_off_the_line` | the silence gate is still connected |
 | `core::release_ghosts_are_written_after_a_note` | pins the known bug in §5 |
 | `pyin::ceiling_probe` | C0..E7 tracks with no octave error |

@@ -618,6 +618,50 @@ which no instrument does; a real note decays over hundreds of ms and the gate an
 bank may fall together. Likely fix: give the melody gate the *raw* window level instead
 of the meter's smoothed one. **Ask the instrument first.**
 
+### Phase 1.10 — the panels' history comes off the UI clock  ⚠ BUILT, NOT LIVE-VERIFIED
+Landed `518457e` (pitch roll) + `055e9e0` (staff). §4's other half — the one 1.9 left,
+and the one filed as *display fidelity*. It was not.
+
+**A panel sampling `melody_pitch` per repaint makes the renderer the sampler.** The
+bank publishes at ~62 Hz, so a 60 fps panel dropped a few percent of its frames and a
+30 fps one dropped **half** — decimating the trills and vibrato the fast path exists
+for. `pianoroll`'s own module doc claimed "trills and vibrato appear at full
+resolution"; it was false at every frame rate.
+
+**`seq × cadence` would have been a third wrong ruler.** The plan said "drains by
+sequence", and counting seq×16 ms is the obvious next step — but the publish is gated
+on the *wall* clock and fires on the first sample batch after the interval expires, so
+frames land ~16 ms apart **with jitter**. Each frame carries `t` off the sample count
+instead: the ruler 1.9 already built for note durations.
+
+**The ~70 MB/s the plan feared is a cursor away.** That is the cost of copying the
+whole history per read; a delta is 1–2 columns ≈ 0.23 MB/s. `melody_since(after)` is a
+cursor and not a drain, so the staff and the roll read the same frames rather than
+stealing them. On wasm the worker posts the delta and the main thread rebuilds the ring
+(no shared memory) — same API both platforms.
+
+**The staff had the parallax the plan didn't know about.** Reported live mid-session:
+"два водопада… один медленнее другой быстрее". Both layers drew the same sound over the
+same x range in different units — the trail in 240 *UI frames* (~200 px/s), the heat in
+52 *bank columns* squeezed by a `clamp(2.0, 6.0)` into ~312 px (~375 px/s). The plan had
+the trail down as "the same shape and the same excuse", one layer; it was both, and the
+second was worse. They are two views of one `MelodyFrame` now, through one `x_of`.
+
+**The ruler is drawn** (−2s / −4s / …) on the roll: the axis was unverifiable by eye,
+which is how it stayed wrong.
+
+**What the tests found.** `history_is_paced_by_the_audio_not_the_frame_rate` feeds a
+trill and asserts a panel repainting half as often holds every alternation.
+`core::the_melody_history_is_published_on_the_audio_clock` drives the real pipelines. And
+`a_restarted_clock_clears_the_history` caught the panel **claiming the self-healing rule
+in a comment while not implementing it** — which is what pushed the ring into one shared
+`MelodyHistory` instead of two hand-rolled `VecDeque`s.
+
+**Left alone, deliberately:** the staff's noteheads still step `gap * 3.2` per *note*,
+so a written note and the heat that produced it drift apart — a third ruler, but a real
+design question (notation is not a time plot), not a mistake. See the kickstart in
+`memory/kickstart_staff_draw_decomposition.md`.
+
 ### Phase 2 — Target / call-and-response mode  ⬜ NOT STARTED
 Show a **target** (a single note, then a short phrase/scale) the user must play;
 score hit/miss on pitch and grade the intonation. This turns the mirror into a
