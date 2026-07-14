@@ -368,6 +368,78 @@ mod tests {
             .unwrap()
     }
 
+    /// REGRESSION: the bank must follow a note change inside the perceptual
+    /// threshold for pitch feedback (~30–40 ms, see `docs/pitch_detection_survey.md`).
+    ///
+    /// This is the property the whole melody path is built on: the bank is the fast
+    /// source, pYIN only pins its octave (`dsp::melody`). pYIN on the shared 6144
+    /// window is pinned at 128 ms — if the bank ever stops being dramatically faster,
+    /// riding it buys nothing and the design should be revisited rather than kept out
+    /// of habit.
+    #[test]
+    fn bank_latency_probe() {
+        fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+            let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
+            (0..len)
+                .map(|i| {
+                    let t = i as f32 / sample_rate;
+                    partials
+                        .iter()
+                        .enumerate()
+                        .map(|(h, a)| a * (TAU * frequency_hz * (h + 1) as f32 * t).sin())
+                        .sum::<f32>()
+                        / 3.0
+                })
+                .collect()
+        }
+
+        fn probe(from_hz: f32, to_hz: f32) -> f32 {
+            let sr = 48_000.0f32;
+            let hold = (sr * 0.6) as usize;
+            let mut an = ResonatorAnalyzer::new(sr);
+            let target_midi = 69.0 + 12.0 * (to_hz / 440.0).log2();
+
+            // Prime on the old note, then feed the new one in audio-callback-sized
+            // chunks, sampling the fundamental at the bank's own 16 ms publish rate.
+            an.process_samples(&violin_tone(from_hz, sr, hold), true);
+            let new = violin_tone(to_hz, sr, hold);
+            let chunk = 128usize;
+            let mut fed = 0usize;
+            while fed < new.len() {
+                let take = chunk.min(new.len() - fed);
+                an.process_samples(&new[fed..fed + take], true);
+                fed += take;
+                let snap = an.snapshot(true, AccidentalStyle::Sharps);
+                if let Some((midi, _strength)) = snap.fundamental {
+                    if (midi - target_midi).abs() < 0.5 {
+                        return fed as f32 / sr * 1000.0;
+                    }
+                }
+            }
+            f32::INFINITY
+        }
+
+        // Comfortably under pYIN's 128 ms, with headroom over the ~40 ms perceptual
+        // threshold so this fails on a real regression, not on measurement noise.
+        const BUDGET_MS: f32 = 40.0;
+        println!("\n=== resonator bank note-change latency (pYIN = 128 ms) ===");
+        for (name, from, to) in [
+            ("A4->B4 (2nd)  ", 440.0f32, 493.88f32),
+            ("A4->E5 (5th)  ", 440.0, 659.25),
+            ("A4->A5 (8ve)  ", 440.0, 880.0),
+            ("E5->A4 (down) ", 659.25, 440.0),
+            ("G3->D4 (violin G->D)", 196.0, 293.66),
+        ] {
+            let ms = probe(from, to);
+            println!("{name} -> {ms:>7.1} ms");
+            assert!(
+                ms <= BUDGET_MS,
+                "{name}: bank took {ms:.1} ms, budget {BUDGET_MS:.0} ms — the melody \
+                 line rides the bank precisely because it is this fast"
+            );
+        }
+    }
+
     /// A tone parked *between* bank bins must land at its true frequency, closer
     /// than the nearest physical resonator could place it. Bank bins sit 0.2
     /// semitone apart (5/semitone), so a tone at +0.1 semitone is 0.1 from the

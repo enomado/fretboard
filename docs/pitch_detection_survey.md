@@ -6,16 +6,29 @@ the literature offers, and the concrete next steps.
 
 ## What the app already does
 
-- **YIN** (`audio::dsp::pitch::detect_pitch_yin`) — the committed pitch source.
-  Time-domain autocorrelation-difference. Accurate & robust for a monophonic
-  line, gives cents. **Slow by construction**: window ≈ 6144 samples ≈ **130–140 ms**
-  + a `smooth_frequency` EMA (α 0.10–0.18) + a 40 ms re-analysis cadence. This is
-  the source of the staff's note-commit lag.
+> **Status note (Phase 1.7).** The "wins come from marrying them" line below turned
+> out to be exactly right, and the numbers here were confirmed by measurement — see
+> `violin_trainer_plan.md` Phase 1.7. The marriage only works with the **bank
+> leading** and YIN pinning the octave (`audio::dsp::melody`). The other
+> arrangement — fusing the bank into the pYIN HMM as a weighted candidate — was
+> built (Phase 1.5) and measured to contribute **exactly zero**, because YIN's own
+> candidate scores `p = 1.000` against the bank's capped `≤ 0.5`.
+
+- **YIN / pYIN** (`audio::dsp::pyin`) — the octave anchor, and the pitch source for
+  the tuner and fretboard. Time-domain autocorrelation-difference. Accurate & robust
+  for a monophonic line, gives cents. **Slow by construction**: window ≈ 6144 samples
+  ≈ **128 ms** + a 40 ms re-analysis cadence. Measured: note-change latency equals
+  the window length *exactly*, because the HMM will not leave a note while the window
+  still holds any trace of it. This was the source of the staff's note-commit lag —
+  the melody line no longer reads it.
 - **Resonator bank** (`audio::dsp::resonator`, `OnePoleBank`) — the *fast* channel.
   Per-sample IIR leaky resonators, published ~**16 ms (60 Hz)**. Includes a Δφ
   **instantaneous-frequency reassignment** (super-resolution + coherence-gate that
   suppresses the negative-frequency image / noise). This is already a "paper-grade"
   technique (the reassignment method). Fed to the staff waterfall (Phase 1.2).
+  **Measured note-change latency: 8–29 ms** (`resonator::tests::bank_latency_probe`)
+  — inside the perceptual threshold below. This is the melody line's pitch source
+  (Phase 1.7); its one weakness is the octave, which is what YIN is borrowed for.
 
 So we have a slow-but-clean estimate (YIN) and a fast energy/pitch view (resonators).
 The wins come from marrying them.

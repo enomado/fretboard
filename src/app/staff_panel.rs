@@ -55,20 +55,17 @@ use crate::ui::theme::{
     intonation_color,
 };
 
-/// Voiced clarity below which the fused pYIN pitch reads as "no note this frame"
-/// (silence / unvoiced). pYIN reports its voiced probability as `clarity`.
-const CLARITY_GATE: f32 = 0.5;
 /// Input level (RMS-ish, 0..1) below this is treated as silence. The audio engine
 /// never declares silence on its own (`SILENCE_RMS_THRESHOLD == 0.0`), so without
 /// this gate the pitch detector latches onto room noise and "writes" ghost notes.
 const LEVEL_GATE: f32 = 0.02;
-/// Accepted pitch range — as wide as the pYIN tracker can actually produce, so no
-/// clef is clamped short. The low bound is the tracker's own grid floor, C1 (=
-/// `pyin::MIN_MIDI` = 24); the fused tracker is octave-correct now, so the old
-/// violin-only C3 floor — which existed to hide sub-bass octave ghosts — is no
-/// longer needed and was silently cutting off the whole bass/cello register (C2
-/// and down). The high bound clears the violin's top with margin.
-const MIDI_MIN: i32 = 24;
+/// Accepted note range. The low bound is the resonator bank's own grid floor
+/// (`ResonatorSettings::min_midi` = 12), so no clef is clamped short — the bass and
+/// cello registers stay open. Ghost readings are kept off the staff by `LEVEL_GATE`
+/// plus the octave pinning in `audio::dsp::melody`, not by a range floor: the old
+/// violin-only C3 floor existed to *hide* sub-bass octave ghosts rather than fix
+/// them.
+const MIDI_MIN: i32 = 12;
 const MIDI_MAX: i32 = 103;
 /// A held note shorter than this (seconds) is discarded as a glitch, not written.
 const MIN_NOTE_SECONDS: f64 = 0.06;
@@ -239,27 +236,27 @@ impl App {
         // so there the global sharps/flats preference still applies.
         let key = self.staff.key;
         let style = key.style().unwrap_or(settings.accidental);
-        let reference = settings.concert_pitch_hz;
         let reading = self.audio.reading();
         let level = self.audio.input_level();
 
-        // The note to write this frame comes straight from the fused pYIN pitch
-        // (`reading.frequency_hz`). The HMM tracker now merges the fast resonator
-        // bank (low latency) with YIN (octave-robust) internally, so the note is
-        // already octave-correct and prompt — no panel-side octave-lock. Nearest
+        // The note to write comes from `melody_pitch`: the resonator bank's fast fine
+        // pitch with its octave pinned by pYIN (see `audio::dsp::melody`). Nearest
         // semitone = the note, the fractional part = cents.
         //
-        // Gated on voiced clarity (pYIN's voiced probability) and absolute input
-        // level, so room noise is not written as ghost notes. `MIDI_MIN..=MIDI_MAX`
-        // keeps it within the range the tracker can produce (C1..≈G7).
+        // NOT `reading.frequency_hz` — that is pYIN alone, which cannot follow a note
+        // change in under ~128 ms because its HMM will not leave a note while the
+        // analysis window still holds a trace of it. The bank follows in 8–29 ms,
+        // inside the ~30–40 ms perceptual threshold. Writing the staff from
+        // `frequency_hz` is exactly the regression this panel had.
+        //
+        // Gated on absolute input level, which is the real silence gate: the bank's
+        // column is normalized, so it reports *some* fundamental even for room noise.
+        // `MIDI_MIN..=MIDI_MAX` keeps ghost readings off the staff.
         let pitch = (level >= LEVEL_GATE)
             .then(|| reading.as_ref())
             .flatten()
-            .and_then(|r| {
-                if r.frequency_hz <= 0.0 || r.clarity < CLARITY_GATE {
-                    return None;
-                }
-                let midi_f = 69.0 + 12.0 * (r.frequency_hz / reference).log2();
+            .and_then(|r| r.melody_pitch)
+            .and_then(|(midi_f, _strength)| {
                 let midi = midi_f.round() as i32;
                 (MIDI_MIN..=MIDI_MAX).contains(&midi).then_some((
                     midi,
@@ -655,15 +652,22 @@ mod tests {
     /// No onset this frame — the counter the engine last reported, unchanged.
     const NO_ONSET: u64 = 0;
 
-    /// TEMPORARY end-to-end latency probe: real `PitchTracker` on a real sliding
-    /// window → real `OctaveGate` → real `StaffTrainer`, driven at UI frame rate.
-    /// Reports the ms from the true note change until the staff *shows* the new
-    /// note. This is the number the user actually perceives.
+    /// REGRESSION: the staff must show a note change promptly, end to end.
+    ///
+    /// Drives the real melody path — real `ResonatorAnalyzer` + real `PitchTracker`
+    /// for the octave anchor → real `dsp::melody` snap → real `OctaveGate` → real
+    /// `StaffTrainer` — at UI frame rate, and measures the ms from the true note
+    /// change until the staff *shows* the new note. This is the number the user
+    /// perceives, and its absence is exactly how the panel came to be driven from
+    /// pYIN alone (128 ms ordinary / 328 ms on an octave) without anyone noticing.
     #[test]
     fn end_to_end_latency_probe() {
         use std::f32::consts::TAU;
 
+        use crate::audio::dsp::melody::MelodyTracker;
         use crate::audio::dsp::pyin::PitchTracker;
+        use crate::audio::dsp::resonator::ResonatorAnalyzer;
+        use crate::core_types::note::AccidentalStyle;
 
         fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
             let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
@@ -685,6 +689,7 @@ mod tests {
             let sr = 48_000.0f32;
             let window_size = 6144usize;
             let analysis_hop = 1920usize; // ANALYSIS_INTERVAL = 40 ms
+            let bank_publish_ms = 16.0f32; // ResonatorSettings::update_ms
             let hold = (sr * 0.6) as usize;
             let mut sig = violin_tone(from_hz, sr, hold);
             sig.extend(violin_tone(to_hz, sr, hold));
@@ -692,26 +697,45 @@ mod tests {
             let target_midi = (69.0 + 12.0 * (to_hz / 440.0).log2()).round() as i32;
 
             let mut tracker = PitchTracker::new();
+            let mut bank = ResonatorAnalyzer::new(sr);
+            let mut melody = MelodyTracker::default();
             let mut staff = StaffTrainer::default();
-            // Latest reading published by the analysis thread, held between ticks.
-            let mut reading: Option<f32> = None;
+            // Prime the bank with everything up to the first UI frame, as the live
+            // bank (fed continuously from the audio callback) would already be.
+            bank.process_samples(&sig[..window_size], true);
+
+            // What the two publish paths have last put on the reading.
+            let mut anchor: Option<(f32, f32)> = None;
+            let mut melody_pitch: Option<(f32, f32)> = None;
             let mut next_analysis = window_size;
+            let mut bank_fed = window_size;
+            let mut next_bank_publish_ms = 0.0f32;
 
             // UI loop at 60 fps, exactly like `draw_staff_card`.
             let frame_ms = 1000.0 / 60.0;
             let mut t_ms = window_size as f32 / sr * 1000.0;
             while t_ms < 1150.0 {
-                // The analysis thread publishes a new reading every 40 ms.
-                let now_samples = (t_ms * sr / 1000.0) as usize;
+                let now_samples = ((t_ms * sr / 1000.0) as usize).min(sig.len());
+                // The bank consumes audio continuously and republishes every ~16 ms.
+                if now_samples > bank_fed {
+                    bank.process_samples(&sig[bank_fed..now_samples], true);
+                    bank_fed = now_samples;
+                }
+                if t_ms >= next_bank_publish_ms {
+                    let fast = bank.snapshot(true, AccidentalStyle::Sharps).fundamental;
+                    melody_pitch = melody.update(fast, anchor);
+                    next_bank_publish_ms = t_ms + bank_publish_ms;
+                }
+                // The pYIN path rebuilds the octave anchor every 40 ms.
                 if now_samples >= next_analysis && next_analysis + window_size <= sig.len() {
                     let win = &sig[next_analysis - window_size..next_analysis];
-                    reading = tracker.process(win, sr, None, false).map(|(f, _)| f);
+                    anchor = tracker
+                        .process(win, sr, None, false)
+                        .map(|(f, c)| (69.0 + 12.0 * (f / 440.0).log2(), c));
                     next_analysis += analysis_hop;
                 }
-                let pitch = reading.map(|f| {
-                    let midi_f = 69.0 + 12.0 * (f / 440.0).log2();
-                    (midi_f.round() as i32, 0.0, midi_f)
-                });
+                let pitch = melody_pitch
+                    .map(|(midi_f, _)| (midi_f.round() as i32, (midi_f - midi_f.round()) * 100.0, midi_f));
                 staff.update(pitch, LVL, t_ms as f64 / 1000.0, NO_ONSET);
                 if staff.current().map(|(m, _)| m) == Some(target_midi) {
                     return t_ms - change_ms;
@@ -721,14 +745,33 @@ mod tests {
             f32::INFINITY
         }
 
+        // Two budgets, because one interval is genuinely harder than the rest.
+        //
+        // Any leap that CHANGES PITCH CLASS is caught by `melody`'s agreement guard
+        // on the first frame, so it costs only the bank (8–29 ms) + the bank's 16 ms
+        // publish tick + a 60 fps UI frame. pYIN alone measured 128 ms for these.
+        const BUDGET_MS: f32 = 60.0;
+        // An OCTAVE leap is the one interval no single frame can tell from the bank
+        // slipping an octave (A4 and A5 are the same pitch class), so it additionally
+        // pays `melody::LEAP_CONFIRM_FRAMES` × the bank's 16 ms cadence before the
+        // leap is believed. That is the deliberate price of not re-breaking the
+        // octave wandering the snap exists to fix; it was 328 ms when the anchor was
+        // trusted outright, and it is the *only* interval that pays it.
+        const OCTAVE_BUDGET_MS: f32 = 130.0;
         println!("\n=== staff end-to-end latency (what the user sees) ===");
-        for (name, from, to) in [
-            ("A4->B4  (2nd,  gate passes)", 440.0f32, 493.88f32),
-            ("A4->D5  (4th,  gate passes)", 440.0, 587.33),
-            ("A4->E5  (5th,  GATE BLOCKS)", 440.0, 659.25),
-            ("A4->A5  (8ve,  GATE BLOCKS)", 440.0, 880.0),
+        for (name, from, to, budget) in [
+            ("A4->B4  (2nd)  ", 440.0f32, 493.88f32, BUDGET_MS),
+            ("A4->D5  (4th)  ", 440.0, 587.33, BUDGET_MS),
+            ("A4->E5  (5th)  ", 440.0, 659.25, BUDGET_MS),
+            ("G3->D4  (violin G->D)", 196.0, 293.66, BUDGET_MS),
+            ("A4->A5  (8ve)  ", 440.0, 880.0, OCTAVE_BUDGET_MS),
         ] {
-            println!("{name} -> {:>7.1} ms", probe(from, to));
+            let ms = probe(from, to);
+            println!("{name} -> {ms:>7.1} ms  (budget {budget:.0})");
+            assert!(
+                ms <= budget,
+                "{name}: staff took {ms:.1} ms to show the note, budget {budget:.0} ms"
+            );
         }
     }
 

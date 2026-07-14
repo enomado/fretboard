@@ -241,7 +241,13 @@ its octave within ~150–200 ms (window + a few HMM frames)? tuner cents still s
 leaps (no bow gap) lag, that's the unvoiced-reentry routing — loosen `SELF_STAY` /
 widen `TRANS_SIGMA_CENTS`.
 
-### Phase 1.5 — fuse the resonator bank into the pYIN HMM  ✅ DONE (built, not live-verified)
+### Phase 1.5 — fuse the resonator bank into the pYIN HMM  ❌ REVERTED by Phase 1.7
+> **Superseded — kept for the record.** This phase moved the melody line off the fast
+> bank and onto the fused `reading.frequency_hz`, and the fusion it traded for
+> **contributes exactly nothing** (measured). It shipped "built, not live-verified"
+> and cost the staff ~100 ms. See Phase 1.7 for the measurements and the revert.
+> Its two live-verify questions below both had the answer "no".
+
 Unify the two pitch sources into one tracker instead of the panel-side octave-lock
 snap. The bank's fast pitch (`SharedState::fast_pitch`) is now fed into
 `PitchTracker::process` as **one extra weighted HMM candidate** (`BANK_WEIGHT ×
@@ -293,6 +299,76 @@ raise `RISE_RATIO`/`REARM_RATIO` or `REFRACTORY_FRAMES` in `onset.rs`)? attack m
 doesn't cause wrong-octave flashes at note starts (if so, lower
 `ATTACK_BANK_WEIGHT`)? The onset detector runs at the 40 ms analysis cadence — if
 timing feels coarse, the next lever is a callback-rate energy envelope.
+
+### Phase 1.7 — melody rides the bank again; latency is now measured  ✅ DONE
+Reported live: "показ нот в violin staff стал очень тупить, не показывает текущее"
+— and the pitch roll too. Both panels read `reading.frequency_hz`, so both were slow.
+
+**What the measurements said** (all reproducible; the probes are now regression
+tests, see below):
+
+| path | note change | notes |
+|---|---|---|
+| pYIN on the 6144 window | **128 ms** | equals the window length *exactly*, at every window size (1024→21 ms, 8192→171 ms). The HMM will not leave a note while the window holds *any* trace of it. |
+| pYIN, octave leap | **248 ms** | +120 ms of transition cost on top |
+| plain YIN (pre-1.4 reference) | 128 ms | so the window, not the HMM, sets the floor for ordinary intervals |
+| staff end-to-end, before | **128 ms / 328 ms** (8ve) | + `OctaveGate` + the 140 ms release grace |
+| **resonator bank** | **8–29 ms** | inside the ~30–40 ms perceptual threshold |
+
+**Why Phase 1.5's fusion could never work.** The bank was fed to the HMM as one
+weighted candidate at `BANK_WEIGHT × strength ≤ 0.5`, but YIN's own candidate
+measures `p = 1.000` — the bank loses every frame at *any* signal strength, and an
+octave transition cost of ~18 nats buries it besides. Feeding the HMM a bank reading
+10 ms ahead of the window changes the output **by exactly zero**. Raising
+`BANK_WEIGHT` (what 1.5's live-verify note suggested) would not have fixed it either:
+the real blocker is that YIN's *emission* for the old note stays at `p = 1.0` until
+the window flushes, and no candidate weight touches that.
+
+**The revert, done once for both panels.** New `audio::dsp::melody::MelodyTracker`
+restores 1.3's architecture — bank leads, pYIN pins the octave — but as a shared
+value rather than a line in `draw_staff_card`: it rides `TunerReading::melody_pitch`,
+computed in `publish_resonator_snapshot` at the bank's ~16 ms cadence and re-stamped
+by the 40 ms path. `frequency_hz` stays pYIN's, for the tuner and fretboard, where a
+steady reading beats a prompt one.
+
+Two guards the naive 1.3 snap did not have, both found by the tests, not by reasoning:
+- **Stale anchor, different note** — for ~128 ms after a leap the anchor is still on
+  the *previous* note. A naive snap of a fresh E5 toward a stale A4 computes
+  `round((69−76)/12) = −1` and lands on **E4**. Fixed by requiring pitch-class
+  agreement (`OCTAVE_AGREE_SEMITONES`).
+- **Octave leap vs octave slip** — the one case pitch class provably cannot separate
+  (A4 and A5 are the same class). Trusting the anchor here measured **261 ms**.
+  Separated by *time* instead (`LEAP_CONFIRM_FRAMES`): wandering's disagreement is
+  intermittent and resets the count, a real leap's is unbroken.
+
+**Also fixed:** `LEAP_MASS` in the HMM kernel (a fifth sat 10σ out in the Gaussian,
+so only the 1e-6 floor kept its cost finite; legato leaps have no unvoiced frame to
+route through, which the design assumed they did) — octave 248→208 ms. `OCTAVE_REJECT`
+7→11 semitones (7 rejected a perfect *fifth* — every violin open-string crossing; it
+only passed at all because the tracker reports 75.95 rather than 76.0).
+
+**Result:** 128→**28 ms** for every interval that changes pitch class, 328→**111 ms**
+for an octave leap.
+
+**The real lesson — why this shipped at all.** 1.4/1.5/1.6 were each marked
+"✅ DONE (built, not live-verified)", and *not one* of them had a test that measured
+latency. Every pYIN test fed the **same window** over and over, which cannot observe
+a note change by construction. The probes are now regression tests with budgets:
+`resonator::bank_latency_probe` (≤40 ms), `staff_panel::end_to_end_latency_probe`
+(≤60 ms, ≤130 ms for the octave), plus `pyin::latency_probe` /
+`short_window_accuracy_probe` as reference numbers. A design that trades latency for
+tidiness must now fail a test, not a live session weeks later.
+
+**Still open (measured, not fixed here):**
+- **Nothing above ~1000 Hz.** `cmndf`'s `min_lag = sr/1000` caps YIN at **B5**, and
+  the bank's own `ResonatorSettings::max_midi = 84` caps it at **C6**. A violin plays
+  well above both in high positions. Raising the bank's ceiling costs resonators
+  (CPU) — a settings decision, not a bug fix.
+- `LOWEST_TRACKED_FREQUENCY = 16 Hz` makes `cmndf` search lags to 3000 samples
+  (13.9M ops/frame) for a band no instrument here plays; the low tail is also where
+  the sub-bass ghost lives.
+- The now-inert `BANK_WEIGHT`/`ATTACK_BANK_WEIGHT` fusion still runs in `pyin`. It is
+  harmless but it is dead weight, and it is what made 1.5 look reasonable.
 
 ### Phase 2 — Target / call-and-response mode  ⬜ NOT STARTED
 Show a **target** (a single note, then a short phrase/scale) the user must play;

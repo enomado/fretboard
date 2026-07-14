@@ -6,6 +6,7 @@
 //! and drive these through [`crate::audio::core`]'s pipelines. The split exists
 //! so wasm reuses the exact same analysis instead of a parallel copy.
 pub(crate) mod analysis_math;
+pub(crate) mod melody;
 pub(crate) mod onset;
 pub(crate) mod pitch;
 pub(crate) mod pyin;

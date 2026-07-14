@@ -19,8 +19,19 @@
 //!    trellis each frame) for zero added latency.
 //!
 //! Output is an absolute frequency (taken from the winning candidate, so it keeps
-//! sub-cent precision for the tuner) + the voiced probability as a clarity. The
-//! violin staff snaps its fast resonator pitch to this frequency's *octave*.
+//! sub-cent precision for the tuner) + the voiced probability as a clarity.
+//!
+//! # What this is, and is not, for
+//!
+//! This is the **tuner and fretboard's** pitch, and the melody line's **octave
+//! anchor** — nothing else. It is octave-robust but *slow*, and slow in a specific
+//! way worth knowing: its note-change latency equals the analysis window length
+//! **exactly** (measured, [`tests::latency_probe`] — 128 ms at the default 6144
+//! window), because the HMM will not leave a note while the window still holds any
+//! trace of it. That is fine, even desirable, for a tuner.
+//!
+//! The staff and pitch roll must **not** read this — see [`super::melody`], which
+//! rides the resonator bank (8–29 ms) and borrows only the octave from here.
 
 use super::analysis_math::parabolic_tau;
 use super::pitch::{
@@ -141,23 +152,42 @@ const TRANS_WINDOW: usize = 12 * BINS_PER_SEMITONE;
 /// unvoiced self-loop out-races every voiced state and the tracker never commits.
 /// The remaining `1 − SELF_STAY` is spread over neighbours by the kernel below.
 const SELF_STAY: f32 = 0.8;
-/// Gaussian width (cents) of the *neighbour* spread — how far a glide/vibrato can
-/// move per frame within the non-self mass. An octave sits far in this tail, so a
-/// one-frame octave jump is effectively impossible; real leaps route through the
-/// unvoiced state instead (which reaches any pitch).
+/// Gaussian width (cents) of the *glide* spread — how far a glide/vibrato can move
+/// per frame within the non-self mass.
 const TRANS_SIGMA_CENTS: f32 = 70.0;
-/// Tiny floor on the neighbour spread so any within-window move has finite cost.
-const TRANS_FLOOR: f32 = 1e-6;
+/// Mass reserved for a **leap**: the player can jump any interval between frames,
+/// and this is the only route that models it honestly.
+///
+/// Spread uniformly over the whole ±octave window, so a leap of *any* size costs a
+/// bounded ~9 nats that decisive evidence can overcome — rather than the Gaussian's
+/// tail, where a fifth sits 10σ out at exp(−50) and only the old floor (1e-6) kept
+/// the cost finite at all. The design intended leaps to route through the unvoiced
+/// state, but a *legato* leap never goes unvoiced, so that route is emission-blocked
+/// and the tracker's only escape was to wait for the old note to leave the analysis
+/// window entirely — measured as +120 ms on every octave.
+///
+/// Small enough that a lone octave-outlier frame still loses to continuity (its own
+/// emission is weaker, and the true pitch keeps a candidate), which is the property
+/// `hmm_rejects_a_lone_octave_outlier` guards.
+const LEAP_MASS: f32 = 0.02;
 /// Probability of leaving a pitch for the unvoiced state each frame (and vice
 /// versa). Small: notes persist, but a real gap can switch voicing.
 const VOICING_SWITCH: f32 = 0.02;
 /// Emission floor so no state has log-prob −∞.
 const EMIT_EPS: f32 = 1e-9;
 /// Weight of the resonator bank's fast pitch when it is fused in as an extra HMM
-/// candidate (scaled by the bank's strength). Comparable to a strong YIN
-/// candidate so it pulls the tracker toward the low-latency estimate, but not so
-/// large that a momentarily octave-wrong bank reading can overpower the HMM's
-/// continuity (the transition cost of an octave jump still dominates).
+/// candidate (scaled by the bank's strength).
+///
+/// **This fusion is inert and is not the low-latency path.** It was measured to
+/// change the tracker's output by *exactly zero*: at `≤ 0.5` the bank's candidate
+/// cannot outvote YIN's own, which measures `p = 1.000`, at any signal strength —
+/// and the octave transition cost (~18 nats) buries it besides. Raising this would
+/// not help either: the binding constraint is that YIN's *emission* for the old note
+/// stays at `p = 1.0` until the window flushes, which no candidate weight touches.
+///
+/// It is kept only because it is harmless and removing it touches the tuner path.
+/// The melody line's speed comes from [`super::melody`] riding the bank directly;
+/// do not "fix" latency by tuning this. See `docs/violin_trainer_plan.md` Phase 1.7.
 const BANK_WEIGHT: f32 = 0.5;
 /// Bank weight on an *onset* frame. A fresh attack means a new note, so the bank
 /// (which sees it ~100 ms before YIN's long window catches up) is trusted to lead
@@ -191,28 +221,36 @@ pub(crate) struct PitchTracker {
 impl PitchTracker {
     pub(crate) fn new() -> Self {
         // Transition kernel over offsets −W..=W as a proper distribution summing to
-        // 1, but *diagonal-dominant*: a fixed `SELF_STAY` on the diagonal (offset 0)
-        // and the remaining `1 − SELF_STAY` shared among neighbours by a Gaussian.
-        // Diagonal dominance is the whole trick — it makes "keep the same pitch"
-        // cheap, so a voiced note can hold against the unvoiced self-loop, while the
-        // octave (far in the Gaussian tail) stays prohibitively costly.
+        // 1, mixing three components that model three different things a player does:
+        //
+        //   SELF_STAY  — hold the note. Must dominate: diagonal dominance is what
+        //                lets a voiced state hold against the (nearly free) unvoiced
+        //                self-loop, which otherwise out-races every pitch and the
+        //                tracker never commits.
+        //   Gaussian   — glide/vibrato, a few tens of cents per frame.
+        //   LEAP_MASS  — jump to any other pitch, uniform over the window. Without a
+        //                real mass here, an interval past ~3 semitones costs so much
+        //                that the tracker cannot move until the *old* note's evidence
+        //                vanishes from the analysis window — the +120 ms octave lag.
         let w = TRANS_WINDOW as isize;
+        let n_offsets = (2 * TRANS_WINDOW) as f32; // every offset except the diagonal
         let mut kernel = vec![0.0f32; 2 * TRANS_WINDOW + 1];
-        let mut neighbour_sum = 0.0f32;
+        let mut glide_sum = 0.0f32;
         for off in -w..=w {
             if off == 0 {
                 continue;
             }
             let cents = off as f32 * (100.0 / BINS_PER_SEMITONE as f32);
-            let g = (-0.5 * (cents / TRANS_SIGMA_CENTS).powi(2)).exp() + TRANS_FLOOR;
+            let g = (-0.5 * (cents / TRANS_SIGMA_CENTS).powi(2)).exp();
             kernel[(off + w) as usize] = g;
-            neighbour_sum += g;
+            glide_sum += g;
         }
+        let glide_mass = 1.0 - SELF_STAY - LEAP_MASS;
         for (i, k) in kernel.iter_mut().enumerate() {
             if i == TRANS_WINDOW {
                 *k = SELF_STAY;
             } else {
-                *k = (1.0 - SELF_STAY) * *k / neighbour_sum;
+                *k = glide_mass * *k / glide_sum + LEAP_MASS / n_offsets;
             }
         }
         let log_kernel = kernel.iter().map(|k| k.ln()).collect();
@@ -533,6 +571,237 @@ mod tests {
             "wrong-octave bank pulled pitch to {}",
             out.0
         );
+    }
+
+    // --- latency probe -------------------------------------------------------
+    //
+    // TEMPORARY diagnostic (not an assertion): every other test here feeds the
+    // *same* window over and over, so none of them can see note-change latency.
+    // This one slides a real window across a real note change, exactly as
+    // `AnalysisPipeline` does (newest `window_size` samples every
+    // `ANALYSIS_INTERVAL`), and prints the ms until the tracker follows.
+
+    /// A bowed-string-ish tone: fundamental + harmonics, since a pure sine is
+    /// unrealistically easy for YIN (no octave ambiguity at all).
+    fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize, phase0: f32) -> Vec<f32> {
+        let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
+        (0..len)
+            .map(|i| {
+                let t = phase0 + i as f32 / sample_rate;
+                partials
+                    .iter()
+                    .enumerate()
+                    .map(|(h, a)| a * (TAU * frequency_hz * (h + 1) as f32 * t).sin())
+                    .sum::<f32>()
+                    / 3.0
+            })
+            .collect()
+    }
+
+    /// Slide the real analysis window across a note change and report the latency.
+    /// `bank_lag_ms` models the resonator bank's own delay; `None` = bank parked.
+    fn measure_latency(from_hz: f32, to_hz: f32, bank_lag_ms: Option<f32>, onset: bool) -> f32 {
+        measure_latency_win(from_hz, to_hz, bank_lag_ms, onset, 6144)
+    }
+
+    fn measure_latency_win(
+        from_hz: f32,
+        to_hz: f32,
+        bank_lag_ms: Option<f32>,
+        onset: bool,
+        window_size: usize,
+    ) -> f32 {
+        let sr = 48_000.0f32;
+        let hop = 1920usize; // ANALYSIS_INTERVAL = 40 ms @ 48 kHz
+        let hold = (sr * 0.6) as usize;
+
+        // note1 for 0.6 s then note2 for 0.6 s, phase-continuous.
+        let mut sig = violin_tone(from_hz, sr, hold, 0.0);
+        sig.extend(violin_tone(to_hz, sr, hold, 0.0));
+        let change = hold;
+
+        let mut t = PitchTracker::new();
+        let mut fired = false;
+        let mut tick = window_size;
+        while tick < sig.len() {
+            let win = &sig[tick - window_size..tick];
+            // The bank sees the signal `bank_lag_ms` ago (its own latency).
+            let bank = bank_lag_ms.map(|lag| {
+                let at = tick as f32 - lag * sr / 1000.0;
+                let hz = if at >= change as f32 { to_hz } else { from_hz };
+                (hz, 0.9)
+            });
+            // Onset fires on the first tick whose window contains the change.
+            let is_onset = onset && !fired && tick > change && {
+                fired = true;
+                true
+            };
+            if let Some((f, _)) = t.process(win, sr, bank, is_onset) {
+                let cents = 1200.0 * (f / to_hz).log2();
+                if cents.abs() < 50.0 {
+                    return (tick - change) as f32 / sr * 1000.0;
+                }
+            }
+            tick += hop;
+        }
+        f32::INFINITY
+    }
+
+    /// What candidates does the front end actually emit for a clean violin A4?
+    /// `LOWEST_TRACKED_FREQUENCY = 16 Hz` makes `cmndf` search lags out to
+    /// sr/16 = 3000 samples. At tau that large the difference is averaged over only
+    /// `window - tau` samples, so the CMNDF there is computed from a shrinking,
+    /// ever-noisier sample count — a suspected source of spurious sub-bass dips.
+    #[test]
+    fn candidate_probe() {
+        let sr = 48_000.0f32;
+        let win = violin_tone(440.0, sr, 6144, 0.0);
+        let c = cmndf(&win, sr).unwrap();
+        println!("\n=== cmndf search range, window 6144 @ 48 kHz ===");
+        println!(
+            "min_lag {} ({:.0} Hz) .. max_lag {} ({:.1} Hz)",
+            c.min_lag,
+            sr / c.min_lag as f32,
+            c.max_lag,
+            sr / c.max_lag as f32
+        );
+        println!(
+            "at max_lag the difference averages over only {} of {} samples",
+            6144 - c.max_lag,
+            6144
+        );
+
+        let prior = ThresholdPrior::new();
+        let (cands, voiced) = pyin_candidates(&c, &prior, sr);
+        println!("\n=== pyin candidates for a clean violin A4 (440 Hz) ===");
+        println!("voiced = {voiced:.3}");
+        let mut sorted = cands.clone();
+        sorted.sort_by(|a, b| b.probability.total_cmp(&a.probability));
+        for cand in sorted.iter() {
+            let midi = 69.0 + 12.0 * (cand.frequency_hz / 440.0).log2();
+            println!(
+                "  {:>8.2} Hz (midi {:>6.2})  p = {:.3}",
+                cand.frequency_hz, midi, cand.probability
+            );
+        }
+    }
+
+    /// Would a SHORT pitch window still track accurately? Latency scales with the
+    /// window, so this is the tradeoff: how short can it go before the low notes
+    /// break? Reports the tracked error in cents per (note, window) pair.
+    #[test]
+    fn short_window_accuracy_probe() {
+        let sr = 48_000.0f32;
+        let notes = [
+            ("C2  65 Hz (cello low C)", 65.41f32),
+            ("G2  98 Hz (cello G)    ", 98.0),
+            ("C3 131 Hz (viola low C)", 130.81),
+            ("G3 196 Hz (violin G)   ", 196.0),
+            ("D4 294 Hz (violin D)   ", 293.66),
+            ("A4 440 Hz (violin A)   ", 440.0),
+            ("E5 659 Hz (violin E)   ", 659.25),
+            ("A5 880 Hz              ", 880.0),
+        ];
+        println!("\n=== tracked error (cents) vs pitch window ===");
+        print!("{:<26}", "note");
+        for w in [1024usize, 1536, 2048, 3072, 6144] {
+            print!("{:>10}", format!("{}({:.0}ms)", w, w as f32 / 48.0));
+        }
+        println!();
+        for (name, hz) in notes {
+            print!("{name:<26}");
+            for w in [1024usize, 1536, 2048, 3072, 6144] {
+                let win = violin_tone(hz, sr, w, 0.0);
+                let mut t = PitchTracker::new();
+                let mut out = None;
+                for _ in 0..6 {
+                    out = t.process(&win, sr, None, false);
+                }
+                match out {
+                    Some((f, _)) => {
+                        let cents = 1200.0 * (f / hz).log2();
+                        print!("{cents:>10.1}");
+                    }
+                    None => print!("{:>10}", "unvoiced"),
+                }
+            }
+            println!();
+        }
+    }
+
+    #[test]
+    fn latency_probe() {
+        // A4 -> E5 is a fifth: on a violin that is an open-string crossing, the
+        // single most common leap there is.
+        let cases = [
+            ("A4->E5 legato, bank parked   ", 440.0, 659.25, None, false),
+            ("A4->E5 legato, bank @10ms    ", 440.0, 659.25, Some(10.0), false),
+            ("A4->E5 detached, bank @10ms  ", 440.0, 659.25, Some(10.0), true),
+            ("A4->B4 legato, bank parked   ", 440.0, 493.88, None, false),
+            ("A4->B4 legato, bank @10ms    ", 440.0, 493.88, Some(10.0), false),
+            ("A4->A5 legato, bank @10ms    ", 440.0, 880.0, Some(10.0), false),
+            ("A4->A5 detached, bank @10ms  ", 440.0, 880.0, Some(10.0), true),
+        ];
+        for (name, from, to, bank, onset) in cases {
+            let ms = measure_latency(from, to, bank, onset);
+            println!("{name} -> {ms:>8.1} ms");
+        }
+
+        // Does the latency simply track the window length? If so, the tracker is
+        // only following once the window holds ZERO of the old note.
+        println!("\n-- window sweep, A4->E5 legato, bank @10ms --");
+        for w in [1024usize, 2048, 3072, 4096, 6144, 8192] {
+            let ms = measure_latency_win(440.0, 659.25, Some(10.0), false, w);
+            let win_ms = w as f32 / 48.0;
+            println!("window {w:>5} ({win_ms:>5.1} ms) -> latency {ms:>7.1} ms");
+        }
+
+        // REFERENCE ORACLE: plain YIN (first dip below threshold) on the identical
+        // sliding window — i.e. what the pipeline ran BEFORE the pYIN/HMM rework.
+        // If this is faster, "раньше было лучше" is a real regression, not nostalgia.
+        println!("\n-- plain YIN (pre-pYIN reference), same 6144 window --");
+        for (name, from, to) in [
+            ("A4->E5 (fifth) ", 440.0f32, 659.25f32),
+            ("A4->B4 (second)", 440.0, 493.88),
+            ("A4->A5 (octave)", 440.0, 880.0),
+        ] {
+            let ms = measure_plain_yin_latency(from, to);
+            println!("{name} -> {ms:>7.1} ms");
+        }
+    }
+
+    /// Latency of classic YIN — first CMNDF dip below `threshold`, walked to its
+    /// bottom — with no HMM and no smoothing. The pre-pYIN reference.
+    fn measure_plain_yin_latency(from_hz: f32, to_hz: f32) -> f32 {
+        let sr = 48_000.0f32;
+        let window_size = 6144usize;
+        let hop = 1920usize;
+        let hold = (sr * 0.6) as usize;
+        let mut sig = violin_tone(from_hz, sr, hold, 0.0);
+        sig.extend(violin_tone(to_hz, sr, hold, 0.0));
+        let change = hold;
+
+        let mut tick = window_size;
+        while tick < sig.len() {
+            let win = &sig[tick - window_size..tick];
+            let c = cmndf(win, sr).unwrap();
+            let mut f = 0.0;
+            for tau in c.min_lag..c.max_lag {
+                if c.d[tau] < 0.15 {
+                    let mut t = tau;
+                    while t + 1 <= c.max_lag && c.d[t + 1] < c.d[t] {
+                        t += 1;
+                    }
+                    f = sr / t as f32;
+                    break;
+                }
+            }
+            if f > 0.0 && (1200.0 * (f / to_hz).log2()).abs() < 50.0 {
+                return (tick - change) as f32 / sr * 1000.0;
+            }
+            tick += hop;
+        }
+        f32::INFINITY
     }
 
     /// On an *onset*, the attack-boosted bank leads a leap immediately: with the

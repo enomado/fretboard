@@ -31,9 +31,6 @@ use crate::ui::pianoroll::{
 };
 use crate::ui::theme::PANEL_FILL;
 
-/// Voiced clarity below which the fused pYIN pitch reads as "no note this frame"
-/// for the melody line (pYIN reports its voiced probability as `clarity`).
-const CLARITY_GATE: f32 = 0.5;
 /// Input level (RMS-ish, 0..1) below this is silence — the engine never declares
 /// silence itself, so without this the detector traces room noise. Gates *both*
 /// layers: the line goes to a gap and the heat column is blanked.
@@ -159,26 +156,29 @@ impl App {
 
         let settings = self.audio.analysis_settings();
         let style = settings.accidental;
-        let reference = settings.concert_pitch_hz;
         let res_min_midi = settings.resonator.min_midi.as_u8() as i32;
         let res_max_midi = settings.resonator.max_midi.as_u8() as i32;
         let reading = self.audio.reading();
         let level = self.audio.input_level();
         let voiced = level >= LEVEL_GATE;
 
-        // MELODY LINE source = the fused pYIN pitch (`frequency_hz`): octave-stable
-        // and smoothed, so it reads the melody as one clean curve. It cannot show a
-        // fast trill (its window + HMM "stay" bias smear it) — that is the heat's
-        // job below. Gated on level + voiced clarity + range.
-        let pitch = voiced.then(|| reading.as_ref()).flatten().and_then(|r| {
-            if r.frequency_hz <= 0.0 || r.clarity < CLARITY_GATE {
-                return None;
-            }
-            let midi_f = 69.0 + 12.0 * (r.frequency_hz / reference).log2();
-            (MIDI_MIN..=MIDI_MAX)
-                .contains(&(midi_f.round() as i32))
-                .then_some(midi_f)
-        });
+        // MELODY LINE source = `melody_pitch`: the resonator bank's fast fine pitch
+        // with its octave pinned by pYIN (see `audio::dsp::melody`). Octave-stable
+        // like pYIN, but it follows a note change in 8–29 ms instead of ~128 ms.
+        //
+        // NOT `reading.frequency_hz` (pYIN alone) — that is what this panel used to
+        // read, and it put the line ~128 ms behind the heat drawn right beside it.
+        // Gated on level + range; the bank's normalized column always reports *some*
+        // fundamental, so level is the real silence gate.
+        let pitch = voiced
+            .then(|| reading.as_ref())
+            .flatten()
+            .and_then(|r| r.melody_pitch)
+            .and_then(|(midi_f, _strength)| {
+                (MIDI_MIN..=MIDI_MAX)
+                    .contains(&(midi_f.round() as i32))
+                    .then_some(midi_f)
+            });
         // HEAT source = the resonator bank's newest column (fast, per bank column),
         // painted as-is so trills/overtones show with no octave decision. Blanked
         // (empty column) when the input is silent, so rests are clean gaps rather

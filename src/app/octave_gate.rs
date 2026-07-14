@@ -24,10 +24,19 @@
 
 use std::collections::VecDeque;
 
-/// Reject a sample this many semitones or more off the local median. A trill or
-/// vibrato interval is at most a few semitones, so this only catches octave-scale
-/// slips.
-const OCTAVE_REJECT: f32 = 7.0;
+/// Reject a sample this many semitones or more off the local median.
+///
+/// This must sit just under the **octave** it is named for, because the intervals it
+/// has to let through are *melodic*, not just trills and vibrato. At the old value of
+/// 7.0 this rejected a perfect fifth — which on a violin is every open-string
+/// crossing (G3–D4–A4–E5 are tuned in fifths), the single most common leap there is.
+/// A fifth only got through at all because the tracker happens to report 75.95 rather
+/// than 76.0, i.e. by a rounding accident.
+///
+/// At 11.0 every interval up to a major seventh passes untouched and a ±12 slip is
+/// still caught. A *sustained* octave leap also still tracks: it re-establishes the
+/// median within ~3 frames (see [`MEDIAN_WINDOW`]).
+const OCTAVE_REJECT: f32 = 11.0;
 /// Window (frames) of recent raw pitch whose median is the rejection reference.
 /// Short on purpose — see the module docs: a lone spike never moves the median
 /// (rejected), but a sustained leap re-establishes it within ~3 frames (accepted).

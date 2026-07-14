@@ -32,6 +32,7 @@ use crate::audio::dsp::analysis_math::{
     frequency_to_note,
     note_bucket_labels,
 };
+use crate::audio::dsp::melody::MelodyTracker;
 use crate::audio::dsp::onset::OnsetDetector;
 use crate::audio::dsp::pitch::LOWEST_TRACKED_FREQUENCY;
 use crate::audio::dsp::pyin::PitchTracker;
@@ -79,6 +80,22 @@ pub(crate) struct SharedState {
     /// reading) stamp the *same* value onto `TunerReading::fast_pitch` — otherwise
     /// the 40 ms path would blank it every frame it rebuilds the reading.
     pub(crate) fast_pitch:          Option<(f32, f32)>,
+    /// pYIN's octave opinion for the melody line: `(fractional_midi, voiced
+    /// probability)`, or `None` before the first reading.
+    ///
+    /// Kept here as MIDI rather than Hz because the two publish paths run at
+    /// different cadences on different threads: the 40 ms pYIN path owns the concert
+    /// pitch it was computed against and writes this, and the 16 ms bank path reads
+    /// it without needing the settings at all. See `dsp::melody`.
+    pub(crate) octave_anchor:       Option<(f32, f32)>,
+    /// Marries the two into the melody line's played note. Driven **only** by the
+    /// bank's ~16 ms publish path, which is the cadence its leap/slip hysteresis is
+    /// counted in — see [`MelodyTracker`].
+    pub(crate) melody:              MelodyTracker,
+    /// Last note [`Self::melody`] produced, kept so the 40 ms pYIN path can re-stamp
+    /// it onto the reading it rebuilds instead of recomputing (which would
+    /// double-count the hysteresis) or blanking it.
+    pub(crate) melody_pitch:        Option<(f32, f32)>,
     pub(crate) smoothed_frequency:  Option<f32>,
 }
 
@@ -95,6 +112,9 @@ impl SharedState {
             resonator_waterfall: VecDeque::with_capacity(WATERFALL_HISTORY),
             resonator_labels:    Vec::new(),
             fast_pitch:          None,
+            octave_anchor:       None,
+            melody:              MelodyTracker::default(),
+            melody_pitch:        None,
             smoothed_frequency:  None,
         }
     }
@@ -112,6 +132,9 @@ impl SharedState {
         self.resonator_waterfall.clear();
         self.resonator_labels.clear();
         self.fast_pitch = None;
+        self.octave_anchor = None;
+        self.melody = MelodyTracker::default();
+        self.melody_pitch = None;
         self.smoothed_frequency = None;
         self.status = AudioStatus::Listening;
     }
@@ -218,12 +241,18 @@ impl ResonatorPipeline {
             state.resonator_waterfall.clear();
             state.resonator_labels = self.analyzer.note_labels(settings.accidental);
             state.fast_pitch = None;
+            // The bank's grid just changed under us, so the melody line's octave
+            // dispute is about a reading that no longer exists — start it fresh
+            // rather than let it carry into the rebuilt bank.
+            state.melody = MelodyTracker::default();
+            state.melody_pitch = None;
             let resonator_labels = state.resonator_labels.clone();
             if let Some(reading) = state.reading.as_mut() {
                 reading.resonator_spectrum.clear();
                 reading.resonator_waterfall.clear();
                 reading.resonator_note_labels = resonator_labels;
                 reading.fast_pitch = None;
+                reading.melody_pitch = None;
             }
         }
     }
@@ -415,6 +444,18 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
             }
         };
 
+        // pYIN's octave opinion for the melody line. Stored as MIDI against the
+        // concert pitch it was measured with, so the 16 ms bank path can snap to it
+        // without reaching for the settings. Clarity is pYIN's voiced probability,
+        // which is what decides whether the opinion is worth taking at all.
+        let anchor_midi = 69.0 + 12.0 * (smoothed_frequency / frame.concert_pitch_hz).log2();
+        state.octave_anchor = Some((anchor_midi, clarity));
+        // Re-stamp the melody pitch the bank path last computed: this path rebuilds
+        // the whole reading every 40 ms, so without this it would blank the bank's
+        // 16 ms value. Deliberately NOT recomputed here — `MelodyTracker`'s hysteresis
+        // counts bank frames, and driving it from this path too would double-count.
+        let melody_pitch = state.melody_pitch;
+
         let (note_name, cents) =
             frequency_to_note(smoothed_frequency, frame.concert_pitch_hz, frame.accidental);
         push_limited_history(&mut state.waterfall, frame.spectrum.clone(), WATERFALL_HISTORY);
@@ -444,6 +485,7 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
             resonator_note_labels: state.resonator_labels.clone(),
             note_labels: note_bucket_labels(frame.accidental),
             fast_pitch: state.fast_pitch,
+            melody_pitch,
             onset_seq: frame.onset_seq,
         });
         state.status = AudioStatus::Listening;
@@ -462,6 +504,13 @@ fn publish_resonator_snapshot(
         let resonator_spectrum = state.resonator_spectrum.clone();
         let resonator_labels = state.resonator_labels.clone();
         let fast_pitch = state.fast_pitch;
+        // The melody line's whole latency win happens here: the bank publishes every
+        // ~16 ms, so the played note is refreshed at the bank's cadence instead of
+        // waiting for the 40 ms pYIN rebuild (which is itself ~128 ms behind). This
+        // is also the only caller allowed to drive the tracker — see `melody_pitch`.
+        let octave_anchor = state.octave_anchor;
+        let melody_pitch = state.melody.update(fast_pitch, octave_anchor);
+        state.melody_pitch = melody_pitch;
         push_limited_history(
             &mut state.resonator_waterfall,
             resonator_spectrum.clone(),
@@ -474,6 +523,7 @@ fn publish_resonator_snapshot(
             reading.resonator_waterfall = resonator_waterfall;
             reading.resonator_note_labels = resonator_labels;
             reading.fast_pitch = fast_pitch;
+            reading.melody_pitch = melody_pitch;
         }
     }
 }

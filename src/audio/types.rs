@@ -21,9 +21,23 @@ pub struct TunerReading {
     pub note_labels:           Vec<String>,
     /// The fast played-note prior: `(fractional_midi, strength)` of the harmonic
     /// fundamental the resonator bank hears right now, or `None` when the bank is
-    /// quiet. Published at the bank's fast cadence (~16 ms). Fused into pYIN as a
-    /// low-latency candidate (see `core`), so `frequency_hz` already reflects it.
+    /// quiet. Published at the bank's fast cadence (~16 ms). This is the raw bank
+    /// reading, octave and all — [`Self::melody_pitch`] is the one to draw notes
+    /// from.
     pub fast_pitch:            Option<(f32, f32)>,
+    /// The played note for the melody panels (staff, pitch roll):
+    /// `(fractional_midi, strength)`, or `None` when the bank is parked/quiet.
+    ///
+    /// The bank's fast fine pitch with its octave pinned by pYIN — see
+    /// [`crate::audio::dsp::melody`] for why the two sources are married this way
+    /// round. Published at the bank's ~16 ms cadence and re-stamped by the 40 ms
+    /// pYIN path, so it never blanks.
+    ///
+    /// Do **not** draw the melody line from [`Self::frequency_hz`]: that is pYIN
+    /// alone, which is pinned to its analysis window and cannot follow a note change
+    /// in under ~128 ms (measured). It is the right source for the tuner and the
+    /// fretboard, where a steady reading beats a prompt one.
+    pub melody_pitch:          Option<(f32, f32)>,
     /// Monotonic count of detected note onsets (attacks). The UI diffs it against
     /// the value it last saw to tell when a *new* attack occurred — used to split a
     /// re-bowed repeat of the same pitch instead of merging it into the held note.
