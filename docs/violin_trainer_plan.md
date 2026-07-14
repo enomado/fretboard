@@ -15,28 +15,59 @@ progress / not started) and note the commit when a phase ships.
 
 ---
 
-## ▶ Start here — handoff (2026-07-14)
+## ▶ Start here — handoff (2026-07-14, second session of the day)
 
 ### Where it stands
 
-The melody line's latency regression is **fixed and confirmed by ear**: 128→28 ms for
-ordinary intervals, 328→78 ms for an octave leap. Read
-[`note_detection.md`](note_detection.md) first — it is the whole mechanism in one
-place, and the rest of this section assumes it.
+Two tracks, at very different maturities. The **pitch/DSP** track did not move this
+session; the **UI** track finished its design-token sweep. Read
+[`note_detection.md`](note_detection.md) before touching the first — it is the whole
+mechanism in one place, and the checklist below assumes it.
 
-Three commits landed, in order:
+The melody line's latency regression is **fixed and confirmed by ear**: 128→28 ms for
+ordinary intervals, 328→78 ms for an octave leap.
 
 | commit | what | live-verified? |
 |---|---|---|
 | `1a8c6e1` | melody rides the resonator bank again; latency measured | ✅ **yes** — "работает неплохо" |
 | `969e37b` | universal ceiling (C8), quantile framing, one octave decision | ❌ **no** |
 | `a063606` | systematisation doc; panel range clamps dropped | ❌ **no** |
+| `925a2a0`, `d4d668b` | UI design tokens (chrome colour only — no DSP) | ✅ render only |
 
 **That table is the most important thing on this page.** The user's "работает неплохо"
 was given *after `1a8c6e1` and before the other two*. Everything since is
 tests-and-reasoning only — which is the exact state Phases 1.4–1.6 were in when they
 shipped a 100 ms regression that took weeks to notice. Do **not** record `969e37b` /
 `a063606` as verified on the strength of that sentence.
+
+> **⚠ The same trap, one session later — it very nearly worked.** While screenshotting
+> the *token* render, the user said **"я проверил всё ок"**. That sentence is about
+> **chrome colour**. It is not a verification of 1.8: octave stability on sustain,
+> cents resolution and the new C6..E7 ceiling all need the instrument, and none of
+> them was played. A short approving sentence arriving mid-session is not evidence
+> for whatever else happens to be in the tree — which is precisely what the paragraph
+> above already says about "работает неплохо". If you are about to tick 1.8 off, ask
+> what was actually played.
+
+### The UI track (finished this session)
+
+Chrome colour only — **no DSP, no behaviour**. Panels name a role
+(`color::TEXT_MUTED`) instead of a value; `ui::tokens` is the vocabulary and its
+module docs are the spec. Two things there are worth knowing before touching UI:
+
+- **`pill()` takes no colours.** Its default badge is the signature. It used to take
+  `fg`/`bg`, and half its twelve call sites hand-passed near-identical greys until one
+  chip style had drifted into four. Use `pill_muted` for the empty state and
+  `pill_colored` only when the colour *is* data (the staff's intonation chip).
+- **Token if a role is spoken in ≥2 modules; a named `const` in the file if in one.**
+  A global name used once dilutes the vocabulary. Promote when a second module needs
+  it.
+
+Left open **on purpose** — these move pixels on stock egui widgets, which is a design
+call and not a mechanical one: three near-identical accents (`ACCENT_FILL`
+`(112,86,72)` / `SELECTION_FILL` `(121,92,74)` / `WIDGET_ACTIVE_FILL` `(116,89,73)`),
+two idle fills (`IDLE_FILL` vs `WIDGET_IDLE_FILL`), two radii (`CARD` 18 vs `PANEL`
+22). They are named at their current values, so nothing is silently wrong.
 
 ### Live-verify checklist (next session, with the instrument)
 
@@ -93,7 +124,14 @@ In rough order of risk:
 - **`MelodyTracker::update` must be driven at the bank's cadence, once per bank
   frame.** Its hysteresis and the gate's median are counted in those frames. The 40 ms
   pYIN path deliberately re-stamps the last value instead of recomputing.
-- Uncommitted in the tree and **not mine**: `Cargo.lock`, `src/ui/segmented.rs`.
+- **The tree is clean** as of `d4d668b`. The previous handoff's "uncommitted and not
+  mine: `Cargo.lock`, `src/ui/segmented.rs`" is stale — that work went in as `925a2a0`.
+- **The binary is `fretboard-app`, not `fretboard`** (`[[bin]]` in `Cargo.toml`; the
+  lib keeps the crate name so the wasm build can disambiguate). `target/debug/fretboard`
+  does not exist and never will.
+- **Do not drive the user's live sway session** to verify a render — `swaymsg cursor`
+  and window focus steal their desktop out from under them. Launch, `grim` the window
+  rect, and ask them to click; they are sitting right there.
 
 ## Vision
 
