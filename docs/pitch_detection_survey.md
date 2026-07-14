@@ -4,6 +4,11 @@ Notes for "какая нота играет сейчас" + latency work. Compan
 [`violin_trainer_plan.md`](violin_trainer_plan.md). What this app already has, what
 the literature offers, and the concrete next steps.
 
+> **For how the mechanism is actually wired today, read
+> [`note_detection.md`](note_detection.md)** — this file is the *survey* (what
+> algorithms exist and why these were chosen); that one is the *description* (what
+> runs, where, at what cadence, with the measured numbers).
+
 ## What the app already does
 
 > **Status note (Phase 1.7).** The "wins come from marrying them" line below turned

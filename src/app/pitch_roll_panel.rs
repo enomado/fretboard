@@ -34,10 +34,6 @@ use crate::ui::theme::PANEL_FILL;
 /// silence itself, so without this the detector traces room noise. Gates *both*
 /// layers: the line goes to a gap and the heat column is blanked.
 const LEVEL_GATE: f32 = 0.02;
-/// Accepted pitch range (MIDI), matching the pYIN tracker's own grid: C1..≈G7.
-const MIDI_MIN: i32 = 24;
-const MIDI_MAX: i32 = 103;
-
 /// How many frames of pitch to keep — the graph fills the plot width with these,
 /// so this is also the visible time span (~10 s at 60 fps, ~20 s at 30 fps).
 const HISTORY_FRAMES: usize = 600;
@@ -221,17 +217,18 @@ impl App {
         //
         // NOT `reading.frequency_hz` (pYIN alone) — that is what this panel used to
         // read, and it put the line ~128 ms behind the heat drawn right beside it.
-        // Gated on level + range; the bank's normalized column always reports *some*
-        // fundamental, so level is the real silence gate.
+        //
+        // Range needs no clamp here: the melody line's range simply *is* the bank's
+        // (`res_min_midi..=res_max_midi`), because the bank is where the pitch comes
+        // from. The panel used to carry its own C1..G7 window "matching the pYIN
+        // tracker's grid", which was a second opinion about the range that could only
+        // ever drift from the first. Level is the real silence gate: the bank's
+        // column is normalized, so it reports *some* fundamental even for room noise.
         let pitch = voiced
-            .then(|| reading.as_ref())
+            .then_some(reading.as_ref())
             .flatten()
             .and_then(|r| r.melody_pitch)
-            .and_then(|(midi_f, _strength)| {
-                (MIDI_MIN..=MIDI_MAX)
-                    .contains(&(midi_f.round() as i32))
-                    .then_some(midi_f)
-            });
+            .map(|(midi_f, _strength)| midi_f);
         // HEAT source = the resonator bank's newest column (fast, per bank column),
         // painted as-is so trills/overtones show with no octave decision. Blanked
         // (empty column) when the input is silent, so rests are clean gaps rather

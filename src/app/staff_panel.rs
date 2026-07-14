@@ -58,14 +58,6 @@ use crate::ui::theme::{
 /// never declares silence on its own (`SILENCE_RMS_THRESHOLD == 0.0`), so without
 /// this gate the pitch detector latches onto room noise and "writes" ghost notes.
 const LEVEL_GATE: f32 = 0.02;
-/// Accepted note range. The low bound is the resonator bank's own grid floor
-/// (`ResonatorSettings::min_midi` = 12), so no clef is clamped short — the bass and
-/// cello registers stay open. Ghost readings are kept off the staff by `LEVEL_GATE`
-/// plus the octave pinning in `audio::dsp::melody`, not by a range floor: the old
-/// violin-only C3 floor existed to *hide* sub-bass octave ghosts rather than fix
-/// them.
-const MIDI_MIN: i32 = 12;
-const MIDI_MAX: i32 = 103;
 /// A held note shorter than this (seconds) is discarded as a glitch, not written.
 const MIN_NOTE_SECONDS: f64 = 0.06;
 /// Grace period of silence before the held note is committed and cleared, so a
@@ -226,18 +218,16 @@ impl App {
         //
         // Gated on absolute input level, which is the real silence gate: the bank's
         // column is normalized, so it reports *some* fundamental even for room noise.
-        // `MIDI_MIN..=MIDI_MAX` keeps ghost readings off the staff.
+        // No range clamp: the engine's range is the bank's grid, and a second opinion
+        // about it here could only drift from that one — the panel's old ceiling of
+        // G7 already sat below the grid's C8.
         let pitch = (level >= LEVEL_GATE)
-            .then(|| reading.as_ref())
+            .then_some(reading.as_ref())
             .flatten()
             .and_then(|r| r.melody_pitch)
-            .and_then(|(midi_f, _strength)| {
+            .map(|(midi_f, _strength)| {
                 let midi = midi_f.round() as i32;
-                (MIDI_MIN..=MIDI_MAX).contains(&midi).then_some((
-                    midi,
-                    (midi_f - midi as f32) * 100.0,
-                    midi_f,
-                ))
+                (midi, (midi_f - midi as f32) * 100.0, midi_f)
             });
         let now = ui.input(|i| i.time);
         let onset_seq = reading.as_ref().map_or(0, |r| r.onset_seq);

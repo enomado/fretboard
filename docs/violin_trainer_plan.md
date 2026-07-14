@@ -4,6 +4,15 @@ A living roadmap for the notation-based violin trainer. Update this file as phas
 land; it is the hand-off between sessions. Keep phase status honest (done / in
 progress / not started) and note the commit when a phase ships.
 
+> **"✅ DONE (built, not live-verified)" is not done.** Phases 1.4–1.6 all carried
+> that label, and all three shipped a latency regression nobody caught for weeks —
+> see Phase 1.7. Either verify it, or write a test that measures the thing you are
+> claiming, or say plainly that it is unverified in the status itself.
+>
+> **The mechanism is described in [`note_detection.md`](note_detection.md)** — read
+> that before touching pitch, octaves, note starts/ends or latency. This file is the
+> history; that one is the current shape, with the measured numbers.
+
 ## Vision
 
 A practice panel that renders **standard notation** (treble clef staff) and, while
@@ -12,9 +21,11 @@ you play the violin, **writes what you play** onto the staff in real time — wi
 passive "mirror" (see what you played) into an active trainer (play *this*, get
 scored).
 
-Pitch source is the app's monophonic YIN detector (`AudioEngine::reading` →
-`TunerReading { frequency_hz, cents, clarity }`), which is the right tool for a
-single-line instrument and already gives cents for intonation.
+Pitch source is `TunerReading::melody_pitch` — the resonator bank's fast fine pitch
+with its octave pinned by pYIN (`audio::dsp::melody`). **Not** `frequency_hz`: that is
+pYIN alone, which is the right tool for the tuner (steady) and the wrong one for a
+trainer (it cannot follow a note change in under ~128 ms). See
+[`note_detection.md`](note_detection.md) §1.
 
 ## Architecture (established Phase 1)
 
