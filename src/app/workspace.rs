@@ -12,6 +12,10 @@ use super::{
     App,
     WorkspaceTab,
 };
+use crate::ui::segmented::{
+    PILL_ACCENT_FILL,
+    PILL_ACCENT_STROKE,
+};
 use crate::ui::theme::PANEL_FILL;
 
 pub(super) struct WorkspaceBehavior<'a> {
@@ -80,8 +84,11 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         _tile_id: egui_tiles::TileId,
         state: &egui_tiles::TabState,
     ) -> Color32 {
+        // Активный таб носит тот же акцент, что и выбранная пилюля (`ui::segmented`),
+        // а вот idle у табов свой — темнее пилюльного, чтобы полоса табов читалась
+        // как фон, а не как ряд кнопок.
         if state.active {
-            Color32::from_rgb(112, 86, 72)
+            PILL_ACCENT_FILL
         } else {
             Color32::from_rgb(34, 38, 44)
         }
@@ -97,7 +104,7 @@ impl egui_tiles::Behavior<WorkspaceTab> for WorkspaceBehavior<'_> {
         Stroke::new(
             1.0_f32,
             if state.active {
-                Color32::from_rgb(207, 187, 166)
+                PILL_ACCENT_STROKE
             } else {
                 Color32::from_rgb(76, 82, 90)
             },

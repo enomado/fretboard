@@ -3,6 +3,7 @@
 //!   - `fretboard` — the neck model and its note/string/fret/position renderers,
 //!   - `snail`     — the logarithmic pitch spiral,
 //!   - `waterfall` — spectrogram-style history strips,
+//!   - `segmented` — the canonical pill / segmented toggle button,
 //!   - `theme`     — shared colours and the egui style.
 //!
 //! Callers reach into these with explicit paths (e.g. `crate::ui::snail::draw_spiral_chart`)
@@ -10,6 +11,7 @@
 
 pub mod fretboard;
 pub mod pianoroll;
+pub mod segmented;
 pub mod snail;
 pub mod staff;
 pub mod theme;

@@ -32,6 +32,7 @@ use crate::audio::{
 };
 use crate::core_types::note::Accidental;
 use crate::core_types::pitch::PCNote;
+use crate::ui::segmented::SegmentedButton;
 use crate::ui::snail::{
     self,
     SpiralChart,
@@ -133,24 +134,8 @@ impl App {
                         }
 
                         for chart in [LiveChartKind::Spiral, LiveChartKind::Fft, LiveChartKind::Tuner] {
-                            let selected = self.live_chart == chart;
-                            let button = egui::Button::new(chart.label())
-                                .min_size(vec2(72.0, 28.0))
-                                .fill(if selected {
-                                    Color32::from_rgb(112, 86, 72)
-                                } else {
-                                    Color32::from_rgb(42, 46, 52)
-                                })
-                                .stroke(Stroke::new(
-                                    1.0_f32,
-                                    if selected {
-                                        Color32::from_rgb(207, 187, 166)
-                                    } else {
-                                        Color32::from_rgb(84, 89, 97)
-                                    },
-                                ))
-                                .corner_radius(CornerRadius::same(14));
-
+                            let button =
+                                SegmentedButton::new(chart.label(), self.live_chart == chart).min_width(72.0);
                             if ui.add(button).clicked() {
                                 self.live_chart = chart;
                             }

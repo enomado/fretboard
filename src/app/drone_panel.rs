@@ -25,6 +25,12 @@ use crate::audio::{
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
+use crate::ui::segmented::{
+    PILL_ACCENT_FILL,
+    PILL_ACCENT_STROKE,
+    PILL_IDLE_STROKE,
+    SegmentedButton,
+};
 use crate::ui::theme::PANEL_FILL;
 
 // Диапазон тумблер-клавиатуры: C2..=B5 (4 октавы) — покрывает строй гитары/виолы
@@ -32,10 +38,9 @@ use crate::ui::theme::PANEL_FILL;
 const KEYBOARD_MIN_MIDI: u8 = 36; // C2
 const KEYBOARD_MAX_MIDI: u8 = 83; // B5
 
-const ACCENT_FILL: Color32 = Color32::from_rgb(112, 86, 72);
-const ACCENT_STROKE: Color32 = Color32::from_rgb(207, 187, 166);
-const IDLE_FILL: Color32 = Color32::from_rgb(42, 46, 52);
-const IDLE_STROKE: Color32 = Color32::from_rgb(84, 89, 97);
+// Палитра пилюль живёт в `ui::segmented` (единственный источник правды) — раньше
+// её копии лежали здесь и успели разъехаться. Клавиатура нот ниже берёт тот же
+// accent/idle, чтобы нажатая клавиша читалась ровно как выбранная пилюля.
 const LABEL_COLOR: Color32 = Color32::from_rgb(205, 194, 176);
 const VALUE_COLOR: Color32 = Color32::from_rgb(226, 216, 201);
 const HINT_COLOR: Color32 = Color32::from_rgb(145, 151, 160);
@@ -242,13 +247,17 @@ fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) ->
                 let selected = drone.notes.binary_search(&note).is_ok();
                 let is_black = BLACK_KEYS[(midi % 12) as usize];
                 let fill = if selected {
-                    ACCENT_FILL
+                    PILL_ACCENT_FILL
                 } else if is_black {
                     Color32::from_rgb(30, 33, 38)
                 } else {
                     Color32::from_rgb(48, 52, 58)
                 };
-                let stroke = if selected { ACCENT_STROKE } else { IDLE_STROKE };
+                let stroke = if selected {
+                    PILL_ACCENT_STROKE
+                } else {
+                    PILL_IDLE_STROKE
+                };
                 let text_color = if selected {
                     VALUE_COLOR
                 } else {
@@ -309,24 +318,11 @@ fn slider_row(
 }
 
 fn mode_button(ui: &mut Ui, label: &str, active: bool) -> egui::Response {
-    let button = egui::Button::new(label)
-        .min_size(vec2(86.0, 26.0))
-        .fill(if active { ACCENT_FILL } else { IDLE_FILL })
-        .stroke(Stroke::new(
-            1.0_f32,
-            if active { ACCENT_STROKE } else { IDLE_STROKE },
-        ))
-        .corner_radius(CornerRadius::same(13));
-    ui.add(button)
+    ui.add(SegmentedButton::new(label, active).min_width(86.0))
 }
 
 fn quick_button(ui: &mut Ui, label: &str) -> egui::Response {
-    let button = egui::Button::new(label)
-        .min_size(vec2(64.0, 24.0))
-        .fill(IDLE_FILL)
-        .stroke(Stroke::new(1.0_f32, IDLE_STROKE))
-        .corner_radius(CornerRadius::same(12));
-    ui.add(button)
+    ui.add(SegmentedButton::action(label).min_width(64.0))
 }
 
 fn note_name(midi: u8, style: AccidentalStyle) -> String {

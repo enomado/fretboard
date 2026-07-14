@@ -7,7 +7,6 @@ use eframe::egui::{
     RichText,
     Stroke,
     Ui,
-    vec2,
 };
 
 use super::{
@@ -33,6 +32,7 @@ use crate::audio::{
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
+use crate::ui::segmented::SegmentedButton;
 use crate::ui::theme::PANEL_FILL;
 
 impl App {
@@ -75,22 +75,13 @@ impl App {
                             .strong(),
                     );
 
-                    let mic_button = egui::Button::new("Microphone")
-                        .min_size(vec2(104.0, 28.0))
-                        .fill(if selected_input_kind == AudioInputKind::Microphone {
-                            Color32::from_rgb(112, 86, 72)
-                        } else {
-                            Color32::from_rgb(42, 46, 52)
-                        })
-                        .stroke(Stroke::new(
-                            1.0_f32,
-                            if selected_input_kind == AudioInputKind::Microphone {
-                                Color32::from_rgb(207, 187, 166)
-                            } else {
-                                Color32::from_rgb(84, 89, 97)
-                            },
-                        ))
-                        .corner_radius(CornerRadius::same(14));
+                    // Canonical segmented toggle (see `ui::segmented`). `min_width`
+                    // preserves the original 104/88 px pill widths.
+                    let mic_button = SegmentedButton::new(
+                        "Microphone",
+                        selected_input_kind == AudioInputKind::Microphone,
+                    )
+                    .min_width(104.0);
                     if ui.add_enabled(has_microphone_input, mic_button).clicked() {
                         self.refresh_audio_inputs();
                         if let Some(input_id) = self.preferred_input_id(AudioInputKind::Microphone) {
@@ -98,22 +89,11 @@ impl App {
                         }
                     }
 
-                    let system_button = egui::Button::new("System")
-                        .min_size(vec2(88.0, 28.0))
-                        .fill(if selected_input_kind == AudioInputKind::System {
-                            Color32::from_rgb(112, 86, 72)
-                        } else {
-                            Color32::from_rgb(42, 46, 52)
-                        })
-                        .stroke(Stroke::new(
-                            1.0_f32,
-                            if selected_input_kind == AudioInputKind::System {
-                                Color32::from_rgb(207, 187, 166)
-                            } else {
-                                Color32::from_rgb(84, 89, 97)
-                            },
-                        ))
-                        .corner_radius(CornerRadius::same(14));
+                    let system_button = SegmentedButton::new(
+                        "System",
+                        selected_input_kind == AudioInputKind::System,
+                    )
+                    .min_width(88.0);
                     if ui.add_enabled(has_system_input, system_button).clicked() {
                         self.refresh_audio_inputs();
                         if let Some(input_id) = self.preferred_input_id(AudioInputKind::System) {
@@ -205,26 +185,11 @@ impl App {
                 self.draw_input_level(ui, input_level, selected_input_kind);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    let monitor_button = egui::Button::new(if monitor_enabled {
-                        "Monitor on"
-                    } else {
-                        "Monitor off"
-                    })
-                    .min_size(vec2(104.0, 28.0))
-                    .fill(if monitor_enabled {
-                        Color32::from_rgb(112, 86, 72)
-                    } else {
-                        Color32::from_rgb(42, 46, 52)
-                    })
-                    .stroke(Stroke::new(
-                        1.0_f32,
-                        if monitor_enabled {
-                            Color32::from_rgb(207, 187, 166)
-                        } else {
-                            Color32::from_rgb(84, 89, 97)
-                        },
-                    ))
-                    .corner_radius(CornerRadius::same(14));
+                    let monitor_button = SegmentedButton::new(
+                        if monitor_enabled { "Monitor on" } else { "Monitor off" },
+                        monitor_enabled,
+                    )
+                    .min_width(104.0);
 
                     if ui.add_enabled(monitor_supported, monitor_button).clicked() {
                         monitor_enabled = !monitor_enabled;
@@ -276,11 +241,12 @@ impl App {
                 ui.horizontal_wrapped(|ui| {
                     // Простейшая кнопка проверки вывода: дёргает одну фиксированную
                     // ноту через спикер. Полноценная игра нот — в панели «Drone».
-                    let play_button = egui::Button::new("Play test note")
-                        .min_size(vec2(116.0, 28.0))
-                        .fill(Color32::from_rgb(42, 78, 72))
-                        .stroke(Stroke::new(1.0_f32, Color32::from_rgb(111, 154, 142)))
-                        .corner_radius(CornerRadius::same(14));
+                    let play_button = SegmentedButton::colored(
+                        "Play test note",
+                        Color32::from_rgb(42, 78, 72),
+                        Color32::from_rgb(111, 154, 142),
+                    )
+                    .min_width(116.0);
                     if ui.add(play_button).clicked() {
                         self.audio.play_test_note(self.test_note_midi);
                     }
@@ -333,22 +299,7 @@ impl App {
                         ("Flats (Db)", AccidentalStyle::Flats),
                     ] {
                         let selected = settings.accidental == style;
-                        let button = egui::Button::new(label)
-                            .min_size(vec2(84.0, 26.0))
-                            .fill(if selected {
-                                Color32::from_rgb(112, 86, 72)
-                            } else {
-                                Color32::from_rgb(42, 46, 52)
-                            })
-                            .stroke(Stroke::new(
-                                1.0_f32,
-                                if selected {
-                                    Color32::from_rgb(207, 187, 166)
-                                } else {
-                                    Color32::from_rgb(84, 89, 97)
-                                },
-                            ))
-                            .corner_radius(CornerRadius::same(14));
+                        let button = SegmentedButton::new(label, selected).min_width(84.0);
                         if ui.add(button).clicked() && settings.accidental != style {
                             settings.accidental = style;
                             changed = true;
@@ -449,24 +400,7 @@ impl App {
                             .strong(),
                     );
                     for (note, label) in ALL_ROOTS {
-                        let selected = self.root_note == note;
-                        let button = egui::Button::new(label)
-                            .min_size(vec2(30.0, 28.0))
-                            .fill(if selected {
-                                Color32::from_rgb(112, 86, 72)
-                            } else {
-                                Color32::from_rgb(42, 46, 52)
-                            })
-                            .stroke(Stroke::new(
-                                1.0_f32,
-                                if selected {
-                                    Color32::from_rgb(207, 187, 166)
-                                } else {
-                                    Color32::from_rgb(84, 89, 97)
-                                },
-                            ))
-                            .corner_radius(CornerRadius::same(14));
-
+                        let button = SegmentedButton::new(label, self.root_note == note).min_width(30.0);
                         if ui.add(button).clicked() {
                             self.root_note = note;
                         }
@@ -936,22 +870,7 @@ impl App {
             );
             for (label, power) in [("Magnitude", false), ("Power", true)] {
                 let selected = settings.resonator.power == power;
-                let button = egui::Button::new(label)
-                    .min_size(egui::vec2(82.0, 24.0))
-                    .fill(if selected {
-                        Color32::from_rgb(112, 86, 72)
-                    } else {
-                        Color32::from_rgb(42, 46, 52)
-                    })
-                    .stroke(egui::Stroke::new(
-                        1.0_f32,
-                        if selected {
-                            Color32::from_rgb(207, 187, 166)
-                        } else {
-                            Color32::from_rgb(84, 89, 97)
-                        },
-                    ))
-                    .corner_radius(egui::CornerRadius::same(12));
+                let button = SegmentedButton::new(label, selected).min_width(82.0);
                 if ui.add(button).clicked() && settings.resonator.power != power {
                     settings.resonator.power = power;
                     *changed = true;
