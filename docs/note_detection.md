@@ -27,13 +27,22 @@ So the melody line takes **timing and fine pitch from the bank**, and borrows ex
 threshold for pitch feedback is ~30–40 ms; the bank fits inside it, pYIN never can.
 
 > **The mistake to not make again.** The other arrangement — fusing the bank *into*
-> the pYIN HMM as a weighted candidate — was built, shipped, and measured to
-> contribute **exactly zero**. The bank's candidate is capped at
+> the pYIN HMM as a weighted candidate — was built, shipped, and **removed**. Off an
+> onset it contributed exactly zero: the bank's candidate was capped at
 > `BANK_WEIGHT × strength ≤ 0.5` while YIN's own candidate scores `p = 1.000`, so it
-> loses every frame at any signal strength. Turning the weight up does not help
+> lost every frame at any signal strength. Turning the weight up does not help
 > either: the binding constraint is that YIN's *emission* for the old note stays at
 > `p = 1.0` until the window flushes, and no candidate weight touches that. **The
 > bank's speed only survives if the bank *is* the pitch.**
+>
+> **And the half that was not inert.** For weeks this section said the fusion was
+> harmless dead weight. It was not, and the error is instructive: "inert" was measured
+> for `BANK_WEIGHT` and then *assumed* for `ATTACK_BANK_WEIGHT`, which was 2.0 and
+> rode a frame where the trellis had been dropped — so emissions alone decided it and
+> the bank won outright. On an attack, pYIN echoed the bank's octave verbatim (window
+> on a clean A4 + bank saying A5 → tracker says A5), and `dsp::melody` then consulted
+> that echo as its independent octave witness. A claim measured for one constant is
+> not a claim about its neighbour.
 
 ---
 
@@ -387,8 +396,11 @@ deliberate price of not re-breaking octave wandering.
 
 1. **Don't draw the melody line from `frequency_hz`.** It is pYIN alone and cannot be
    prompt. It is correct for the tuner and fretboard, where steady beats prompt.
-2. **Don't fix latency by tuning `BANK_WEIGHT`.** That fusion is inert and provably
-   cannot be otherwise (§1).
+2. **Don't re-fuse the bank into the pYIN HMM.** It is gone (§1). Off an onset it is
+   provably inert; on one it makes pYIN's octave an echo of the bank's, which quietly
+   destroys the independence `dsp::melody` weighs it for. If you try again, the
+   question to answer first is not "what weight?" but "is the anchor still independent
+   evidence?"
 3. **The octave is decided in `dsp::melody`, once.** Not in a panel, not per-consumer.
    If a new panel needs a melody line, it reads `melody_pitch`.
 4. **Anything specified in seconds runs on an audio clock**, at a stated cadence — not

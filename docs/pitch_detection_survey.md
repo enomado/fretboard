@@ -16,8 +16,10 @@ the literature offers, and the concrete next steps.
 > `violin_trainer_plan.md` Phase 1.7. The marriage only works with the **bank
 > leading** and YIN pinning the octave (`audio::dsp::melody`). The other
 > arrangement — fusing the bank into the pYIN HMM as a weighted candidate — was
-> built (Phase 1.5) and measured to contribute **exactly zero**, because YIN's own
-> candidate scores `p = 1.000` against the bank's capped `≤ 0.5`.
+> built (Phase 1.5) and **removed** (Phase 1.12): off an onset it contributed exactly
+> zero, because YIN's own candidate scores `p = 1.000` against the bank's capped
+> `≤ 0.5`; on an onset it made pYIN echo the bank's octave, so the two "independent"
+> sources were confirming each other rather than voting.
 
 - **YIN / pYIN** (`audio::dsp::pyin`) — the octave anchor, and the pitch source for
   the tuner and fretboard. Time-domain autocorrelation-difference. Accurate & robust

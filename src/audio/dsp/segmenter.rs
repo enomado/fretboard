@@ -265,7 +265,7 @@ mod tests {
                 if now_samples >= next_analysis && next_analysis + window_size <= sig.len() {
                     let win = &sig[next_analysis - window_size..next_analysis];
                     anchor = tracker
-                        .process(win, sr, None, false)
+                        .process(win, sr)
                         .map(|(f, c)| (69.0 + 12.0 * (f / 440.0).log2(), c));
                     next_analysis += analysis_hop;
                 }

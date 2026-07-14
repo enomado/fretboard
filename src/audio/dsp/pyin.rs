@@ -34,6 +34,8 @@
 //! rides the resonator bank (8–29 ms) and borrows only the octave from here.
 
 use super::analysis_math::parabolic_tau;
+#[cfg(test)]
+use super::pitch::LOWEST_TRACKED_FREQUENCY;
 use super::pitch::{
     Cmndf,
     cmndf,
@@ -177,26 +179,6 @@ const LEAP_MASS: f32 = 0.02;
 const VOICING_SWITCH: f32 = 0.02;
 /// Emission floor so no state has log-prob −∞.
 const EMIT_EPS: f32 = 1e-9;
-/// Weight of the resonator bank's fast pitch when it is fused in as an extra HMM
-/// candidate (scaled by the bank's strength).
-///
-/// **This fusion is inert and is not the low-latency path.** It was measured to
-/// change the tracker's output by *exactly zero*: at `≤ 0.5` the bank's candidate
-/// cannot outvote YIN's own, which measures `p = 1.000`, at any signal strength —
-/// and the octave transition cost (~18 nats) buries it besides. Raising this would
-/// not help either: the binding constraint is that YIN's *emission* for the old note
-/// stays at `p = 1.0` until the window flushes, which no candidate weight touches.
-///
-/// It is kept only because it is harmless and removing it touches the tuner path.
-/// The melody line's speed comes from [`super::melody`] riding the bank directly;
-/// do not "fix" latency by tuning this. See `docs/violin_trainer_plan.md` Phase 1.7.
-const BANK_WEIGHT: f32 = 0.5;
-/// Bank weight on an *onset* frame. A fresh attack means a new note, so the bank
-/// (which sees it ~100 ms before YIN's long window catches up) is trusted to lead
-/// even a large leap — paired with dropping the trellis bias in `process`. Off an
-/// onset the smaller `BANK_WEIGHT` keeps octave glitches out; the onset signal is
-/// what separates "new note" from "glitch".
-const ATTACK_BANK_WEIGHT: f32 = 2.0;
 
 fn freq_to_bin(frequency_hz: f32) -> f32 {
     let midi = 69.0 + 12.0 * (frequency_hz / 440.0).log2();
@@ -268,45 +250,29 @@ impl PitchTracker {
     /// Feed one analysis window; returns `(frequency_hz, voiced_probability)` when
     /// the decoded path is voiced this frame, else `None`.
     ///
-    /// `bank` is the resonator bank's fast pitch `(frequency_hz, strength)` for this
-    /// moment, or `None` when the bank isn't running / is quiet. When present it is
-    /// fused in as one extra weighted candidate: the bank leads YIN's long window by
-    /// ~100 ms, so this both speeds the tracker's onset response and lets the two
-    /// sources agree on the octave inside the HMM (replacing the old panel-side
-    /// octave-lock). Off an onset, a wrong-octave bank frame is out-voted by the
-    /// HMM's continuity.
+    /// **This sees the window and nothing else, on purpose.** Phases 1.5/1.6 also fed
+    /// it the resonator bank's fast pitch — as a weighted extra candidate, boosted on
+    /// an onset frame where the trellis was additionally dropped. Phase 1.7 moved the
+    /// melody line back onto the bank but left that fusion behind, and it was removed
+    /// once measured honestly:
     ///
-    /// `onset` marks a fresh attack (a new note starting). On such a frame the bank
-    /// is trusted heavily (`ATTACK_BANK_WEIGHT`) and the trellis's continuity bias
-    /// is dropped, so the new note — even a big leap — localizes to the fast
-    /// evidence at once instead of being dragged toward the previous note or routed
-    /// through the unvoiced state. This is what cuts note-start latency.
-    pub(crate) fn process(
-        &mut self,
-        window: &[f32],
-        sample_rate: f32,
-        bank: Option<(f32, f32)>,
-        onset: bool,
-    ) -> Option<(f32, f32)> {
+    /// - Off an onset it did nothing whatsoever, exactly as its own docs said: at
+    ///   `≤ 0.5` it could not outvote YIN's own candidate, which measures `p = 1.000`.
+    /// - *On* an onset it did the opposite of nothing — it **dictated** the output.
+    ///   The trellis reset meant the frame was decided by emissions alone, where the
+    ///   bank's `2.0 × strength` beat YIN's `1.000` outright: with the window holding
+    ///   a clean A4, a bank saying A5 got A5 and a bank saying A3 got A3.
+    ///
+    /// That made this tracker's octave a **mirror of the bank's** at exactly the
+    /// moment the bank is least trustworthy (the attack transient), and the HMM's own
+    /// continuity then cemented that octave into the frames after it. Since
+    /// [`super::melody`] borrows this tracker's octave to *check* the bank, the two
+    /// were quietly confirming each other rather than voting — see that module's
+    /// "why the bank leads and YIN only pins the octave". The tuner and fretboard,
+    /// this tracker's other consumers, want a steady reading over a prompt one.
+    pub(crate) fn process(&mut self, window: &[f32], sample_rate: f32) -> Option<(f32, f32)> {
         let c = cmndf(window, sample_rate)?;
-        let (mut candidates, mut voiced) = pyin_candidates(&c, &self.prior, sample_rate);
-        if let Some((frequency_hz, strength)) = bank {
-            if frequency_hz > 0.0 {
-                let weight = if onset { ATTACK_BANK_WEIGHT } else { BANK_WEIGHT };
-                let probability = weight * strength.clamp(0.0, 1.0);
-                candidates.push(Candidate {
-                    frequency_hz,
-                    probability,
-                });
-                voiced = (voiced + probability).min(1.0);
-            }
-        }
-        if onset {
-            // Fresh attack: drop the trellis's continuity bias so the new note
-            // localizes to the (attack-boosted) fast evidence this frame rather than
-            // sticking to the previous note.
-            self.initialized = false;
-        }
+        let (candidates, voiced) = pyin_candidates(&c, &self.prior, sample_rate);
         self.step(&candidates, voiced)
     }
 
@@ -535,43 +501,47 @@ mod tests {
         let win = tone(330.0, sr, 6144); // ~E4
         let mut last = None;
         for _ in 0..6 {
-            last = t.process(&win, sr, None, false);
+            last = t.process(&win, sr);
         }
         let (f, _) = last.expect("clean tone should be voiced");
         assert!((f - 330.0).abs() < 3.0, "tracked {f}, expected ~330");
     }
 
-    /// A fused bank candidate that agrees with the window keeps the tracker on pitch
-    /// (and, being a strong low-latency vote, locks it promptly).
+    /// REGRESSION: the lag search and the HMM's pitch grid must agree about the
+    /// bottom, in both directions. This is the invariant `LOWEST_TRACKED_FREQUENCY`
+    /// exists to hold, and it was violated for the whole of the tracker's life — the
+    /// floor was aligned to `NOTE_BUCKET_MIN_MIDI` (C0, the bank's grid), an octave
+    /// below anything this HMM can represent, and every frame paid for it.
     #[test]
-    fn process_with_agreeing_bank_tracks() {
-        let sr = 44_100.0;
-        let mut t = PitchTracker::new();
-        let win = tone(440.0, sr, 6144);
-        let mut last = None;
-        for _ in 0..6 {
-            last = t.process(&win, sr, Some((440.0, 0.9)), false);
-        }
-        let (f, _) = last.expect("voiced");
-        assert!((f - 440.0).abs() < 3.0, "tracked {f}, expected ~440");
-    }
+    fn floor_clears_the_hmm_grid() {
+        let lowest_state_hz = bin_to_freq(0);
 
-    /// Off an onset, a momentarily octave-wrong bank reading must NOT drag the
-    /// tracker off — the HMM's continuity out-votes the fused candidate. This is the
-    /// fusion's safety net (the bank is octave-ambiguous on a bowed string).
-    #[test]
-    fn process_rejects_wrong_octave_bank() {
-        let sr = 44_100.0;
-        let mut t = PitchTracker::new();
-        let win = tone(440.0, sr, 6144);
-        for _ in 0..8 {
-            t.process(&win, sr, None, false);
-        }
-        let out = t.process(&win, sr, Some((220.0, 0.9)), false).unwrap();
+        // Downward: every pitch the HMM has a state for must be *findable*, with the
+        // longest lag landing past that note's period rather than clipping its dip.
         assert!(
-            (out.0 - 440.0).abs() < 20.0,
-            "wrong-octave bank pulled pitch to {}",
-            out.0
+            LOWEST_TRACKED_FREQUENCY < lowest_state_hz,
+            "floor {LOWEST_TRACKED_FREQUENCY} Hz sits above the HMM's lowest state \
+             ({lowest_state_hz:.2} Hz) — that note could never be tracked"
+        );
+        for sr in [44_100.0f32, 48_000.0] {
+            let max_lag = (sr / LOWEST_TRACKED_FREQUENCY) as usize as f32;
+            let lowest_period = sr / lowest_state_hz;
+            assert!(
+                max_lag > lowest_period + 1.0,
+                "@{sr} Hz: max_lag {max_lag} does not clear the lowest state's period \
+                 {lowest_period:.1} — its dip would be picked off a clipped edge"
+            );
+        }
+
+        // Upward: and not a semitone lower than it has to be. Below the grid a
+        // candidate cannot be emitted into any state at all (`step` skips the
+        // negative bin), so every extra lag scanned down there is pure waste —
+        // 5.6M ops/frame of it, at the 16 Hz floor this replaced.
+        let margin_semitones = 12.0 * (lowest_state_hz / LOWEST_TRACKED_FREQUENCY).log2();
+        assert!(
+            margin_semitones < 2.0,
+            "floor sits {margin_semitones:.2} semitones below the HMM's lowest state — \
+             that band is off-grid and cannot produce a usable candidate"
         );
     }
 
@@ -601,18 +571,18 @@ mod tests {
     }
 
     /// Slide the real analysis window across a note change and report the latency.
-    /// `bank_lag_ms` models the resonator bank's own delay; `None` = bank parked.
-    fn measure_latency(from_hz: f32, to_hz: f32, bank_lag_ms: Option<f32>, onset: bool) -> f32 {
-        measure_latency_win(from_hz, to_hz, bank_lag_ms, onset, 6144)
+    ///
+    /// This is pYIN's *own* number, and now it is the only one there is: the probe
+    /// used to also take a `bank_lag_ms` and an `onset` flag, to measure what the
+    /// fused bank bought. The honest answer was "nothing off an onset, and everything
+    /// on one" — the bank simply became the output — so the fusion is gone and so are
+    /// the parameters. What the bank+YIN pair actually achieves is measured where it
+    /// actually happens: `melody`, and `staff_panel::end_to_end_latency_probe`.
+    fn measure_latency(from_hz: f32, to_hz: f32) -> f32 {
+        measure_latency_win(from_hz, to_hz, 6144)
     }
 
-    fn measure_latency_win(
-        from_hz: f32,
-        to_hz: f32,
-        bank_lag_ms: Option<f32>,
-        onset: bool,
-        window_size: usize,
-    ) -> f32 {
+    fn measure_latency_win(from_hz: f32, to_hz: f32, window_size: usize) -> f32 {
         let sr = 48_000.0f32;
         let hop = 1920usize; // ANALYSIS_INTERVAL = 40 ms @ 48 kHz
         let hold = (sr * 0.6) as usize;
@@ -623,22 +593,10 @@ mod tests {
         let change = hold;
 
         let mut t = PitchTracker::new();
-        let mut fired = false;
         let mut tick = window_size;
         while tick < sig.len() {
             let win = &sig[tick - window_size..tick];
-            // The bank sees the signal `bank_lag_ms` ago (its own latency).
-            let bank = bank_lag_ms.map(|lag| {
-                let at = tick as f32 - lag * sr / 1000.0;
-                let hz = if at >= change as f32 { to_hz } else { from_hz };
-                (hz, 0.9)
-            });
-            // Onset fires on the first tick whose window contains the change.
-            let is_onset = onset && !fired && tick > change && {
-                fired = true;
-                true
-            };
-            if let Some((f, _)) = t.process(win, sr, bank, is_onset) {
+            if let Some((f, _)) = t.process(win, sr) {
                 let cents = 1200.0 * (f / to_hz).log2();
                 if cents.abs() < 50.0 {
                     return (tick - change) as f32 / sr * 1000.0;
@@ -717,7 +675,7 @@ mod tests {
                 let mut t = PitchTracker::new();
                 let mut out = None;
                 for _ in 0..6 {
-                    out = t.process(&win, sr, None, false);
+                    out = t.process(&win, sr);
                 }
                 match out {
                     Some((f, _)) => {
@@ -758,7 +716,7 @@ mod tests {
             let mut t = PitchTracker::new();
             let mut out = None;
             for _ in 0..6 {
-                out = t.process(&win, sr, None, false);
+                out = t.process(&win, sr);
             }
             let (f, _) = out.unwrap_or_else(|| panic!("{name}: went unvoiced on a clean tone"));
             let err = 12.0 * (f / hz).log2();
@@ -776,24 +734,20 @@ mod tests {
         // A4 -> E5 is a fifth: on a violin that is an open-string crossing, the
         // single most common leap there is.
         let cases = [
-            ("A4->E5 legato, bank parked   ", 440.0, 659.25, None, false),
-            ("A4->E5 legato, bank @10ms    ", 440.0, 659.25, Some(10.0), false),
-            ("A4->E5 detached, bank @10ms  ", 440.0, 659.25, Some(10.0), true),
-            ("A4->B4 legato, bank parked   ", 440.0, 493.88, None, false),
-            ("A4->B4 legato, bank @10ms    ", 440.0, 493.88, Some(10.0), false),
-            ("A4->A5 legato, bank @10ms    ", 440.0, 880.0, Some(10.0), false),
-            ("A4->A5 detached, bank @10ms  ", 440.0, 880.0, Some(10.0), true),
+            ("A4->E5 (fifth) ", 440.0, 659.25),
+            ("A4->B4 (second)", 440.0, 493.88),
+            ("A4->A5 (octave)", 440.0, 880.0),
         ];
-        for (name, from, to, bank, onset) in cases {
-            let ms = measure_latency(from, to, bank, onset);
+        for (name, from, to) in cases {
+            let ms = measure_latency(from, to);
             println!("{name} -> {ms:>8.1} ms");
         }
 
         // Does the latency simply track the window length? If so, the tracker is
         // only following once the window holds ZERO of the old note.
-        println!("\n-- window sweep, A4->E5 legato, bank @10ms --");
+        println!("\n-- window sweep, A4->E5 --");
         for w in [1024usize, 2048, 3072, 4096, 6144, 8192] {
-            let ms = measure_latency_win(440.0, 659.25, Some(10.0), false, w);
+            let ms = measure_latency_win(440.0, 659.25, w);
             let win_ms = w as f32 / 48.0;
             println!("window {w:>5} ({win_ms:>5.1} ms) -> latency {ms:>7.1} ms");
         }
@@ -846,25 +800,151 @@ mod tests {
         f32::INFINITY
     }
 
-    /// On an *onset*, the attack-boosted bank leads a leap immediately: with the
-    /// window still on the old note (A4) but the bank reporting the new note (A5)
-    /// and the onset flag set, the tracker jumps this frame — the note-start latency
-    /// win. (Contrast `process_rejects_wrong_octave_bank`: same bank/window, but no
-    /// onset → continuity holds. The onset flag is what separates the two.)
+    /// FLOOR PROBE — what actually lives in the `cmndf` tail below the HMM's C1?
+    ///
+    /// `LOWEST_TRACKED_FREQUENCY = 16 Hz` makes `cmndf` scan to sr/16 = 3000 lags.
+    /// Raising the floor is measurable *exactly*, without touching the const, because
+    /// of a property of the CMNDF: `d[tau] = difference[tau]·tau / Σ_{1..tau} difference`
+    /// depends only on the **prefix** `1..=tau`. So truncating `max_lag` leaves every
+    /// surviving `d[tau]` bit-identical — a higher floor changes the output *only* for
+    /// frames whose first sub-threshold dip lay in the removed tail. This prints those
+    /// frames, and only those, for each candidate floor.
     #[test]
-    fn onset_lets_bank_lead_a_leap() {
+    fn floor_probe() {
+        let sr = 48_000.0f32;
+        let win_len = 6144usize;
+        let prior = ThresholdPrior::new();
+
+        // The floors under consideration, and what each one is.
+        let floors = [
+            ("16.0 Hz  C0 (today)", 16.0f32),
+            ("32.7 Hz  C1 (= HMM MIN_MIDI)", 32.7),
+            ("41.2 Hz  E1 (4-string bass)", 41.2),
+            ("65.4 Hz  C2 (cello low C)", 65.4),
+        ];
+
+        println!("\n=== cost per frame, window {win_len} @ {sr:.0} Hz ===");
+        println!("(cmndf's inner loop runs `window - tau` ops for each tau ≤ max_lag)");
+        for (name, hz) in floors {
+            let max_lag = (sr / hz) as usize;
+            let ops: u64 = (1..=max_lag.min(win_len - 1))
+                .map(|tau| (win_len - tau) as u64)
+                .sum();
+            println!(
+                "  floor {name:<30} max_lag {max_lag:>5}  ->  {:>6.2}M ops",
+                ops as f64 / 1e6
+            );
+        }
+
+        // Deterministic white-ish noise (LCG) — the "no note is playing" frame, where
+        // a phantom tail dip has nothing earlier to lose to.
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut rng = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / 8_388_608.0 - 1.0
+        };
+        let noise: Vec<f32> = (0..win_len).map(|_| rng() * 0.05).collect();
+
+        // A decaying release tail: the note has stopped but the room/string still
+        // rings. This is the frame the handoff's ghost notes come out of.
+        let release: Vec<f32> = violin_tone(440.0, sr, win_len, 0.0)
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s * (-6.0 * i as f32 / win_len as f32).exp())
+            .collect();
+
+        let mut cases: Vec<(String, Vec<f32>)> = vec![
+            ("noise (no note)".to_string(), noise),
+            ("A4 release tail".to_string(), release),
+        ];
+        for (name, hz) in [
+            ("C2  65 Hz", 65.41f32),
+            ("G2  98 Hz", 98.0),
+            ("G3 196 Hz", 196.0),
+            ("A4 440 Hz", 440.0),
+            ("E5 659 Hz", 659.25),
+        ] {
+            cases.push((name.to_string(), violin_tone(hz, sr, win_len, 0.0)));
+        }
+
+        println!("\n=== candidates per floor (only frames where the floor CHANGES anything) ===");
+        for (name, win) in &cases {
+            let full = cmndf(win, sr).unwrap();
+            let mut previous: Option<(Vec<Candidate>, f32)> = None;
+            let mut header_printed = false;
+            for (fname, hz) in floors {
+                // Truncate the *same* cmndf: d[tau] is prefix-only, so this is exactly
+                // what `cmndf` would have produced with this floor.
+                let truncated = Cmndf {
+                    d:       full.d.clone(),
+                    min_lag: full.min_lag,
+                    max_lag: full.max_lag.min((sr / hz) as usize),
+                };
+                let (cands, voiced) = pyin_candidates(&truncated, &prior, sr);
+                let changed = match &previous {
+                    None => true,
+                    Some((pc, pv)) => {
+                        (voiced - pv).abs() > 1e-4
+                            || pc.len() != cands.len()
+                            || pc.iter().zip(cands.iter()).any(|(a, b)| {
+                                (a.frequency_hz - b.frequency_hz).abs() > 0.01
+                                    || (a.probability - b.probability).abs() > 1e-4
+                            })
+                    }
+                };
+                if changed {
+                    if !header_printed {
+                        println!("\n{name}:");
+                        header_printed = true;
+                    }
+                    print!("  floor {fname:<30} voiced {voiced:.3}  ");
+                    let mut sorted = cands.clone();
+                    sorted.sort_by(|a, b| b.probability.total_cmp(&a.probability));
+                    for cand in sorted.iter().take(4) {
+                        let midi = 69.0 + 12.0 * (cand.frequency_hz / 440.0).log2();
+                        // Below the HMM's MIN_MIDI a candidate cannot be emitted into
+                        // any pitch state at all — `step` skips the negative bin — yet
+                        // it still adds its mass to `voiced`.
+                        let mark = if midi < MIN_MIDI { " <OFF-GRID>" } else { "" };
+                        print!(
+                            "[{:.1} Hz midi {:.1} p={:.3}{}] ",
+                            cand.frequency_hz, midi, cand.probability, mark
+                        );
+                    }
+                    println!();
+                }
+                previous = Some((cands, voiced));
+            }
+            if !header_printed {
+                println!("\n{name}: identical at every floor (nothing in the tail)");
+            }
+        }
+    }
+
+    /// REGRESSION: this tracker reports what its *window* says, and nothing else can
+    /// move it. It is the octave-robust half of the pair; its independence from the
+    /// bank is the whole reason [`super::melody`] can use it to check the bank.
+    ///
+    /// `onset_lets_bank_lead_a_leap` used to assert the exact opposite here — that on
+    /// an attack a bank saying A5 moved this tracker to A5 while its window held a
+    /// clean A4. It passed. That was the bug: the "independent" octave was the bank's
+    /// own, echoed back, and the HMM then cemented it. The test is inverted rather
+    /// than deleted, because the behaviour it pinned is precisely what must not
+    /// return.
+    #[test]
+    fn only_the_window_moves_the_tracker() {
         let sr = 44_100.0;
         let mut t = PitchTracker::new();
-        let win = tone(440.0, sr, 6144); // window (and thus YIN) still says A4
+        let win = tone(440.0, sr, 6144);
         for _ in 0..8 {
-            t.process(&win, sr, Some((440.0, 0.9)), false);
+            t.process(&win, sr);
         }
-        // Attack: bank already hears A5 while the window lags on A4.
-        let out = t.process(&win, sr, Some((880.0, 0.9)), true).unwrap();
+        let (f, _) = t.process(&win, sr).unwrap();
         assert!(
-            (out.0 - 880.0).abs() < 20.0,
-            "onset should let the bank lead the leap, got {}",
-            out.0
+            (f - 440.0).abs() < 20.0,
+            "window holds a clean A4, tracker reports {f}"
         );
     }
 }

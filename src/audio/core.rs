@@ -64,10 +64,6 @@ pub(crate) const WATERFALL_HISTORY: usize = 52;
 pub(crate) const ANALYSIS_INTERVAL: Duration = Duration::from_millis(40);
 pub(crate) const SILENCE_RMS_THRESHOLD: f32 = 0.0;
 pub(crate) const INPUT_WAVEFORM_HISTORY: usize = 2048;
-/// Below this normalized window level the resonator bank's fast pitch is not fused
-/// into pYIN — the bank's column is normalized, so it reports *some* fundamental
-/// even for room noise; gating on real level keeps that noise out of the tracker.
-pub(crate) const BANK_FUSE_LEVEL: f32 = 0.02;
 /// Below this normalized input level the melody line is **silent**.
 ///
 /// This is the real silence gate, and it has to be an *absolute* level: the engine
@@ -411,27 +407,13 @@ impl AnalysisPipeline {
         let smoothed_level_value = smoothed_level(previous_level, level);
         input_level.store(smoothed_level_value.to_bits(), Ordering::Relaxed);
 
-        // Fuse the resonator bank's fast pitch into pYIN as a low-latency candidate,
-        // when the bank is running and the window carries real level. `fast_pitch`
-        // is a fractional MIDI in the bank's concert-pitch frame → absolute Hz here.
-        // The bank leads YIN's long window by ~100 ms, so this both quickens the
-        // tracker's onset response and lets the two sources settle the octave inside
-        // the HMM (the panel no longer octave-locks). Empty when the bank is parked.
-        let bank_pitch = if level >= BANK_FUSE_LEVEL {
-            shared
-                .lock()
-                .ok()
-                .and_then(|s| s.fast_pitch)
-                .map(|(midi, strength)| {
-                    let hz = analysis_settings.concert_pitch_hz * 2.0f32.powf((midi - 69.0) / 12.0);
-                    (hz, strength)
-                })
-        } else {
-            None
-        };
-
         // Note-onset (attack) detection off the window RMS. A new onset bumps the
         // monotonic counter the UI diffs to split re-bowed repeats of one pitch.
+        //
+        // This drives *segmentation only*. It used to be handed to the pitch tracker
+        // as well, to put it in an "attack mode" that let the bank lead a leap — but
+        // that mode fed the bank's octave straight back to `MelodyTracker` as pYIN's
+        // supposedly independent opinion of it. See `PitchTracker::process`.
         let rms = (window.iter().map(|s| s * s).sum::<f32>() / window.len() as f32).sqrt();
         let is_onset = self.onset.detect(rms);
         if is_onset {
@@ -440,12 +422,11 @@ impl AnalysisPipeline {
 
         // Pitch via probabilistic YIN (the stateful HMM tracker) — octave-robust and
         // already smoothed, so `publish_analysis_reading` no longer runs the old EMA.
-        // On an onset the tracker enters its attack mode (fast bank leads the leap).
         let pitch = if rms < SILENCE_RMS_THRESHOLD {
             None
         } else {
             self.pitch_tracker
-                .process(&window, self.sample_rate, bank_pitch, is_onset)
+                .process(&window, self.sample_rate)
                 .and_then(|(f, c)| {
                     (LOWEST_TRACKED_FREQUENCY..=HIGHEST_TRACKED_FREQUENCY)
                         .contains(&f)

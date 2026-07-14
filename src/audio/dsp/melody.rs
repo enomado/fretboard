@@ -25,12 +25,27 @@
 //! # Why this is not fusion inside the HMM
 //!
 //! Phase 1.5 tried the other arrangement — feed the bank into the pYIN HMM as an
-//! extra weighted candidate — and it provably contributes nothing: the bank's
-//! candidate is capped at `BANK_WEIGHT × strength ≤ 0.5` while YIN's own candidate
-//! measures `p = 1.000`, so the bank loses every frame at any signal strength, and
-//! the octave transition cost (~18 nats) buries it besides. Measured: feeding the
-//! HMM a bank reading 10 ms ahead of the window changes the output by exactly zero.
-//! The bank's speed can only survive if the bank *is* the pitch.
+//! extra weighted candidate — and it was removed, in two steps, for two different
+//! reasons. Both are worth keeping, because the arrangement is a tempting one.
+//!
+//! Off an onset it **did nothing**: the bank's candidate was capped at `BANK_WEIGHT ×
+//! strength ≤ 0.5` while YIN's own candidate measures `p = 1.000`, so the bank lost
+//! every frame at any signal strength, and the octave transition cost (~18 nats)
+//! buried it besides. Feeding the HMM a bank reading 10 ms ahead of the window changed
+//! the output by exactly zero. The bank's speed can only survive if the bank *is* the
+//! pitch — which is what this module does.
+//!
+//! *On* an onset it did far worse than nothing, and this is the part that had gone
+//! unnoticed: the attack path also dropped the trellis, so the frame was decided by
+//! emissions alone, where an `ATTACK_BANK_WEIGHT` of 2.0 beat YIN's 1.000 outright.
+//! pYIN simply **echoed the bank's octave** — measured: window on a clean A4, bank
+//! saying A5, tracker reporting A5. So the anchor this module cross-examines was the
+//! bank's own opinion coming back around, at exactly the moment the bank is least
+//! reliable (the attack transient), and the HMM's continuity then held that octave
+//! for the frames after it. [`MelodyTracker::pin_octave`]'s three layers are built to
+//! weigh two *independent* witnesses; a mirror cannot be a witness. If you are ever
+//! tempted to re-fuse, the thing to check first is not the weight — it is whether the
+//! anchor is still independent evidence.
 
 use super::octave_gate::OctaveGate;
 

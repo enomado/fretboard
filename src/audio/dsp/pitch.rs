@@ -1,6 +1,30 @@
-/// Lowest fundamental the tracker will look for — C0, the bottom of the note grid
-/// (`NOTE_BUCKET_MIN_MIDI` = 12). Sets YIN's longest lag.
-pub(crate) const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
+/// Lowest fundamental the tracker will look for — a semitone below C1. Sets YIN's
+/// longest lag.
+///
+/// **It follows pYIN's HMM grid, not the note grid.** [`super::pyin`]'s `MIN_MIDI` is
+/// 24 (C1), so C1 is the lowest pitch the HMM has a state for. This used to sit at
+/// 16 Hz instead — C0, the bottom of `NOTE_BUCKET_MIN_MIDI`, which is the *resonator
+/// bank and spectrum's* grid and has no say over YIN's lag search. That cost an
+/// octave of pure waste every frame: a candidate below C1 cannot be emitted into any
+/// pitch state at all (`pyin::step` skips the negative bin), so lags from sr/32.7 out
+/// to sr/16 were scanned to produce hypotheses the HMM structurally could not
+/// represent. Measured at the 6144 window / 48 kHz: **13.93M → 8.34M ops per frame**,
+/// with the candidate set bit-identical on every real note tested (C2…E5, and a
+/// decaying release tail) — see `pyin::tests::floor_probe`.
+///
+/// That identity is not luck, it is structural: `d[tau] = difference[tau]·tau / Σ
+/// difference[1..=tau]` depends only on the **prefix**, so shortening the search
+/// cannot perturb a single surviving `d[tau]`. Raising the floor can therefore only
+/// change frames whose first sub-threshold dip lay in the discarded tail.
+///
+/// The extra semitone of margin below C1 is deliberate and not slack: `max_lag` must
+/// land *past* the lowest period, not on it. Pinned at exactly C1, `max_lag` at 48 kHz
+/// is 1467 while C1's own dip bottoms at 1468 — one sample outside — so the lowest
+/// note on the grid would be picked off the clipped edge of its dip instead of its
+/// true minimum. `super::pyin::tests::floor_clears_the_hmm_grid` holds both ends of
+/// this — it lives there because only that module can see both the floor and the
+/// `MIN_MIDI` it has to agree with.
+pub(crate) const LOWEST_TRACKED_FREQUENCY: f32 = 30.868;
 /// Highest fundamental the tracker will look for — C8 (MIDI 108), the top of the
 /// note grid. Sets YIN's *shortest* lag, and getting it wrong is not a soft failure.
 ///

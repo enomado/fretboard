@@ -30,6 +30,7 @@ the whole mechanism in one place, and the checklist below assumes it.
 | `a063606` | systematisation doc; panel range clamps dropped | ❌ **no** |
 | `925a2a0`, `d4d668b` | UI design tokens (chrome colour only — no DSP) | ✅ render only |
 | *(this session)* | **1.9** — segmentation off the UI clock; silence gate into the engine | ❌ **no** |
+| *(this session)* | **1.12** — YIN's floor to C1; the bank fusion removed from pYIN | ❌ **no** — DSP |
 
 **That table is the most important thing on this page.** The user's "работает неплохо"
 was given *after `1a8c6e1` and before everything below it*. All of it is
@@ -88,6 +89,15 @@ two idle fills (`IDLE_FILL` vs `WIDGET_IDLE_FILL`), two radii (`CARD` 18 vs `PAN
 
 In rough order of risk:
 
+0. **Note starts, after 1.12.** New this session, and it changes what pYIN reports on an
+   attack. Until now the bank *dictated* pYIN's octave on every onset frame, so the
+   octave anchor agreed with the bank at note starts **by construction**. It no longer
+   does — `dsp::melody` now weighs two genuinely independent witnesses at the attack,
+   possibly for the first time. Expect one of two things and say which: attacks settle
+   their octave more honestly (the win), or they take a few frames longer to commit
+   because the anchor is briefly still on the old note (the stale-anchor window 1.7
+   already guards with `OCTAVE_AGREE_SEMITONES`). If the second dominates, the lever is
+   `LEAP_CONFIRM_FRAMES`, not re-fusing the bank.
 1. **Octave stability on sustain.** Highest risk. `melody::LEAP_CONFIRM_FRAMES = 4`
    (≈64 ms) was picked from an *argument* — that the bank's wandering is intermittent
    while a real leap's disagreement is unbroken — not from live data. If octaves
@@ -120,13 +130,10 @@ In rough order of risk:
    sequence** rather than per frame, plus a decision about the heat, which must stay
    aligned 1:1 with the line and costs ~70 MB/s if 600 columns × ~480 bins ride every
    reading. The staff's trail has the same shape and the same excuse.
-3. **`LOWEST_TRACKED_FREQUENCY = 16 Hz`** makes `cmndf` search lags to 3000 samples —
-   **13.9M ops/frame** for a band no instrument here plays, and the low tail is where
-   the sub-bass ghost lives. Cheap win; needs a decision on the real floor.
-4. **The inert `BANK_WEIGHT`/`ATTACK_BANK_WEIGHT` fusion** still runs in `pyin`. It is
-   harmless and marked "do not fix latency with this", but it is dead weight and it is
-   what made Phase 1.5 look reasonable in the first place. (`BANK_FUSE_LEVEL` dies with
-   it — it is a third copy of the same `0.02` the melody gate uses.)
+3. ~~`LOWEST_TRACKED_FREQUENCY = 16 Hz`~~ and ~~the inert `BANK_WEIGHT` fusion~~ —
+   **both done in Phase 1.12.** Neither was quite the debt it was written up as; the
+   fusion in particular was not inert. Read 1.12 before trusting anything this file
+   says about either.
 
 ### Landmines
 
@@ -516,11 +523,12 @@ tidiness must now fail a test, not a live session weeks later.
   the bank's own `ResonatorSettings::max_midi = 84` caps it at **C6**. A violin plays
   well above both in high positions. Raising the bank's ceiling costs resonators
   (CPU) — a settings decision, not a bug fix.
-- `LOWEST_TRACKED_FREQUENCY = 16 Hz` makes `cmndf` search lags to 3000 samples
-  (13.9M ops/frame) for a band no instrument here plays; the low tail is also where
-  the sub-bass ghost lives.
-- The now-inert `BANK_WEIGHT`/`ATTACK_BANK_WEIGHT` fusion still runs in `pyin`. It is
-  harmless but it is dead weight, and it is what made 1.5 look reasonable.
+- ~~`LOWEST_TRACKED_FREQUENCY = 16 Hz` … the low tail is also where the sub-bass ghost
+  lives.~~ **Done in 1.12** — and the ghost half was wrong: the tail reads `voiced =
+  0.000`, the ghost is the bank's bottom bins.
+- ~~The now-inert `BANK_WEIGHT`/`ATTACK_BANK_WEIGHT` fusion … it is harmless.~~
+  **Done in 1.12** — and "inert"/"harmless" was measured for `BANK_WEIGHT` only.
+  `ATTACK_BANK_WEIGHT` was live and dictated pYIN's octave on every attack.
 
 ### Phase 1.8 — universal ceiling, quantile framing, one octave decision  ⚠ BUILT, NOT LIVE-VERIFIED
 Landed `969e37b` + `a063606`, straight after 1.7 was confirmed by ear. Labelled
@@ -763,6 +771,80 @@ construction" claim made falsifiable. Full checklist in the design, §7.
 where SWIPE expects a dense √-spectrum. The valleys should still collect the odd
 harmonics — that is where the reassigned spikes are — but measure it on a real column
 before building the rest.
+
+### Phase 1.12 — the two "cheap debts", and what measuring them actually found  ✅ DONE
+The handoff listed two cheap cleanups. Both were done — and **both write-ups were
+wrong about the reason**, in the same way: a number measured in one place had been
+carried over to a claim about another. Worth reading for that alone.
+
+**The floor: right cost, wrong story.** `LOWEST_TRACKED_FREQUENCY` moved `16 → 30.868`
+Hz (a semitone under C1) — **13.93M → 8.34M ops/frame** at the 6144 window / 48 kHz.
+But the debt claimed the low tail is "where the sub-bass ghost lives", and that is
+false: on a noise frame the tail's candidates come out at `p = 0.000` / `voiced =
+0.000`, so pYIN already reads unvoiced and publishes nothing. The MIDI-13 ghost is the
+**bank's** bottom bins (`min_midi = 12`) — a different mechanism, untouched by this,
+still open (see the handoff's 🐞).
+
+The real finding was better than the stated one. The floor had been aligned to
+`NOTE_BUCKET_MIN_MIDI` (C0 = 12) — the *bank and spectrum's* note grid — while pYIN's
+own HMM starts at `MIN_MIDI = 24` (C1). So it was not "a band no instrument plays", it
+was a band the tracker **structurally cannot represent**: `step` skips the negative
+bin, so every one of those lags produced hypotheses that were discarded on arrival.
+This is not a tradeoff and never needed the "decision on the real floor" the debt asked
+for — it needed the two grids to be told about each other. `pyin::floor_clears_the_hmm_grid`
+now holds that from both ends, and the margin is deliberate: pinned at *exactly* C1,
+`max_lag` = 1467 clips C1's own dip, which bottoms at 1468.
+
+Safe by construction, not by luck: `d[tau] = difference[tau]·tau / Σ difference[1..=tau]`
+depends only on the **prefix**, so shortening the search cannot perturb a single
+surviving `d[tau]`. Only frames whose first sub-threshold dip lay in the discarded tail
+can change. `pyin::floor_probe` confirms the candidate set is bit-identical on C2…E5
+and on a decaying release tail. Also split out `types::LOWEST_DISPLAYED_FREQUENCY` —
+the same name and value were doing two unrelated jobs, and only the tracker's moved.
+
+**The fusion: "harmless dead weight" was half wrong, and the live half was the bad
+half.** `BANK_WEIGHT` was inert exactly as documented. `ATTACK_BANK_WEIGHT` was **not**,
+and this file said it was for weeks. Measured counterfactual — window holding a clean
+A4 throughout:
+
+| frame | bank says | tracker reports |
+|---|---|---|
+| steady | A5 | **440 Hz** — inert, as documented |
+| onset | A5 | **880 Hz** — the bank dictates |
+| onset | A3 | **220 Hz** — in either direction |
+
+On an onset `process` also set `initialized = false`, so the frame was decided by
+emissions alone — where 2.0 × strength beats YIN's `p = 1.000` outright. The "contributes
+exactly zero" measurement was real, but it was taken on `BANK_WEIGHT` and then
+*generalised* to a constant four times larger riding a different code path.
+
+Why that mattered beyond dead weight: `dsp::melody` borrows this tracker's octave to
+**check** the bank, and `core.rs` was feeding the bank *into* the tracker. On every
+attack the anchor was the bank's own octave echoed back — the two sources confirming
+each other instead of voting — at exactly the moment the bank is least reliable, and
+the HMM's continuity then cemented it into the following frames. Phase 1.6's own
+live-verify question ("attack mode doesn't cause wrong-octave flashes at note starts?")
+was never put to an instrument. It is now moot.
+
+Removed: both weights, `BANK_FUSE_LEVEL` (the third copy of the melody gate's `0.02`),
+the `bank`/`onset` parameters, and the trellis reset — 1.6 introduced the two halves
+together and neither stands alone. `onset_seq` still drives segmentation, which is what
+it was actually good for. `onset_lets_bank_lead_a_leap` is **inverted, not deleted**
+(`only_the_window_moves_the_tracker`): it pinned the bug, so it now pins its absence.
+
+**Verified by measurement, not by reasoning:** pYIN's own latency is unchanged —
+128 ms, 208 ms on an octave, the exact Phase 1.7 numbers — and `segmenter::end_to_end_latency_probe`
+(≤60 ms / ≤130 ms octave) stays green, because the melody line rides the bank and never
+went through here. 116 tests pass. **Still not live-verified**, in the sense this file
+means it: the octave-echo removal changes what pYIN reports at note starts, and only an
+instrument can say whether attacks now feel steadier or slower to settle. It joins the
+checklist rather than claiming a tick.
+
+**The lesson, and it is 1.7's lesson wearing a different hat.** 1.7 shipped because
+nobody measured latency. This shipped because somebody measured *one constant* and
+wrote the conclusion down as if it covered its neighbour. A claim inherits nothing from
+the constant next to it — and a comment asserting inertness is exactly where nobody
+thinks to look for a live wire.
 
 ### Phase 2 — Target / call-and-response mode  ⬜ NOT STARTED
 Show a **target** (a single note, then a short phrase/scale) the user must play;

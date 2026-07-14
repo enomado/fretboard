@@ -305,7 +305,16 @@ const MIN_WINDOW_SIZE: usize = 2048;
 const MAX_WINDOW_SIZE: usize = 16384;
 const MIN_FFT_SIZE: usize = 4096;
 const MAX_FFT_SIZE: usize = 32768;
-const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
+/// Low edge of the **spectrum display's** frequency axis — the floor `min_frequency`
+/// (a view setting, see `dsp::spectrum`) may be dragged down to.
+///
+/// Deliberately *not* `dsp::pitch::LOWEST_TRACKED_FREQUENCY`, though it carried that
+/// exact name and value until the tracker's floor moved up to C1. Two different
+/// questions were sharing one number by coincidence: how low the pitch tracker hunts
+/// for a fundamental, and how low the user may scroll the spectrum. Only the first
+/// one moved — you can still *look* at 16 Hz, there is simply no longer a YIN lag
+/// search down there.
+const LOWEST_DISPLAYED_FREQUENCY: f32 = 16.0;
 
 fn default_concert_pitch_hz() -> f32 {
     440.0
@@ -363,7 +372,7 @@ impl AnalysisSettings {
             .max(MIN_FFT_SIZE)
             .next_power_of_two()
             .clamp(min_fft_for_window, MAX_FFT_SIZE);
-        self.min_frequency = self.min_frequency.clamp(LOWEST_TRACKED_FREQUENCY, 1_200.0);
+        self.min_frequency = self.min_frequency.clamp(LOWEST_DISPLAYED_FREQUENCY, 1_200.0);
         self.max_frequency = self.max_frequency.clamp(120.0, 4_000.0);
         if self.max_frequency <= self.min_frequency + 40.0 {
             self.max_frequency = (self.min_frequency + 40.0).clamp(120.0, 4_000.0);
