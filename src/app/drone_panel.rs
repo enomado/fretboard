@@ -29,6 +29,7 @@ use crate::ui::segmented::{
     PILL_ACCENT_FILL,
     PILL_ACCENT_STROKE,
     PILL_IDLE_STROKE,
+    RowCaption,
     SegmentedButton,
 };
 use crate::ui::theme::PANEL_FILL;
@@ -113,7 +114,7 @@ impl App {
 
                 // ── Тембр: голос + яркость ──
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Voice").color(LABEL_COLOR).strong());
+                    ui.add(RowCaption::new("Voice"));
                     ui.add_space(6.0);
                     for (timbre, name) in [
                         (Timbre::Sine, "Sine"),
@@ -137,7 +138,7 @@ impl App {
 
                 // ── Режим ──
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Mode").color(LABEL_COLOR).strong());
+                    ui.add(RowCaption::new("Mode"));
                     ui.add_space(6.0);
                     for (mode, name) in [
                         (DroneMode::Sustained, "Sustained"),
@@ -168,7 +169,7 @@ impl App {
                             format!("{:>3.0}%", v * 100.0)
                         });
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new("Pattern").color(LABEL_COLOR).strong());
+                            ui.add(RowCaption::new("Pattern"));
                             ui.add_space(6.0);
                             for (pattern, name) in [
                                 (ArpPattern::Up, "Up"),

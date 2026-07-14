@@ -66,6 +66,8 @@ pub const PILL_IDLE_FILL: Color32 = Color32::from_rgb(42, 46, 52);
 pub const PILL_IDLE_STROKE: Color32 = Color32::from_rgb(84, 89, 97);
 /// Default label colour on a pill (matches the app's warm off-white value text).
 pub const PILL_TEXT: Color32 = Color32::from_rgb(226, 216, 201);
+/// Colour of the caption that introduces a row of pills ("Source", "Root", …).
+pub const PILL_CAPTION: Color32 = Color32::from_rgb(205, 194, 176);
 
 /// Fixed outer height of every pill. The whole point of the widget is that this
 /// is a hard number we centre text against, not something egui derives from font
@@ -236,6 +238,66 @@ impl Widget for SegmentedButton<'_> {
             painter.galley(pos, galley, text_color);
         }
 
+        response
+    }
+}
+
+/// The caption that introduces a row of pills — "Source", "Device", "Root", "Mode".
+///
+/// This exists because `ui.horizontal_wrapped` **cannot vertically centre its
+/// items**: a wrapping layout does not know a row's height until the row is closed,
+/// so it top-aligns instead. A plain `ui.label("Source")` is only ~16 px tall next
+/// to a 28 px pill, so it ends up sitting ~4 px *above* the pill's text — a gap
+/// wide enough to read as "the text isn't centred", and one that no amount of
+/// tuning *inside* the pill can fix.
+///
+/// So the caption claims the same [`PILL_HEIGHT`] band as a pill and places its
+/// text with the very same ink-band rule ([`ink_band_mid`]). Caption and pills then
+/// share one baseline **by construction**, wrapping or not, at any font size or
+/// `pixels_per_point` — rather than by a hand-tuned offset that would rot.
+pub struct RowCaption<'a> {
+    text:      &'a str,
+    color:     Color32,
+    font_size: f32,
+}
+
+impl<'a> RowCaption<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self {
+            text,
+            color: PILL_CAPTION,
+            font_size: DEFAULT_FONT_SIZE,
+        }
+    }
+
+    /// Override the caption colour (default [`PILL_CAPTION`]).
+    pub fn color(mut self, color: Color32) -> Self {
+        self.color = color;
+        self
+    }
+
+    /// Override the caption font size (default matches `TextStyle::Button`, 14 px).
+    pub fn font_size(mut self, size: f32) -> Self {
+        self.font_size = size;
+        self
+    }
+}
+
+impl Widget for RowCaption<'_> {
+    fn ui(self, ui: &mut Ui) -> Response {
+        let font_id = FontId::proportional(self.font_size);
+        let galley = ui
+            .painter()
+            .layout_no_wrap(self.text.to_owned(), font_id.clone(), self.color);
+        let band_mid = ink_band_mid(ui, &font_id);
+
+        // Same height band as a pill — that is the whole point. Width hugs the text.
+        let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x, PILL_HEIGHT), Sense::hover());
+
+        if ui.is_rect_visible(rect) {
+            let pos = pos2(rect.left(), rect.center().y - band_mid);
+            ui.painter().galley(pos, galley, self.color);
+        }
         response
     }
 }

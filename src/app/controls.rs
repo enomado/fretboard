@@ -32,7 +32,10 @@ use crate::audio::{
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
-use crate::ui::segmented::SegmentedButton;
+use crate::ui::segmented::{
+    RowCaption,
+    SegmentedButton,
+};
 use crate::ui::theme::PANEL_FILL;
 
 impl App {
@@ -69,11 +72,7 @@ impl App {
                 ui.set_min_width(frame_width - 32.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new("Source")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
+                    ui.add(RowCaption::new("Source"));
 
                     // Canonical segmented toggle (see `ui::segmented`). `min_width`
                     // preserves the original 104/88 px pill widths.
@@ -103,11 +102,7 @@ impl App {
 
                     ui.separator();
 
-                    ui.label(
-                        RichText::new("Device")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
+                    ui.add(RowCaption::new("Device"));
 
                     let selected_input_label = selected_input_id
                         .as_deref()
@@ -196,11 +191,7 @@ impl App {
                         self.audio.set_monitor_enabled(monitor_enabled);
                     }
 
-                    ui.label(
-                        RichText::new("Monitor gain")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
+                    ui.add(RowCaption::new("Monitor gain"));
 
                     let slider = egui::Slider::new(&mut monitor_gain, 0.0..=1.0)
                         .clamping(egui::SliderClamping::Always)
@@ -287,11 +278,7 @@ impl App {
                 ui.horizontal(|ui| {
                     // Знаки альтерации: диезы (C#) или бемоли (Db) во ВСЕХ подписях
                     // нот приложения (улитки, ноты, резонаторы, тюнер, гриф).
-                    ui.label(
-                        RichText::new("Accidentals")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
+                    ui.add(RowCaption::new("Accidentals"));
                     let mut settings = self.audio.analysis_settings();
                     let mut changed = false;
                     for (label, style) in [
@@ -379,11 +366,7 @@ impl App {
                 ui.set_min_width(frame_width - 32.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        RichText::new("Tuning")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
+                    ui.add(RowCaption::new("Tuning"));
                     egui::ComboBox::from_id_salt("tuning")
                         .selected_text(self.tuning_kind.label())
                         .show_ui(ui, |ui| {
@@ -394,11 +377,7 @@ impl App {
 
                     ui.separator();
 
-                    ui.label(
-                        RichText::new("Root")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
+                    ui.add(RowCaption::new("Root"));
                     for (note, label) in ALL_ROOTS {
                         let button = SegmentedButton::new(label, self.root_note == note).min_width(30.0);
                         if ui.add(button).clicked() {
@@ -408,11 +387,7 @@ impl App {
 
                     ui.separator();
 
-                    ui.label(
-                        RichText::new("Scale")
-                            .color(Color32::from_rgb(205, 194, 176))
-                            .strong(),
-                    );
+                    ui.add(RowCaption::new("Scale"));
                     egui::ComboBox::from_id_salt("scale")
                         .selected_text(self.scale_kind.label())
                         .show_ui(ui, |ui| {
@@ -863,11 +838,7 @@ impl App {
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new("Mode")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.add(RowCaption::new("Mode"));
             for (label, power) in [("Magnitude", false), ("Power", true)] {
                 let selected = settings.resonator.power == power;
                 let button = SegmentedButton::new(label, selected).min_width(82.0);
