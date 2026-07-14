@@ -23,6 +23,13 @@ use crate::audio::ResonatorReading;
 use crate::core_types::note::AccidentalStyle;
 #[cfg(target_os = "android")]
 use crate::core_types::pitch::PNote;
+// Only the Android strip (`draw_mobile_snail_settings`) has pills; gate the import
+// the same way its neighbours above are gated.
+#[cfg(target_os = "android")]
+use crate::ui::segmented::{
+    RowCaption,
+    SegmentedButton,
+};
 use crate::ui::snail::{
     self,
     SpiralChart,
@@ -270,14 +277,10 @@ impl App {
 
         // Знаки альтерации: диезы/бемоли во всех подписях нот (улитка, резонаторы).
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Notes")
-                    .color(Color32::from_rgb(205, 194, 176))
-                    .strong(),
-            );
+            ui.add(RowCaption::new("Notes"));
             for (label, style) in [("C#", AccidentalStyle::Sharps), ("Db", AccidentalStyle::Flats)] {
                 let selected = settings.accidental == style;
-                if ui.selectable_label(selected, label).clicked() && settings.accidental != style {
+                if ui.add(SegmentedButton::new(label, selected)).clicked() && settings.accidental != style {
                     settings.accidental = style;
                     changed = true;
                 }

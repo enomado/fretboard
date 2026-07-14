@@ -40,6 +40,10 @@ use crate::core_types::note::{
     CIRCLE_OF_FIFTHS,
     KeySignature,
 };
+use crate::ui::segmented::{
+    RowCaption,
+    SegmentedButton,
+};
 use crate::ui::staff::{
     self,
     Clef,
@@ -313,13 +317,24 @@ impl App {
                 // Clef picker — one staff at a time (a violin reads treble, a
                 // cello/bass the lower clefs). The choice lives in `StaffTrainer`.
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Clef")
-                            .size(12.0)
+                    // Both captions keep their smaller, dimmer secondary look; only the
+                    // vertical band comes from `RowCaption`, so they line up with the
+                    // pills instead of riding above them.
+                    ui.add(
+                        RowCaption::new("Clef")
+                            .font_size(12.0)
                             .color(Color32::from_rgb(145, 151, 160)),
                     );
+                    // `selectable_value` drew a fill only when selected, leaving Bass and
+                    // Tenor as bare text with no outline — the exact inconsistency the
+                    // canonical pill exists to kill.
                     for clef in Clef::ALL {
-                        ui.selectable_value(&mut self.staff.clef, clef, clef.label());
+                        if ui
+                            .add(SegmentedButton::new(clef.label(), self.staff.clef == clef))
+                            .clicked()
+                        {
+                            self.staff.clef = clef;
+                        }
                     }
 
                     ui.add_space(18.0);
@@ -327,9 +342,9 @@ impl App {
                     // Key-signature picker — the circle of fifths. Selecting a key
                     // both draws its sharps/flats at the clef and re-spells the
                     // notes accordingly (see `KeySignature`).
-                    ui.label(
-                        RichText::new("Key")
-                            .size(12.0)
+                    ui.add(
+                        RowCaption::new("Key")
+                            .font_size(12.0)
                             .color(Color32::from_rgb(145, 151, 160)),
                     );
                     eframe::egui::ComboBox::from_id_salt("staff_key_sig")

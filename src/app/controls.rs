@@ -127,7 +127,10 @@ impl App {
                             }
                         });
 
-                    if ui.button("Refresh inputs").clicked() {
+                    // Shares the Source/Device row with the pills, so it has to be one
+                    // too — a bare `ui.button` sits on a different height band and
+                    // breaks the row's baseline.
+                    if ui.add(SegmentedButton::action("Refresh inputs")).clicked() {
                         self.refresh_audio_inputs();
                     }
                 });
