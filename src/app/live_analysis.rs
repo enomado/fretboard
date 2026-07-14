@@ -38,6 +38,11 @@ use crate::ui::snail::{
     SpiralChart,
 };
 use crate::ui::tokens::color;
+
+/// The tuner's centre tick — the pitch you are aiming at. Warm, unlike the cool
+/// `color::GRID_LINE_STRONG` graticule around it: this line is the target, not
+/// scaffolding, and the needle is read *against* it.
+const TUNER_TARGET: Color32 = Color32::from_rgb(177, 167, 150);
 use crate::ui::waterfall;
 
 impl App {
@@ -68,12 +73,7 @@ impl App {
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        pill(
-                            ui,
-                            &format!("{} samples", waveform.len()),
-                            color::TEXT_BADGE,
-                            color::BADGE_FILL,
-                        );
+                        pill(ui, &format!("{} samples", waveform.len()));
                     });
                 });
 
@@ -124,12 +124,7 @@ impl App {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(reading) = &reading {
-                            pill(
-                                ui,
-                                &format!("clarity {:.2}", reading.clarity),
-                                Color32::from_rgb(206, 198, 183),
-                                color::BADGE_FILL,
-                            );
+                            pill(ui, &format!("clarity {:.2}", reading.clarity));
                             ui.add_space(8.0);
                         }
 
@@ -186,14 +181,14 @@ impl App {
             egui::Align2::LEFT_CENTER,
             input_level_label(input_kind),
             FontId::proportional(13.0),
-            Color32::from_rgb(196, 189, 177),
+            color::TEXT_CAPTION,
         );
         painter.text(
             inner.right_center(),
             egui::Align2::RIGHT_CENTER,
             format!("{:>3.0}%", input_level.clamp(0.0, 1.0) * 100.0),
             FontId::monospace(12.0),
-            Color32::from_rgb(230, 223, 210),
+            color::TEXT_HEADING,
         );
     }
 
@@ -236,7 +231,7 @@ impl App {
                 pos2(plot_rect.left(), center_y),
                 pos2(plot_rect.right(), center_y),
             ],
-            Stroke::new(1.0_f32, Color32::from_rgb(70, 75, 83)),
+            Stroke::new(1.0_f32, color::GRID_LINE_STRONG),
         );
 
         if waveform.len() < 2 {
@@ -295,7 +290,7 @@ impl App {
                 pos2(rect.left() + 18.0, meter_y),
                 pos2(rect.right() - 18.0, meter_y),
             ],
-            Stroke::new(2.0_f32, Color32::from_rgb(89, 92, 98)),
+            Stroke::new(2.0_f32, color::IDLE_STROKE),
         );
 
         for cents in [-50.0_f32, -25.0, 0.0, 25.0, 50.0] {
@@ -303,7 +298,7 @@ impl App {
             let height = if cents == 0.0 { 18.0 } else { 10.0 };
             painter.line_segment(
                 [pos2(x, meter_y - height), pos2(x, meter_y + 2.0)],
-                Stroke::new(1.0_f32, Color32::from_rgb(117, 122, 128)),
+                Stroke::new(1.0_f32, color::TEXT_MUTED),
             );
         }
 
@@ -314,14 +309,14 @@ impl App {
                     egui::Align2::LEFT_TOP,
                     reading.note_name.name_styled(accidental),
                     FontId::proportional(30.0),
-                    Color32::from_rgb(230, 223, 210),
+                    color::TEXT_HEADING,
                 );
                 painter.text(
                     pos2(rect.left() + 18.0, rect.top() + 54.0),
                     egui::Align2::LEFT_TOP,
                     format!("{:.1} Hz", reading.frequency_hz),
                     FontId::proportional(15.0),
-                    Color32::from_rgb(162, 166, 172),
+                    color::TEXT_HINT,
                 );
 
                 let cents = reading.cents.clamp(-50.0, 50.0);
@@ -343,7 +338,7 @@ impl App {
                     egui::Align2::RIGHT_TOP,
                     format!("S{} • F{}", reading.string.0, reading.fret.0),
                     FontId::proportional(12.0),
-                    Color32::from_rgb(160, 165, 171),
+                    color::TEXT_HINT,
                 );
             }
             None => {
@@ -352,7 +347,7 @@ impl App {
                     egui::Align2::CENTER_TOP,
                     "Waiting for pitch",
                     FontId::proportional(20.0),
-                    Color32::from_rgb(188, 182, 171),
+                    color::TEXT_MUTED,
                 );
                 painter.text(
                     rect.center_top() + vec2(0.0, 50.0),
@@ -366,7 +361,7 @@ impl App {
 
         painter.line_segment(
             [pos2(center_x, meter_y - 24.0), pos2(center_x, meter_y + 6.0)],
-            Stroke::new(1.0_f32, Color32::from_rgb(177, 167, 150)),
+            Stroke::new(1.0_f32, TUNER_TARGET),
         );
     }
 

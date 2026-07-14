@@ -42,6 +42,12 @@ const KEYBOARD_MAX_MIDI: u8 = 83; // B5
 const LABEL_COLOR: Color32 = color::TEXT_CAPTION;
 const VALUE_COLOR: Color32 = color::TEXT_VALUE;
 const HINT_COLOR: Color32 = color::TEXT_HINT;
+/// The note keyboard's keys. File-local — only this panel draws a keyboard, and
+/// the black/white pair only means anything as a pair.
+const KEY_BLACK_FILL: Color32 = Color32::from_rgb(30, 33, 38);
+const KEY_WHITE_FILL: Color32 = Color32::from_rgb(48, 52, 58);
+/// Label on an unselected key.
+const KEY_LABEL: Color32 = Color32::from_rgb(188, 192, 198);
 
 impl App {
     pub(super) fn draw_drone_card(&mut self, ui: &mut Ui) {
@@ -75,9 +81,9 @@ impl App {
                 // ── Транспорт: большая Play/Stop + сводка набора ──
                 ui.horizontal(|ui| {
                     let (caption, fill, stroke) = if playing {
-                        ("■ Stop", Color32::from_rgb(120, 58, 52), Color32::from_rgb(196, 122, 110))
+                        ("■ Stop", color::STOP_FILL, color::STOP_STROKE)
                     } else {
-                        ("▶ Play", Color32::from_rgb(42, 78, 72), Color32::from_rgb(111, 154, 142))
+                        ("▶ Play", color::PLAY_FILL, color::PLAY_STROKE)
                     };
                     let button = egui::Button::new(RichText::new(caption).size(16.0).strong())
                         .min_size(vec2(132.0, 36.0))
@@ -247,20 +253,16 @@ fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) ->
                 let fill = if selected {
                     color::ACCENT_FILL
                 } else if is_black {
-                    Color32::from_rgb(30, 33, 38)
+                    KEY_BLACK_FILL
                 } else {
-                    Color32::from_rgb(48, 52, 58)
+                    KEY_WHITE_FILL
                 };
                 let stroke = if selected {
                     color::ACCENT_STROKE
                 } else {
                     color::IDLE_STROKE
                 };
-                let text_color = if selected {
-                    VALUE_COLOR
-                } else {
-                    Color32::from_rgb(188, 192, 198)
-                };
+                let text_color = if selected { VALUE_COLOR } else { KEY_LABEL };
                 let button =
                     egui::Button::new(RichText::new(note_name(midi, style)).size(11.0).color(text_color))
                         .min_size(vec2(34.0, 24.0))

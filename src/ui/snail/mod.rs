@@ -44,6 +44,10 @@ pub const SPIRAL_MIN_HEIGHT: f32 = 376.0;
 /// grow when the pane is stretched and shrink when it is squeezed, instead of
 /// staying at a fixed pixel size that looks tiny when large and huge when small.
 const SPIRAL_REFERENCE_SQUARE: f32 = 312.0;
+/// The spiral's own curve — the path pitch travels along. File-local: it is this
+/// chart's defining line, not shared chrome, and it sits deliberately brighter
+/// than the `color::GRID_LINE_STRONG` rings it crosses.
+const SPIRAL_CURVE: Color32 = Color32::from_rgb(76, 82, 90);
 
 pub fn draw_spiral_chart(ui: &mut Ui, chart: SpiralChart<'_>, settings: &AnalysisSettings) {
     // Desktop tiles are "rubbery": no upper bound, so a divider drag stretches
@@ -173,7 +177,7 @@ pub fn draw_spiral_chart_sized(
         painter.circle_stroke(
             center,
             radius.min(outer_radius),
-            Stroke::new(1.0_f32, Color32::from_rgb(59, 64, 72)),
+            Stroke::new(1.0_f32, color::GRID_LINE_STRONG),
         );
     }
 
@@ -187,7 +191,7 @@ pub fn draw_spiral_chart_sized(
         {
             Stroke::new(1.6_f32, spoke_color)
         } else {
-            Stroke::new(1.0_f32, Color32::from_rgb(55, 60, 67))
+            Stroke::new(1.0_f32, color::GRID_LINE_STRONG)
         };
 
         painter.line_segment(
@@ -219,7 +223,7 @@ pub fn draw_spiral_chart_sized(
         .collect();
     painter.add(egui::Shape::line(
         spiral_points,
-        Stroke::new(1.1_f32, Color32::from_rgb(76, 82, 90)),
+        Stroke::new(1.1_f32, SPIRAL_CURVE),
     ));
 
     for (history_index, row) in chart.waterfall.iter().enumerate() {
@@ -303,7 +307,7 @@ pub fn draw_spiral_chart_sized(
             egui::Align2::LEFT_BOTTOM,
             format!("{} {}", chart.active_note_label, chart.note_labels[active_index]),
             FontId::proportional(12.0),
-            Color32::from_rgb(214, 206, 192),
+            color::TEXT_ACTIVE_NOTE,
         );
     }
 }

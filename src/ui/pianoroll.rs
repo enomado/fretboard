@@ -40,6 +40,7 @@ use eframe::egui::{
 
 use crate::core_types::note::AccidentalStyle;
 use crate::ui::theme::intonation_color;
+use crate::ui::tokens::color;
 
 /// One frame of continuous detected pitch: `midi_f` is the fractional MIDI number
 /// (integer part = note, fraction = how sharp/flat), `level` the input level 0..1
@@ -56,6 +57,18 @@ const LABEL_W: f32 = 46.0;
 /// energy at each pitch — a live "which notes are sounding now" readout at the
 /// playhead edge.
 const RIGHT_LABEL_W: f32 = 44.0;
+
+/// The octave-anchor C label. Brighter than the [`color::TEXT_MUTED`] rows around
+/// it because it is the one row you navigate by — at a zoomed-out view it is the
+/// *only* row still labelled (see [`LABEL_MIN_ROW_H`]).
+const LABEL_OCTAVE: Color32 = Color32::from_rgb(196, 202, 211);
+/// The "now" edge. File-local rather than a token: only this panel has a
+/// playhead, and `ui::tokens` is the vocabulary for chrome shared across modules.
+const PLAYHEAD: Color32 = Color32::from_rgb(70, 76, 86);
+/// Shading over the accidental rows, so the grid reads like a piano's black keys.
+/// A translucent black rather than a colour: it must darken whatever heat is
+/// already painted under it, not replace it.
+const ACCIDENTAL_ROW_SHADE: Color32 = Color32::from_black_alpha(46);
 
 /// Paint the pitch roll into `rect`.
 ///
@@ -86,7 +99,7 @@ pub fn draw_pitch_roll(
     // Pitch → y: higher pitch is higher on screen (smaller y).
     let y_of = |midi_f: f32| plot.bottom() - (midi_f - view_lo) / span * plot.height();
 
-    painter.rect_filled(plot, 0.0, Color32::from_rgb(20, 23, 28));
+    painter.rect_filled(plot, 0.0, color::HEAT_BG);
 
     // Layer order: grid rows (bottom) → spectral heat → melody line (top).
     draw_rows(painter, rect, plot, view_lo, view_hi, span, &y_of, style);
@@ -213,15 +226,15 @@ fn draw_rows(
             painter.rect_filled(
                 Rect::from_min_max(pos2(plot.left(), top_y), pos2(plot.right(), bottom_y)),
                 0.0,
-                Color32::from_rgba_unmultiplied(0, 0, 0, 46),
+                ACCIDENTAL_ROW_SHADE,
             );
         }
 
         // Row boundary line; the C boundary (octave) is brighter as a landmark.
         let line_col = if pc == 0 {
-            Color32::from_rgb(66, 72, 82)
+            color::GRID_LINE_STRONG
         } else {
-            Color32::from_rgb(36, 40, 47)
+            color::GRID_LINE
         };
         painter.line_segment(
             [pos2(plot.left(), bottom_y), pos2(plot.right(), bottom_y)],
@@ -232,9 +245,9 @@ fn draw_rows(
         // an octave anchor even in a zoomed-out (many-row) view.
         if row_h >= LABEL_MIN_ROW_H || pc == 0 {
             let (color, size) = if pc == 0 {
-                (Color32::from_rgb(196, 202, 211), (row_h * 0.72).clamp(9.0, 13.0))
+                (LABEL_OCTAVE, (row_h * 0.72).clamp(9.0, 13.0))
             } else {
-                (Color32::from_rgb(120, 126, 136), (row_h * 0.68).clamp(8.0, 12.0))
+                (color::TEXT_MUTED, (row_h * 0.68).clamp(8.0, 12.0))
             };
             painter.text(
                 pos2(rect.left() + LABEL_W - 6.0, center_y),
@@ -349,7 +362,7 @@ fn draw_graph(painter: &Painter, plot: Rect, samples: &[Option<PitchPoint>], y_o
             Align2::CENTER_CENTER,
             "play a note…",
             FontId::proportional(14.0),
-            Color32::from_rgb(110, 116, 126),
+            color::TEXT_MUTED,
         );
         return;
     }
@@ -391,6 +404,6 @@ fn draw_graph(painter: &Painter, plot: Rect, samples: &[Option<PitchPoint>], y_o
             pos2(plot.right() - 0.5, plot.top()),
             pos2(plot.right() - 0.5, plot.bottom()),
         ],
-        Stroke::new(1.0, Color32::from_rgb(70, 76, 86)),
+        Stroke::new(1.0, PLAYHEAD),
     );
 }

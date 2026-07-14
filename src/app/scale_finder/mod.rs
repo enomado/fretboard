@@ -44,6 +44,7 @@ use super::{
     App,
     ScaleKind,
     pill,
+    pill_muted,
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PCNote;
@@ -258,18 +259,9 @@ impl App {
                                         top.probability * 100.0,
                                         top.label(settings.accidental)
                                     ),
-                                    Color32::from_rgb(214, 206, 192),
-                                    color::BADGE_FILL,
                                 )
                             }
-                            None => {
-                                pill(
-                                    ui,
-                                    "waiting for input",
-                                    Color32::from_rgb(184, 188, 196),
-                                    Color32::from_rgb(56, 61, 68),
-                                )
-                            }
+                            None => pill_muted(ui, "waiting for input"),
                         }
                     });
                 });

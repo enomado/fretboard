@@ -32,7 +32,8 @@ use eframe::egui::{
 
 use super::{
     App,
-    pill,
+    pill_colored,
+    pill_muted,
 };
 use crate::core_types::note::{
     AccidentalStyle,
@@ -51,6 +52,23 @@ use crate::ui::staff::{
 };
 use crate::ui::theme::intonation_color;
 use crate::ui::tokens::color;
+
+/// Ink for the live-note chip, which is painted on `intonation_color(cents)` —
+/// a saturated green→red that shifts under the text as you play. Near-black so
+/// it stays legible across that whole ramp; it is not [`color::TEXT_BADGE`]
+/// because the surface it sits on is data, not a fixed badge fill.
+const PILL_INK_ON_INTONATION: Color32 = Color32::from_rgb(20, 22, 26);
+
+/// Engraving ink: the clef and the key signature. File-local — this is the
+/// staff's own ink, and no other panel engraves. Warmer and brighter than the
+/// staff *lines* it sits on, which stay a plain grey so the glyphs lead.
+const STAFF_INK: Color32 = Color32::from_rgb(216, 208, 196);
+/// The five staff lines. Cool and dim against the warm [`STAFF_INK`] glyphs, so
+/// the notation leads and the ruling recedes.
+const STAFF_LINE: Color32 = Color32::from_rgb(96, 104, 116);
+/// The live pitch trail flowing into the current note — the one blue in the
+/// panel, so it never reads as intonation (which is the green→red ramp).
+const TRAIL_BLUE: Color32 = Color32::from_rgb(96, 176, 214);
 
 /// Input level (RMS-ish, 0..1) below this is treated as silence. The audio engine
 /// never declares silence on its own (`SILENCE_RMS_THRESHOLD == 0.0`), so without
@@ -255,21 +273,14 @@ impl App {
                         |ui| {
                             match self.staff.current() {
                                 Some((midi, cents)) => {
-                                    pill(
+                                    pill_colored(
                                         ui,
                                         &format!("{}  {:+.0}\u{00A2}", style.midi_name(midi), cents),
-                                        Color32::from_rgb(20, 22, 26),
+                                        PILL_INK_ON_INTONATION,
                                         intonation_color(cents),
                                     )
                                 }
-                                None => {
-                                    pill(
-                                        ui,
-                                        "\u{2014}",
-                                        Color32::from_rgb(150, 156, 165),
-                                        Color32::from_rgb(40, 44, 50),
-                                    )
-                                }
+                                None => pill_muted(ui, "\u{2014}"),
                             }
                         },
                     );
@@ -381,13 +392,13 @@ fn draw_staff(
         notes_right: rect.right() - gap * 1.4,
     };
 
-    let staff_col = Color32::from_rgb(96, 104, 116);
+    let staff_col = STAFF_LINE;
     staff::draw_staff_lines(painter, &geom, staff_col);
-    staff::draw_clef(painter, &geom, clef, Color32::from_rgb(216, 208, 196));
+    staff::draw_clef(painter, &geom, clef, STAFF_INK);
 
     // Key signature between the clef and the notes; push the note region right so
     // noteheads never collide with the signature (no-op for C major).
-    let ksig_right = staff::draw_key_signature(painter, &geom, clef, key, Color32::from_rgb(216, 208, 196));
+    let ksig_right = staff::draw_key_signature(painter, &geom, clef, key, STAFF_INK);
     geom.notes_left = geom.notes_left.max(ksig_right + gap * 0.8);
 
     // The current note (and the trail's newest sample) live at this x; notes step
@@ -456,7 +467,7 @@ fn draw_staff(
             Align2::CENTER_CENTER,
             "play a note…",
             FontId::proportional(gap * 1.1),
-            Color32::from_rgb(110, 116, 126),
+            color::TEXT_MUTED,
         );
     }
 }
@@ -470,12 +481,12 @@ fn draw_intonation_bar(painter: &Painter, rect: Rect, cents: f32) {
     let (l, r) = (cx - w * 0.5, cx + w * 0.5);
     painter.line_segment(
         [pos2(l, y), pos2(r, y)],
-        Stroke::new(3.0, Color32::from_rgb(58, 64, 72)),
+        Stroke::new(3.0, color::GRID_LINE_STRONG),
     );
     // Centre tick (perfectly in tune).
     painter.line_segment(
         [pos2(cx, y - 7.0), pos2(cx, y + 7.0)],
-        Stroke::new(2.0, Color32::from_rgb(120, 128, 138)),
+        Stroke::new(2.0, color::TEXT_MUTED),
     );
     let t = (cents / 50.0).clamp(-1.0, 1.0);
     painter.circle_filled(pos2(cx + t * w * 0.5, y), 6.0, intonation_color(cents));
@@ -515,7 +526,7 @@ fn draw_trail(
         painter.circle_filled(
             pos2(x, y),
             radius,
-            Color32::from_rgba_unmultiplied(96, 176, 214, alpha),
+            TRAIL_BLUE.gamma_multiply(alpha as f32 / 255.0),
         );
     }
 }
@@ -587,7 +598,7 @@ fn draw_resonator_waterfall(
             painter.rect_filled(
                 Rect::from_center_size(pos2(x, y), vec2(cell_w, cell_h)),
                 1.0,
-                Color32::from_rgba_unmultiplied(96, 176, 214, alpha),
+                TRAIL_BLUE.gamma_multiply(alpha as f32 / 255.0),
             );
         }
     }

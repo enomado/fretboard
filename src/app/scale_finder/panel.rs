@@ -42,7 +42,7 @@ pub(super) fn draw_method_panel(
         egui::Align2::LEFT_TOP,
         "Three methods — each ranks on its own signal",
         FontId::proportional(12.0),
-        Color32::from_rgb(178, 183, 190),
+        color::TEXT_HINT,
     );
 
     // Топ-вердикт каждого метода в его собственном цвете (см. цвета слайдеров).
@@ -163,7 +163,7 @@ pub(super) fn draw_method_panel(
             egui::Align2::LEFT_CENTER,
             candidate.label(style),
             FontId::proportional(13.0),
-            Color32::from_rgb(222, 215, 203),
+            color::TEXT_DEFAULT,
         );
         painter.text(
             pos2(row.right() - 10.0, row.center().y),
@@ -227,7 +227,7 @@ fn draw_verdict_row(
         egui::Align2::LEFT_CENTER,
         value,
         FontId::proportional(12.0),
-        Color32::from_rgb(220, 213, 201),
+        color::TEXT_DEFAULT,
     );
     painter.text(
         pos2(rect.right(), y + 8.0),

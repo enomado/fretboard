@@ -24,6 +24,10 @@ use crate::ui::snail::{
 };
 use crate::ui::tokens::color;
 
+/// The wheel's radial spokes. Dimmer than the `color::GRID_LINE_STRONG` rings on
+/// purpose: the rings carry the reading, the spokes only subdivide it.
+const SPOKE: Color32 = Color32::from_rgb(48, 52, 59);
+
 /// Кольцо КВИНТ (метод D): 12 нот в квинтовом порядке + стрелка к центру тяжести
 /// chroma. Длина стрелки = сила тонального центра, ближайшая нота = его тоника.
 pub(super) fn draw_fifths_ring(
@@ -47,11 +51,7 @@ pub(super) fn draw_fifths_ring(
         color::TEXT_HINT,
     );
 
-    painter.circle_stroke(
-        center,
-        radius,
-        Stroke::new(1.0_f32, Color32::from_rgb(59, 64, 72)),
-    );
+    painter.circle_stroke(center, radius, Stroke::new(1.0_f32, color::GRID_LINE_STRONG));
 
     for pc in 0..PITCH_CLASS_COUNT {
         let label = style.pitch_class_name(pc);
@@ -79,7 +79,7 @@ pub(super) fn draw_fifths_ring(
         painter.line_segment([center, tip], Stroke::new(2.0_f32, COLOR_SPIRAL));
         painter.circle_filled(tip, 4.0, COLOR_SPIRAL);
     }
-    painter.circle_filled(center, 2.0, Color32::from_rgb(120, 126, 134));
+    painter.circle_filled(center, 2.0, color::TEXT_MUTED);
 }
 
 /// 12-спицевое колесо pitch-классов: размер точки = энергия chroma, кольца-маркеры
@@ -103,11 +103,7 @@ pub(super) fn draw_chroma_wheel(
         member[pc.0 as usize % PITCH_CLASS_COUNT] = true;
     }
 
-    painter.circle_stroke(
-        center,
-        radius,
-        Stroke::new(1.0_f32, Color32::from_rgb(59, 64, 72)),
-    );
+    painter.circle_stroke(center, radius, Stroke::new(1.0_f32, color::GRID_LINE_STRONG));
 
     let root_angle = pitch_class_angle(top.root_pc);
     let root_dir = vec2(root_angle.cos(), root_angle.sin());
@@ -124,7 +120,7 @@ pub(super) fn draw_chroma_wheel(
 
         painter.line_segment(
             [center + dir * (radius * 0.16), spoke_end],
-            Stroke::new(1.0_f32, Color32::from_rgb(48, 52, 59)),
+            Stroke::new(1.0_f32, SPOKE),
         );
         painter.text(
             center + dir * (radius + 18.0),
@@ -164,6 +160,6 @@ pub(super) fn draw_chroma_wheel(
         egui::Align2::CENTER_BOTTOM,
         top.label(style),
         FontId::proportional(13.0),
-        Color32::from_rgb(214, 206, 192),
+        color::TEXT_ACTIVE_NOTE,
     );
 }

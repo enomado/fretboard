@@ -1,6 +1,5 @@
 use eframe::egui::{
     self,
-    Color32,
     CornerRadius,
     Frame,
     Margin,
@@ -237,8 +236,8 @@ impl App {
                     // ноту через спикер. Полноценная игра нот — в панели «Drone».
                     let play_button = SegmentedButton::colored(
                         "Play test note",
-                        Color32::from_rgb(42, 78, 72),
-                        Color32::from_rgb(111, 154, 142),
+                        color::PLAY_FILL,
+                        color::PLAY_STROKE,
                     )
                     .min_width(116.0);
                     if ui.add(play_button).clicked() {
@@ -301,9 +300,9 @@ impl App {
                 });
                 ui.add_space(8.0);
                 Frame::new()
-                    .fill(Color32::from_rgb(28, 32, 37))
+                    .fill(color::PLOT_BG)
                     .corner_radius(CornerRadius::same(12))
-                    .stroke(Stroke::new(1.0_f32, Color32::from_rgb(52, 58, 66)))
+                    .stroke(Stroke::new(1.0_f32, color::FRAME_STROKE))
                     .inner_margin(Margin::same(10))
                     .show(ui, |ui| {
                         ui.label(
@@ -349,7 +348,7 @@ impl App {
                                 RichText::new(
                                     "Bluetooth output detected: playback monitor latency and clicks are much more likely.",
                                 )
-                                .color(Color32::from_rgb(210, 166, 136))
+                                .color(color::STATUS_ERROR)
                                 .size(12.0),
                             );
                         }
@@ -465,9 +464,9 @@ impl App {
         let mut changed = false;
 
         Frame::new()
-            .fill(Color32::from_rgb(25, 29, 34))
+            .fill(color::PANEL_FILL)
             .corner_radius(CornerRadius::same(16))
-            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(52, 58, 66)))
+            .stroke(Stroke::new(1.0_f32, color::FRAME_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {

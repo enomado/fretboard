@@ -53,6 +53,7 @@ use crate::core_types::tuning::{
     GString,
     Tuning,
 };
+use crate::ui::tokens::color;
 
 const FRETBOARD_HEIGHT: f32 = 340.0;
 const FRETBOARD_MARGIN_LEFT: f32 = 54.0;
@@ -395,7 +396,27 @@ pub fn create_app(cc: &CreationContext) -> App {
     App::new(cc)
 }
 
-fn pill(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
+/// A small read-only status chip reporting a value ("442 samples", "18 bins").
+///
+/// Takes no colours: the default badge *is* the role. It used to take `fg`/`bg`,
+/// which meant every call site had to remember the role — and half of them did
+/// not, hand-passing near-identical greys until one chip style had drifted into
+/// four. Use [`pill_muted`] for the empty state and [`pill_colored`] when the
+/// colour carries data.
+fn pill(ui: &mut Ui, label: &str) {
+    pill_colored(ui, label, color::TEXT_BADGE, color::BADGE_FILL);
+}
+
+/// The empty-state chip: "waiting for input", "—". Says *no data*, as opposed to
+/// [`pill`], which reports one.
+fn pill_muted(ui: &mut Ui, label: &str) {
+    pill_colored(ui, label, color::TEXT_BADGE_MUTED, color::BADGE_FILL_MUTED);
+}
+
+/// A chip whose colour *is* information — the staff's intonation readout, where
+/// the fill is `theme::intonation_color(cents)`. The only reason this takes
+/// colours; if you are passing a constant, you want [`pill`] or [`pill_muted`].
+fn pill_colored(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
     eframe::egui::Frame::new()
         .fill(bg)
         .corner_radius(eframe::egui::CornerRadius::same(255))
@@ -415,9 +436,9 @@ fn audio_status_label(status: &AudioStatus, input_kind: AudioInputKind) -> Strin
 
 fn audio_status_color(status: &AudioStatus) -> Color32 {
     match status {
-        AudioStatus::Idle => Color32::from_rgb(154, 160, 168),
-        AudioStatus::Listening => Color32::from_rgb(185, 194, 176),
-        AudioStatus::Error(_) => Color32::from_rgb(210, 166, 136),
+        AudioStatus::Idle => color::STATUS_IDLE,
+        AudioStatus::Listening => color::STATUS_LISTENING,
+        AudioStatus::Error(_) => color::STATUS_ERROR,
     }
 }
 

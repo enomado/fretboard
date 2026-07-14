@@ -66,15 +66,15 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new(format!("Scale tones: {}", scale.notes().len()))
-                            .color(Color32::from_rgb(143, 150, 160)),
+                            .color(color::TEXT_HINT),
                     );
                     ui.separator();
                     ui.label(
                         RichText::new(format!("Resonator notes: {}", resonator_targets.len()))
-                            .color(Color32::from_rgb(143, 150, 160)),
+                            .color(color::TEXT_HINT),
                     );
                     ui.separator();
-                    ui.label(RichText::new("Visible frets: 1-18").color(Color32::from_rgb(143, 150, 160)));
+                    ui.label(RichText::new("Visible frets: 1-18").color(color::TEXT_HINT));
                 });
 
                 ui.add_space(10.0);
@@ -95,7 +95,7 @@ impl App {
                 painter.rect_stroke(
                     fretboard_rect,
                     18.0,
-                    Stroke::new(1.0_f32, Color32::from_rgb(112, 88, 66)),
+                    Stroke::new(1.0_f32, color::ACCENT_FILL),
                     egui::StrokeKind::Inside,
                 );
 
@@ -138,7 +138,7 @@ impl App {
                 self.scale_kind.label()
             ),
             FontId::proportional(12.0),
-            Color32::from_rgb(128, 134, 143),
+            color::TEXT_MUTED,
         );
     }
 
@@ -176,10 +176,10 @@ impl App {
         painter.rect_stroke(
             hovered.rect.expand2(vec2(4.0, 4.0)),
             10.0,
-            Stroke::new(2.0_f32, Color32::from_rgb(214, 200, 182)),
+            Stroke::new(2.0_f32, color::MARKER),
             egui::StrokeKind::Outside,
         );
-        painter.circle_filled(hovered.center, 3.0, Color32::from_rgb(224, 213, 196));
+        painter.circle_filled(hovered.center, 3.0, color::MARKER);
 
         let degree_label = hovered
             .degree
@@ -194,12 +194,12 @@ impl App {
         painter.rect_filled(
             tooltip_rect,
             14.0,
-            Color32::from_rgba_unmultiplied(24, 26, 30, 236),
+            color::PANEL_FILL.gamma_multiply(236.0 / 255.0),
         );
         painter.rect_stroke(
             tooltip_rect,
             14.0,
-            Stroke::new(1.0_f32, Color32::from_rgb(88, 92, 98)),
+            Stroke::new(1.0_f32, color::IDLE_STROKE),
             egui::StrokeKind::Inside,
         );
         painter.text(
@@ -219,7 +219,7 @@ impl App {
                 hovered.string.0, hovered.fret.0, degree_label
             ),
             FontId::proportional(12.0),
-            Color32::from_rgb(160, 165, 171),
+            color::TEXT_HINT,
         );
     }
 
@@ -344,15 +344,11 @@ impl App {
                 fretboard.fret_pos(target.fret),
                 fretboard.string_pos(target.string),
             );
-            painter.circle_stroke(
-                center,
-                18.0,
-                Stroke::new(2.0_f32, Color32::from_rgb(216, 205, 187)),
-            );
+            painter.circle_stroke(center, 18.0, Stroke::new(2.0_f32, color::MARKER));
             painter.circle_stroke(
                 center,
                 24.0,
-                Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(216, 205, 187, 96)),
+                Stroke::new(1.0_f32, color::MARKER.gamma_multiply(96.0 / 255.0)),
             );
         }
     }

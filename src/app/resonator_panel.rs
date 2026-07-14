@@ -1,6 +1,5 @@
 use eframe::egui::{
     self,
-    Color32,
     CornerRadius,
     FontId,
     Frame,
@@ -16,6 +15,7 @@ use eframe::egui::{
 use super::{
     App,
     pill,
+    pill_muted,
     spectrum_color,
 };
 use crate::audio::ResonatorReading;
@@ -90,19 +90,9 @@ impl App {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(reading) = reading_ref {
-                            pill(
-                                ui,
-                                &format!("{} bins", reading.spectrum.len()),
-                                color::TEXT_BADGE,
-                                color::BADGE_FILL,
-                            );
+                            pill(ui, &format!("{} bins", reading.spectrum.len()));
                         } else {
-                            pill(
-                                ui,
-                                "waiting for input",
-                                Color32::from_rgb(184, 188, 196),
-                                Color32::from_rgb(56, 61, 68),
-                            );
+                            pill_muted(ui, "waiting for input");
                         }
                     });
                 });
@@ -318,19 +308,9 @@ impl App {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(reading) = reading_ref {
-                            pill(
-                                ui,
-                                &format!("{} bins", reading.spectrum.len()),
-                                color::TEXT_BADGE,
-                                color::BADGE_FILL,
-                            );
+                            pill(ui, &format!("{} bins", reading.spectrum.len()));
                         } else {
-                            pill(
-                                ui,
-                                "waiting for input",
-                                Color32::from_rgb(184, 188, 196),
-                                Color32::from_rgb(56, 61, 68),
-                            );
+                            pill_muted(ui, "waiting for input");
                         }
                     });
                 });
@@ -467,19 +447,9 @@ impl App {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(reading) = reading_ref {
-                            pill(
-                                ui,
-                                &format!("{} frames", reading.waterfall.len()),
-                                color::TEXT_BADGE,
-                                color::BADGE_FILL,
-                            );
+                            pill(ui, &format!("{} frames", reading.waterfall.len()));
                         } else {
-                            pill(
-                                ui,
-                                "waiting for input",
-                                Color32::from_rgb(184, 188, 196),
-                                Color32::from_rgb(56, 61, 68),
-                            );
+                            pill_muted(ui, "waiting for input");
                         }
                     });
                 });
@@ -495,7 +465,7 @@ impl App {
         let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
         let painter = ui.painter_at(rect);
 
-        painter.rect_filled(rect, 18.0, Color32::from_rgb(20, 23, 29));
+        painter.rect_filled(rect, 18.0, color::HEAT_BG);
         painter.rect_stroke(
             rect,
             18.0,
@@ -550,14 +520,14 @@ impl App {
             egui::Align2::LEFT_TOP,
             "newest frame at the bottom, resonator bins across the pitch axis",
             FontId::proportional(12.0),
-            Color32::from_rgb(166, 170, 176),
+            color::TEXT_HINT,
         );
         painter.text(
             pos2(rect.right() - 18.0, rect.bottom() - 14.0),
             egui::Align2::RIGHT_BOTTOM,
             format!("{} active bins", reading.spectrum.len()),
             FontId::proportional(12.0),
-            Color32::from_rgb(166, 170, 176),
+            color::TEXT_HINT,
         );
     }
 }

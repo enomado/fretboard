@@ -30,7 +30,7 @@ pub fn draw_waterfall(painter: &Painter, rect: Rect, waterfall: &[Vec<f32>]) {
             egui::Align2::CENTER_CENTER,
             "Waterfall will fill as audio arrives",
             FontId::proportional(12.0),
-            Color32::from_rgb(128, 133, 139),
+            color::TEXT_MUTED,
         );
         return;
     }
@@ -116,11 +116,11 @@ pub fn draw_note_waterfall(
         painter.rect_filled(
             Rect::from_min_max(pos2(x0, rect.top()), pos2(x1, rect.bottom())),
             0.0,
-            Color32::from_rgba_unmultiplied(214, 200, 182, 24),
+            color::MARKER.gamma_multiply(24.0 / 255.0),
         );
         painter.line_segment(
             [pos2(center_x, rect.top()), pos2(center_x, rect.bottom())],
-            Stroke::new(2.0_f32, Color32::from_rgb(214, 200, 182)),
+            Stroke::new(2.0_f32, color::MARKER),
         );
     }
 
@@ -135,7 +135,7 @@ pub fn draw_note_waterfall(
             egui::Align2::CENTER_TOP,
             labels[index].as_str(),
             FontId::proportional(10.0),
-            Color32::from_rgb(128, 133, 139),
+            color::TEXT_MUTED,
         );
     }
 
@@ -181,11 +181,11 @@ pub fn draw_pitch_labeled_waterfall(
         painter.rect_filled(
             Rect::from_min_max(pos2(x0, rect.top()), pos2(x1, rect.bottom())),
             0.0,
-            Color32::from_rgba_unmultiplied(214, 200, 182, 24),
+            color::MARKER.gamma_multiply(24.0 / 255.0),
         );
         painter.line_segment(
             [pos2(center_x, rect.top()), pos2(center_x, rect.bottom())],
-            Stroke::new(2.0_f32, Color32::from_rgb(214, 200, 182)),
+            Stroke::new(2.0_f32, color::MARKER),
         );
     }
 
@@ -200,7 +200,7 @@ pub fn draw_pitch_labeled_waterfall(
             egui::Align2::CENTER_TOP,
             labels[index].as_str(),
             FontId::proportional(10.0),
-            Color32::from_rgb(128, 133, 139),
+            color::TEXT_MUTED,
         );
     }
 
