@@ -124,6 +124,7 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
                     &state.shared,
                     &state.settings,
                     &state.input_gain,
+                    &state.input_level,
                 );
             }
             let snapshot = snapshot(state);

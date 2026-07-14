@@ -50,6 +50,7 @@ flowchart TD
         CMNDF --> CAND["dsp::pyin::pyin_candidates<br/>Beta(2,18) threshold prior<br/>→ weighted candidates + voiced prob"]
         CAND --> HMM["dsp::pyin::PitchTracker<br/>online Viterbi · 10-cent bins + unvoiced"]
         A --> ONSET["dsp::onset::OnsetDetector<br/>RMS attack + re-arm"]
+        A --> LVL["normalized + smoothed level<br/>the silence gate"]
         A --> FFT["dsp::spectrum<br/>FFT bars"]
     end
 
@@ -60,23 +61,32 @@ flowchart TD
 
     HMM -->|"octave anchor<br/>(midi, clarity)"| MELODY
     FUND -->|"fast_pitch<br/>(midi, strength)"| MELODY
+    LVL -->|"silence gate"| MELODY
     MELODY["dsp::melody::MelodyTracker<br/><b>the only octave decision</b><br/>snap · leap hysteresis · slip gate"]
 
+    MELODY --> SEG
+    ONSET -->|"onset_seq"| SEG
+    SEG["dsp::segmenter::NoteSegmenter<br/><b>the only note-boundary decision</b><br/>glitch · release grace · cents EMA<br/><i>clocked off the sample count</i>"]
+
     HMM --> FREQ["TunerReading::frequency_hz + clarity"]
-    ONSET --> SEQ["TunerReading::onset_seq"]
     MELODY --> MP["TunerReading::melody_pitch"]
+    SEG --> NL["TunerReading::note_line"]
     BANK --> HEAT["TunerReading::resonator_*"]
 
-    MP --> STAFF["staff_panel — notation"]
+    NL --> STAFF["staff_panel — draws the line"]
     MP --> ROLL["pitch_roll_panel — pitch curve"]
-    SEQ --> STAFF
+    MP --> STAFF
     HEAT --> ROLL
     FREQ --> TUNER["fretboard · tuner · scale finder"]
     FFT --> TUNER
 
     classDef decide fill:#2d4a5a,stroke:#7fb3d3,color:#e8f0f5
     class MELODY decide
+    class SEG decide
 ```
+
+Both shaded boxes are **in the engine, on audio clocks**. Nothing below them decides
+anything; the panels draw what they are handed (§3).
 
 **Read the split as: `melody_pitch` is for panels that answer "what am I playing right
 now"; `frequency_hz` is for panels that answer "am I in tune".** They want opposite
@@ -167,11 +177,22 @@ A confirmed leap **resets the gate**. Layer 3's median is still on the old octav
 left alone it would reject the leap for another few frames out of inertia — a second
 conservatism tax on a decision layer 2 already paid for over five frames.
 
+### Stage 2b — note segmentation (`dsp::segmenter::NoteSegmenter`)
+
+Also at plane B's cadence, and the **only** place a note's start and end are decided.
+Glitch rejection (`MIN_NOTE_SECONDS`), dropout grace (`RELEASE_SECONDS`) and the cents
+average (`CENTS_EMA`) are all specified in *seconds*, so by §4's rule they may not be
+driven by the UI. `now` is derived from the **sample count**, which additionally makes
+a note's duration a musical quantity rather than a count of renderer ticks.
+
+A rejected slip and silence both arrive here as `None`, deliberately — see §5.
+
 ### Stage 3 — the panels
 
 Panels do **no DSP**. They read decided values and draw them.
 
-- **staff** — `melody_pitch` + `onset_seq` → note segmentation → notation.
+- **staff** — `note_line` (the written notes, decided upstream) for the notation, plus
+  `melody_pitch` for the decorative trail.
 - **pitch roll** — `melody_pitch` (the line) + the raw resonator column (the heat).
   The heat makes no octave decision at all, deliberately: it is the ground truth the
   line is checked against by eye. If the line disagrees with the heat under it, the
@@ -186,22 +207,31 @@ This is the part that bites, so it gets its own section.
 
 | clock | rate | drives |
 |---|---|---|
-| bank cadence | 16 ms, fixed | the octave dispute counter, the gate's median |
-| analysis cadence | 40 ms, fixed | the anchor, `onset_seq` |
-| **UI frame** | **60 fps — and *variable*** | drawing… and, still, note segmentation |
+| **sample count** | exact, from the audio itself | note durations, the release grace |
+| bank cadence | 16 ms, fixed | the octave dispute counter, the gate's median, the cents EMA |
+| analysis cadence | 40 ms, fixed | the anchor, `onset_seq`, the level |
+| **UI frame** | **60 fps — and *variable*** | drawing, and nothing else |
 
 **Anything whose behaviour is specified in seconds must be driven by an audio clock,
-not the UI clock.** The `OctaveGate` used to live in the panels and be driven per UI
-frame, which made a DSP filter's median window measured in *frames*: a stuttering UI
-quietly changed its timescale, and the same code behaved differently at 30 fps and
-60 fps. It now runs in `melody`, at the bank's cadence.
+not the UI clock.** Twice now a DSP filter has been found living in a panel with its
+window measured in *frames*, so that a stuttering UI quietly changed its timescale and
+the same code behaved differently at 30 fps and 60 fps:
 
-**Known remaining violation** — note segmentation (`MIN_NOTE_SECONDS`,
-`RELEASE_SECONDS`, `CENTS_EMA`) still runs inside `StaffTrainer`, driven per UI frame
-off `ui.input(|i| i.time)`; and the pitch roll's history is sampled per UI frame, so
-its time axis is not time — its own comment admits the span is "~10 s at 60 fps, ~20 s
-at 30 fps". Both belong in the engine, on a sample-derived clock (which would also
-make note durations sample-accurate instead of frame-quantised). Not yet done.
+- the `OctaveGate`'s median — moved into `melody` (Phase 1.8);
+- note segmentation — moved into `segmenter` (Phase 1.9), where `now` comes from the
+  sample count, so a note's length is sample-accurate rather than frame-quantised.
+
+**No decision is left on the UI clock.** What remains sampled per UI frame is
+*decoration*, and is only tolerable because nothing is decided from it:
+
+- the staff's pitch **trail** — a fading glow; a dropped frame costs one dot;
+- the pitch roll's **history** — 600 frames wide, so its time axis is still not time
+  (its own comment admits "~10 s at 60 fps, ~20 s at 30 fps"). The *line's* values are
+  decided upstream and merely sampled late; the axis they are plotted against is the
+  wrong ruler. Fixing it needs an engine-side history the panel drains by sequence
+  rather than per frame, and a decision about the heat's cost: the two layers must stay
+  aligned 1:1, and 600 columns × ~480 bins on every reading is ~70 MB/s of copying.
+  Not yet done.
 
 ---
 
@@ -219,10 +249,29 @@ everything else is expected to match it: `cmndf`'s lag bounds
 > silently transposed down, on the tuner and fretboard as well as the staff.
 > `pyin::tests::ceiling_probe` asserts this can't come back.
 
-**Silence** is gated on absolute input `level` at the panel (`LEVEL_GATE`). This is
-the real silence gate and it cannot move upstream cheaply: the bank's column is
-*normalized*, so it reports *some* fundamental for room noise. The engine never
+**Silence** is gated on absolute input `level`, in the engine
+(`core::MELODY_LEVEL_GATE`), on the bank's input. It has to be *absolute*: the bank's
+column is normalized to its own max, so it reports *some* fundamental for room noise
+and nothing downstream can reconstruct silence from its output. The engine never
 declares silence on its own (`SILENCE_RMS_THRESHOLD == 0.0`).
+
+It used to sit in each panel, gating the melody line's *output*. That hid a detail:
+the `MelodyTracker` upstream was fed raw bank pitch regardless, so its leap/slip
+hysteresis stayed alive on room noise through every rest. Gating the *input* means
+silence properly ends the phrase — and it had to move anyway, because the thing that
+now needs to know the sound stopped (§2b) is in the engine.
+
+> **⚠ The gate closes ~500 ms late, and ghost notes get written in the gap.**
+> `input_level` is the *smoothed* level (`smoothed_level`, ×0.88 per 40 ms frame while
+> falling) — smoothing that exists so the UI's level *meter* doesn't flicker, which the
+> gate inherited by sharing the atomic. So after a note stops, the gate stays open for
+> ~500 ms while the bank, unable to be quiet, reports whichever bins ring longest at
+> full confidence. `OctaveGate` rejects the first ~50 ms, then its median moves onto the
+> garbage and passes it. Reproduced by `core::tests::release_ghosts_are_written_after_a_note`.
+> **How bad this is live is unknown**: the test cuts the tone off instantly, which no
+> instrument does — a real note decays over hundreds of ms and the two may fall together.
+> That is a question for the instrument. It is not new, and it is not caused by the
+> segmenter's move; the move is what made it *visible*.
 
 **A rejected frame reads as `None` — the same as silence.** This asymmetry is
 deliberate and is why the gate returns `Option`: downstream, a missing frame is
@@ -244,9 +293,16 @@ value being available.
 | resonator bank alone | **8–29 ms** | 8 ms |
 | pYIN alone | **128 ms** (= window length, exactly) | 208 ms |
 | plain YIN (pre-pYIN reference) | 128 ms | 128 ms |
-| **staff, end to end** | **28 ms** | **78 ms** |
-| *(staff, before this work)* | *128 ms* | *328 ms* |
+| **melody line, to the engine's decision** | **24–40 ms** | **72 ms** |
+| *(same path, measured to the UI frame that drew it — Phase 1.8)* | *28 ms* | *78 ms* |
+| *(staff, before Phase 1.7)* | *128 ms* | *328 ms* |
 | perceptual threshold | ~30–40 ms | |
+
+> **The top two rows are the same path measured at different points, not a speed-up.**
+> Phase 1.9 moved segmentation into the engine, so the probe now stops when the engine
+> *decides*; before, it stopped at the UI frame that *drew* the decision. Add up to one
+> frame (≤17 ms at 60 fps) for the pixels. Nothing about the latency changed — only
+> where the ruler ends.
 
 pYIN's latency tracks its window length *exactly*, at every size — 1024→21 ms,
 2048→43 ms, 6144→128 ms, 8192→171 ms. That is not a coincidence to be tuned around; it
@@ -260,12 +316,24 @@ deliberate price of not re-breaking octave wandering.
 | test | asserts |
 |---|---|
 | `resonator::bank_latency_probe` | bank follows a change ≤ 40 ms |
-| `staff_panel::end_to_end_latency_probe` | staff shows a note ≤ 60 ms (≤ 100 ms octave), through the *real* bank + tracker + melody + segmenter |
+| `segmenter::end_to_end_latency_probe` | the line shows a note ≤ 60 ms (≤ 100 ms octave), through the *real* bank + tracker + melody + segmenter |
+| `core::engine_writes_a_played_note_end_to_end` | a note reaches `note_line` through the real **engine wiring** — both pipelines, the level atomic, the onset hand-off, the sample clock |
+| `core::the_silence_gate_keeps_room_noise_off_the_line` | the silence gate is still connected |
+| `core::release_ghosts_are_written_after_a_note` | pins the known bug in §5 |
 | `pyin::ceiling_probe` | C0..E7 tracks with no octave error |
 | `pyin::latency_probe` | reference numbers: window sweep, plain-YIN oracle |
 | `pyin::short_window_accuracy_probe` | reference: accuracy vs window size |
 | `melody::*` | each octave layer, and each guard, in isolation |
+| `segmenter::*` | glitch/grace/re-attack, and that duration rides the supplied clock |
 | `pitch_roll_panel::framing_keeps_the_rows_labellable` | framing stays tight enough for `pianoroll` to name notes, not just octaves |
+
+> **The unit tests are not enough on their own, and that is a lesson too.** Every DSP
+> test above either drives one module or composes them *by hand*. None of them touches
+> the engine's **wiring** — the level atomic one plane writes and the other reads, the
+> onset counter crossing between them, the sample clock, `note_line` being stamped by
+> both publish paths without one blanking the other. A mistake there is invisible to
+> the whole DSP suite and total to the user: the staff simply stays empty. That is why
+> the `core::*` tests exist, and they are the ones that found §5's ghosts.
 
 > **Why these exist at all.** Phases 1.4/1.5/1.6 each shipped marked "✅ DONE (built,
 > not live-verified)", and **not one** had a test that measured latency — every pYIN

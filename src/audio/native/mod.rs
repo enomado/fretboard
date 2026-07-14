@@ -719,6 +719,7 @@ pub(super) mod imp {
                 self.shared.clone(),
                 self.settings.clone(),
                 self.input_gain.clone(),
+                self.input_level.clone(),
                 self.resonator_wanted.clone(),
             )
         }
@@ -846,6 +847,10 @@ pub(super) mod imp {
         shared: Arc<Mutex<SharedState>>,
         settings: Arc<Mutex<AnalysisSettings>>,
         input_gain: Arc<AtomicU32>,
+        // Written by the analysis worker, read here: the melody line's silence gate.
+        // The bank's own column is normalized and so cannot tell silence from noise —
+        // the absolute level is measured on the other plane and shared across.
+        input_level: Arc<AtomicU32>,
         resonator_wanted: Arc<Mutex<Instant>>,
     ) -> AnalysisWorker {
         let stop = Arc::new(AtomicBool::new(false));
@@ -884,7 +889,7 @@ pub(super) mod imp {
                     thread::sleep(ANALYSIS_IDLE_SLEEP);
                     continue;
                 }
-                pipeline.push_samples(batch.drain(..), &shared, &settings, &input_gain);
+                pipeline.push_samples(batch.drain(..), &shared, &settings, &input_gain, &input_level);
             }
         });
 

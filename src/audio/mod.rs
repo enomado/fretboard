@@ -1,13 +1,15 @@
 // Platform-agnostic analysis, shared by both engines (see `core`/`dsp`).
 mod core;
-// Private in a real build: the panels read finished values off `TunerReading` and
-// have no business reaching into the DSP. Opened up under `cfg(test)` only, so the
-// latency regression tests in `app::staff_panel` can drive the real bank + tracker
-// end to end — the absence of exactly that test is how the melody line came to be
-// driven from pYIN alone (128 ms) without anyone noticing.
-#[cfg(test)]
-pub(crate) mod dsp;
-#[cfg(not(test))]
+// Private, in every build: the panels read finished values off `TunerReading` and
+// have no business reaching into the DSP.
+//
+// It used to be `pub(crate)` under `cfg(test)` so the end-to-end latency probe could
+// live in `app::staff_panel` and drive the real bank + tracker from there. It no
+// longer has to reach across: note segmentation moved into `dsp::segmenter`, so the
+// whole path the probe measures — bank → melody → segmenter — is now inside `dsp`,
+// and the probe sits next to it. The test that must never be missing is still there
+// (its absence is how the melody line came to be driven from pYIN alone at 128 ms
+// without anyone noticing); it simply no longer needs a hole in the wall.
 mod dsp;
 mod types;
 
@@ -31,8 +33,10 @@ pub use types::{
     AudioStatus,
     DroneMode,
     DroneState,
+    NoteLine,
     ResonatorReading,
     ResonatorSettings,
+    StaffNote,
     Timbre,
     TunerReading,
 };

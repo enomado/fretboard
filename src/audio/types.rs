@@ -38,10 +38,39 @@ pub struct TunerReading {
     /// in under ~128 ms (measured). It is the right source for the tuner and the
     /// fretboard, where a steady reading beats a prompt one.
     pub melody_pitch:          Option<(f32, f32)>,
-    /// Monotonic count of detected note onsets (attacks). The UI diffs it against
-    /// the value it last saw to tell when a *new* attack occurred — used to split a
-    /// re-bowed repeat of the same pitch instead of merging it into the held note.
+    /// Monotonic count of detected note onsets (attacks). Consumed by the engine's
+    /// own [`crate::audio::dsp::segmenter`] to split a re-bowed repeat of the same
+    /// pitch instead of merging it into the held note; carried here because the two
+    /// audio planes run at different cadences on different threads.
     pub onset_seq:             u64,
+    /// The written line: the notes the engine has segmented out of the melody pitch,
+    /// plus the one still sounding. Decided in [`crate::audio::dsp::segmenter`] at
+    /// the bank's cadence on a **sample** clock — the staff panel draws this, it does
+    /// not compute it.
+    pub note_line:             NoteLine,
+}
+
+/// One finished note on the written line.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StaffNote {
+    pub midi:  i32,
+    /// Deviation from equal temperament, cents. Kept per note so a written note's
+    /// intonation stays visible after it has scrolled away from the playhead.
+    pub cents: f32,
+}
+
+/// What the note segmenter has decided so far.
+///
+/// A plain snapshot, rebuilt each bank frame and carried on [`TunerReading`]: the
+/// segmenter's own state (the held note's timers, the onset it last consumed) stays
+/// in the engine, because those are the things that must not be driven by a UI frame.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct NoteLine {
+    /// Finished notes, oldest → newest.
+    pub history: Vec<StaffNote>,
+    /// The note sounding right now — drawn emphasised at the playhead, not yet
+    /// written (it may still turn out to be too short to count).
+    pub current: Option<StaffNote>,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

@@ -12,4 +12,5 @@ pub(crate) mod onset;
 pub(crate) mod pitch;
 pub(crate) mod pyin;
 pub(crate) mod resonator;
+pub(crate) mod segmenter;
 pub(crate) mod spectrum;

@@ -15,17 +15,13 @@ progress / not started) and note the commit when a phase ships.
 
 ---
 
-## ▶ Start here — handoff (2026-07-14, second session of the day)
+## ▶ Start here — handoff (2026-07-14, third session of the day)
 
 ### Where it stands
 
-Two tracks, at very different maturities. The **pitch/DSP** track did not move this
-session; the **UI** track finished its design-token sweep. Read
-[`note_detection.md`](note_detection.md) before touching the first — it is the whole
-mechanism in one place, and the checklist below assumes it.
-
-The melody line's latency regression is **fixed and confirmed by ear**: 128→28 ms for
-ordinary intervals, 328→78 ms for an octave leap.
+**The instrument has not been played since `1a8c6e1`.** Three phases have landed on top
+of it. Read [`note_detection.md`](note_detection.md) before touching any of them — it is
+the whole mechanism in one place, and the checklist below assumes it.
 
 | commit | what | live-verified? |
 |---|---|---|
@@ -33,21 +29,40 @@ ordinary intervals, 328→78 ms for an octave leap.
 | `969e37b` | universal ceiling (C8), quantile framing, one octave decision | ❌ **no** |
 | `a063606` | systematisation doc; panel range clamps dropped | ❌ **no** |
 | `925a2a0`, `d4d668b` | UI design tokens (chrome colour only — no DSP) | ✅ render only |
+| *(this session)* | **1.9** — segmentation off the UI clock; silence gate into the engine | ❌ **no** |
 
 **That table is the most important thing on this page.** The user's "работает неплохо"
-was given *after `1a8c6e1` and before the other two*. Everything since is
+was given *after `1a8c6e1` and before everything below it*. All of it is
 tests-and-reasoning only — which is the exact state Phases 1.4–1.6 were in when they
-shipped a 100 ms regression that took weeks to notice. Do **not** record `969e37b` /
-`a063606` as verified on the strength of that sentence.
+shipped a 100 ms regression that took weeks to notice.
 
-> **⚠ The same trap, one session later — it very nearly worked.** While screenshotting
+> **⚠ The trap, twice now, and it very nearly worked both times.** While screenshotting
 > the *token* render, the user said **"я проверил всё ок"**. That sentence is about
-> **chrome colour**. It is not a verification of 1.8: octave stability on sustain,
-> cents resolution and the new C6..E7 ceiling all need the instrument, and none of
-> them was played. A short approving sentence arriving mid-session is not evidence
-> for whatever else happens to be in the tree — which is precisely what the paragraph
-> above already says about "работает неплохо". If you are about to tick 1.8 off, ask
-> what was actually played.
+> **chrome colour**. It is not a verification of 1.8: octave stability on sustain, cents
+> resolution and the new C6..E7 ceiling all need the instrument, and none of them was
+> played. A short approving sentence arriving mid-session is not evidence for whatever
+> else happens to be in the tree. If you are about to tick a phase off, ask what was
+> actually played.
+
+### 🐞 Read this before the next live session
+
+**There is a known bug that will dominate it if you don't know about it.** After every
+note stops, the staff writes ghost notes nobody played — measured: A4 → a C#0 (MIDI 13)
+with a ledger stack. The silence gate closes ~500 ms late (it shares the UI level
+meter's smoothing) and the bank, whose column is normalized, spends that window
+reporting whichever bins ring longest at full confidence. Full diagnosis in Phase 1.9;
+pinned by `core::release_ghosts_are_written_after_a_note`.
+
+It is **pre-existing and not caused by 1.9** — 1.9's new engine-wiring test is simply
+the first thing that ever looked. It is deliberately **not fixed**: the likely fix
+(give the melody gate the *raw* window level instead of the meter's smoothed one) is a
+DSP behaviour change that needs its own live verification.
+
+**But the test cuts the tone off instantly, and no instrument does.** A real note decays
+over hundreds of ms, so the gate and the bank may well fall together and this may be
+invisible in practice. **That is the first question to put to the instrument**: play a
+note, stop, and look — do ghosts appear below the staff? The answer decides whether the
+fix is urgent or unnecessary.
 
 ### The UI track (finished this session)
 
@@ -95,37 +110,41 @@ In rough order of risk:
 
 ### Next work, in order
 
-1. **Finish taking the decision engine off the UI clock** (agreed, not started — see
-   [`note_detection.md`](note_detection.md) §4). Note segmentation
-   (`MIN_NOTE_SECONDS`, `RELEASE_SECONDS`, `CENTS_EMA`) still runs inside
-   `StaffTrainer` driven by `ui.input(|i| i.time)`, and the pitch roll's history is
-   sampled per UI frame — its own comment admits the span is "~10 s at 60 fps, ~20 s
-   at 30 fps", i.e. the waterfall's time axis is not time. Shape: a `NoteSegmenter` in
-   `dsp`, clocked off the **sample count** (which also makes note durations
-   sample-accurate instead of frame-quantised), note history on `SharedState`, panels
-   left with clef/key/drawing only. This is the last place a dropped frame changes a
-   musical decision.
-2. **`LOWEST_TRACKED_FREQUENCY = 16 Hz`** makes `cmndf` search lags to 3000 samples —
+1. **Answer the ghost question with the instrument** (see above), then fix or drop it.
+   It is the only thing here that is *known* to write wrong notes.
+2. **The pitch roll's time axis** — the half of §4 that 1.9 deliberately left. Its
+   history is still sampled per UI frame ("~10 s at 60 fps, ~20 s at 30 fps"), so the
+   axis is the wrong ruler. This is *display fidelity*, not a decision: the line's
+   values are decided upstream and merely sampled late. Not done with the segmenter
+   because it needs its own design — an engine-side history the panel drains **by
+   sequence** rather than per frame, plus a decision about the heat, which must stay
+   aligned 1:1 with the line and costs ~70 MB/s if 600 columns × ~480 bins ride every
+   reading. The staff's trail has the same shape and the same excuse.
+3. **`LOWEST_TRACKED_FREQUENCY = 16 Hz`** makes `cmndf` search lags to 3000 samples —
    **13.9M ops/frame** for a band no instrument here plays, and the low tail is where
    the sub-bass ghost lives. Cheap win; needs a decision on the real floor.
-3. **The inert `BANK_WEIGHT`/`ATTACK_BANK_WEIGHT` fusion** still runs in `pyin`. It is
+4. **The inert `BANK_WEIGHT`/`ATTACK_BANK_WEIGHT` fusion** still runs in `pyin`. It is
    harmless and marked "do not fix latency with this", but it is dead weight and it is
-   what made Phase 1.5 look reasonable in the first place.
+   what made Phase 1.5 look reasonable in the first place. (`BANK_FUSE_LEVEL` dies with
+   it — it is a third copy of the same `0.02` the melody gate uses.)
 
 ### Landmines
 
 - **The bank is park-gated.** Any panel reading `melody_pitch` must call
   `AudioEngine::request_resonator()` every frame or it sits at "play a note…" forever.
   YIN runs unconditionally; the bank does not.
-- **`audio::dsp` is `pub(crate)` only under `cfg(test)`** (see `audio/mod.rs`). That is
-  deliberate — the latency tests drive the real bank + tracker end to end, and the
-  absence of exactly that test is how this regression shipped. Production code reads
-  finished values off `TunerReading`.
-- **`MelodyTracker::update` must be driven at the bank's cadence, once per bank
-  frame.** Its hysteresis and the gate's median are counted in those frames. The 40 ms
-  pYIN path deliberately re-stamps the last value instead of recomputing.
-- **The tree is clean** as of `d4d668b`. The previous handoff's "uncommitted and not
-  mine: `Cargo.lock`, `src/ui/segmented.rs`" is stale — that work went in as `925a2a0`.
+- **`audio::dsp` is private, in every build** (see `audio/mod.rs`) — 1.9 closed the
+  `cfg(test)` hole, because the probe no longer has to reach across. Production code
+  reads finished values off `TunerReading`.
+- **`MelodyTracker::update` and `NoteSegmenter::update` must each be driven at the
+  bank's cadence, once per bank frame, from `publish_resonator_snapshot` and nowhere
+  else.** The tracker's hysteresis, the gate's median and the segmenter's note timers
+  are all counted in those frames. The 40 ms pYIN path deliberately re-stamps the last
+  values instead of recomputing — driving either from there too would double-count.
+- **The sample clock stalls while the bank is parked** (it counts *processed* samples,
+  and a parked bank drops them). Deliberate: nothing downstream runs while parked
+  either, and a clock that ran on regardless would expire the held note of whatever was
+  playing when the panel was closed.
 - **The binary is `fretboard-app`, not `fretboard`** (`[[bin]]` in `Cargo.toml`; the
   lib keeps the crate name so the wasm build can disambiguate). `target/debug/fretboard`
   does not exist and never will.
@@ -154,9 +173,11 @@ trainer (it cannot follow a note change in under ~128 ms). See
   `treble_clef`, `StaffGeom`) is unit-tested and reused by an offscreen PNG
   preview test (`render_staff_preview`, `#[ignore]`). Vertical position is in
   **diatonic staff steps** (letter-based, so spelling / `AccidentalStyle` matters).
-- **`src/app/staff_panel.rs`** — `StaffTrainer` state (rolling note history + the
-  note currently held, with a glitch/hold/release state machine) and
-  `App::draw_staff_card`. Held on `App.staff`; not persisted.
+- **`src/app/staff_panel.rs`** — `StaffTrainer` and `App::draw_staff_card`. Held on
+  `App.staff`; not persisted. Since Phase 1.9 it holds only what is genuinely the
+  panel's own — clef, key signature, and the decorative trail. The note history and
+  the glitch/hold/release machine that used to live here are
+  `audio::dsp::segmenter::NoteSegmenter`, on an audio clock.
 - Wired as `WorkspaceTab::Staff` ("Violin Staff") in `src/app.rs` + dispatch in
   `src/app/workspace.rs`. Opens from the **Panels** menu.
 - No music font is loaded — clef is a hand-tuned vector; accidentals are plain
@@ -541,6 +562,62 @@ tracker's own grid" — untrue since the melody moved to the bank (12..108), wit
 staff's G7 ceiling sitting *below* the grid's C8. Two private second opinions about the
 range, both already drifted. Removed; the melody's range simply is the bank's.
 
+### Phase 1.9 — the decision engine comes off the UI clock  ⚠ BUILT, NOT LIVE-VERIFIED
+The last place a dropped frame could change a musical decision. Note segmentation
+(`MIN_NOTE_SECONDS`, `RELEASE_SECONDS`, `CENTS_EMA`) ran inside `StaffTrainer`, driven
+by `ui.input(|i| i.time)` — so a stutter could commit a note early or fail to, and every
+note's *duration* was measured in renderer ticks. It is now
+**`audio::dsp::segmenter::NoteSegmenter`**, driven at the bank's cadence with `now`
+taken from the **sample count**, and the panel reads the finished line off
+`TunerReading::note_line`. Same rule, same reason as the `OctaveGate`'s move in 1.8
+(`note_detection.md` §4); this was the other half of it.
+
+**The silence gate had to move with it** — a decision needs to know when the sound
+stopped, and the gate was sitting in the panels (duplicated verbatim in both, same
+`0.02`). It now gates the bank's *input* in `publish_resonator_snapshot`. That fixed
+something the panels were hiding: `MelodyTracker` was fed raw bank pitch regardless of
+level, so its leap/slip hysteresis stayed alive on room noise through every rest — the
+panels only gated the result. Silence now properly ends the phrase.
+
+**Falls out of the move:** `audio::dsp` is private again in every build. It was
+`pub(crate)` under `cfg(test)` purely so the end-to-end probe could live in
+`app::staff_panel` and reach across; the whole path it measures is now inside `dsp`, so
+the probe sits next to it and the hole in the wall is gone.
+
+**Latency is unchanged** — 24/40/72 ms, but measured to the *engine's decision* rather
+than to the UI frame that draws it (add ≤17 ms for the pixels). Not a speed-up; the
+ruler ends in a different place. See `note_detection.md` §6.
+
+**The tests that were missing, and what they found.** Every DSP test either drove one
+module or composed them by hand — none touched the *wiring*, which is exactly what this
+change rearranged (a level atomic one plane writes and the other reads, an onset counter
+crossing between them, a sample clock, `note_line` stamped by both publish paths). A
+wiring mistake there is invisible to the whole DSP suite and total to the user: the staff
+just stays empty. So `core::engine_writes_a_played_note_end_to_end` now drives both real
+pipelines through the real `SharedState`.
+
+It immediately found a **real, pre-existing bug** (see below). That is the 1.7 lesson
+landing again: the suite could not see it because nothing tested the thing being claimed.
+
+**🐞 Release ghosts — found, measured, NOT fixed.** After a note stops, the staff writes
+notes nobody played (measured: A4 → a ghost at MIDI 13, a C#0 with a ledger stack). Two
+causes line up, both upstream of segmentation:
+1. **The silence gate closes ~500 ms late.** `input_level` is the *smoothed* level
+   (×0.88 per 40 ms frame falling) — smoothing that exists so the UI's level *meter*
+   doesn't flicker, inherited by the gate through the shared atomic.
+2. **The bank cannot be quiet.** Its column is normalized to its own max, so once the
+   note stops it reports whichever bins ring longest (the low ones decay slowest) at
+   full confidence. `OctaveGate` rejects ~50 ms of it, then its median moves onto the
+   garbage and passes it.
+
+Pinned by `core::release_ghosts_are_written_after_a_note`. **Not fixed here on purpose**:
+it is a DSP behaviour change that needs its own live verification, and bundling it into a
+refactor whose whole claim is "nothing changed but the clock" would make both
+unverifiable. **How bad it is live is unknown** — the test cuts the tone off instantly,
+which no instrument does; a real note decays over hundreds of ms and the gate and the
+bank may fall together. Likely fix: give the melody gate the *raw* window level instead
+of the meter's smoothed one. **Ask the instrument first.**
+
 ### Phase 2 — Target / call-and-response mode  ⬜ NOT STARTED
 Show a **target** (a single note, then a short phrase/scale) the user must play;
 score hit/miss on pitch and grade the intonation. This turns the mirror into a
@@ -587,7 +664,9 @@ Move from pitch-only to time-aware notation.
   `cargo test -p fretboard render_staff_preview -- --ignored --nocapture`
   then convert the PPM it writes (scratchpad) to PNG (`magick in.ppm out.png`).
   Override output dir with `STAFF_PREVIEW_DIR`.
-- Capture state machine is unit-tested in `app::staff_panel::tests`.
+- Note segmentation is unit-tested in `audio::dsp::segmenter::tests`; the engine's
+  *wiring* (both pipelines through the real `SharedState`) in `audio::core::tests` —
+  see `note_detection.md` §6 for why the second kind had to exist.
 - Full live check needs real audio input; open the **Violin Staff** panel and
   play/sing — Phase 1 was verified by build + tests + offscreen render + a
   launch smoke test (no live instrument in the dev env).
