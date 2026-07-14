@@ -1,6 +1,15 @@
 pub(crate) const SPECTRUM_BINS: usize = 72;
+/// The note grid every pitch-aware view shares: C0..C8, the piano's range with room.
+///
+/// This is deliberately **instrument-agnostic** — it also bounds the resonator bank
+/// (`resonator::RESONATOR_MAX_MIDI`), which is the melody line's pitch source, so a
+/// ceiling here is a ceiling on what the app can hear at all. The old top of C6 (84)
+/// silently cut off the upper half of a violin's range; C8 clears every instrument
+/// here (violin's E7 = 2637 Hz included) and matches
+/// [`super::pitch::HIGHEST_TRACKED_FREQUENCY`], so the fast bank and the YIN anchor
+/// agree on where the world ends.
 pub(crate) const NOTE_BUCKET_MIN_MIDI: usize = 12;
-pub(crate) const NOTE_BUCKET_MAX_MIDI: usize = 84;
+pub(crate) const NOTE_BUCKET_MAX_MIDI: usize = 108;
 pub(crate) const SPIRAL_BINS_PER_SEMITONE: usize = 8;
 pub(crate) const SPIRAL_BIN_COUNT: usize =
     (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;

@@ -32,6 +32,8 @@
 //! HMM a bank reading 10 ms ahead of the window changes the output by exactly zero.
 //! The bank's speed can only survive if the bank *is* the pitch.
 
+use super::octave_gate::OctaveGate;
+
 /// pYIN voiced probability below which its octave opinion is not trusted. Under it
 /// the bank keeps its own octave — a guess from an unvoiced frame is worse than the
 /// bank's harmonic scoring, which at least looked at the spectrum.
@@ -87,16 +89,32 @@ fn snap_to_anchor_octave(bank_midi: f32, anchor_midi: f32) -> f32 {
     }
 }
 
-/// Marries the bank's fast pitch to pYIN's octave for one melody line.
+/// Marries the bank's fast pitch to pYIN's octave for one melody line, and is the
+/// **only** place the melody line's octave is decided.
+///
+/// Three layers act on the octave here, in this order, each covering the previous
+/// one's blind spot:
+/// 1. the **bank's** own harmonic scoring (`analysis_math::resonator_fundamental`)
+///    picks a fundamental over a louder overtone — upstream, its best single-frame
+///    guess;
+/// 2. the **snap** pins that to pYIN's octave when pYIN is confident and agrees on
+///    the pitch class, with [`LEAP_CONFIRM_FRAMES`] to keep a stale anchor from
+///    dragging a real leap;
+/// 3. the [`OctaveGate`] rejects what is left — a lone slip on a frame where pYIN
+///    had *no* opinion (unvoiced, or below [`YIN_OCTAVE_CONFIDENCE`]), which is
+///    exactly when layer 2 stands down.
 ///
 /// Stateful, because telling an octave *leap* from an octave *slip* is a question
 /// about time and cannot be answered from a single frame — see
 /// [`LEAP_CONFIRM_FRAMES`].
 ///
 /// Contract: [`update`] must be driven at the **bank's** publish cadence (one call
-/// per bank frame), since [`LEAP_CONFIRM_FRAMES`] is counted in those frames. Calling
-/// it again from the slower pYIN path would double-count the dispute and believe a
-/// leap early; that path re-stamps the last computed value instead.
+/// per bank frame). Both the dispute counter and the gate's median are counted in
+/// those frames, so this is what fixes their timescale in *seconds*. The gate used to
+/// live in the panels and be driven per UI frame, which made a DSP filter's window
+/// depend on the frame rate — a dropped frame quietly changed its behaviour. Calling
+/// this again from the slower pYIN path would likewise double-count; that path
+/// re-stamps the last computed value instead.
 ///
 /// [`update`]: MelodyTracker::update
 #[derive(Default)]
@@ -105,6 +123,9 @@ pub(crate) struct MelodyTracker {
     /// the two agree on, which is what makes it read *unbroken* disagreement (a real
     /// leap) rather than *intermittent* disagreement (the bank wandering).
     octave_dispute: u32,
+    /// Last-resort slip rejection, after the snap has had its say. See
+    /// [`OctaveGate`].
+    gate:           OctaveGate,
 }
 
 impl MelodyTracker {
@@ -117,7 +138,11 @@ impl MelodyTracker {
     ///
     /// Returns `(fractional_midi, strength)` carrying the bank's timing and fine
     /// pitch, with pYIN's octave applied when pYIN is confident, agrees on the pitch
-    /// class, and has not been disputed long enough to look stale.
+    /// class, and has not been disputed long enough to look stale. `None` for silence
+    /// **or for a rejected slip** — the two are deliberately the same to the caller,
+    /// because downstream a missing frame is harmless (the staff's release grace
+    /// carries the held note through it) while a wrong-octave frame tears the note in
+    /// two.
     ///
     /// Contract: the caller still owns the silence gate. The bank's column is
     /// normalized, so it reports *some* fundamental even for room noise — absolute
@@ -129,16 +154,40 @@ impl MelodyTracker {
     ) -> Option<(f32, f32)> {
         let Some((bank_midi, strength)) = bank else {
             // Silence ends the phrase: the next note's octave is judged fresh rather
-            // than against a dispute left over from the previous one.
+            // than against a dispute, or a median, left over from the previous one.
             self.octave_dispute = 0;
+            self.gate.reset();
             return None;
         };
+        let (midi, leap_confirmed) = self.pin_octave(bank_midi, anchor);
+        if leap_confirmed {
+            // Layer 2 has just concluded, from an unbroken run of dispute, that this
+            // is a real octave leap. Layer 3 must not re-litigate it: the gate's
+            // median is still sitting on the *old* octave, so left alone it would
+            // reject the leap for another few frames out of pure inertia — a second
+            // conservatism tax on a decision already paid for. A confirmed leap is a
+            // new phrase as far as the gate is concerned.
+            self.gate.reset();
+        }
+        // Layer 3: whatever the snap could not settle. A no-op when the anchor was
+        // confident — the series is already clean, so nothing sits off the median.
+        self.gate.accept(midi).map(|midi| (midi, strength))
+    }
 
+    /// Layers 1–2: the bank's own octave, pinned to the anchor's when that is worth
+    /// believing. Split out so [`update`] reads as the three layers it is.
+    ///
+    /// Returns the pitch, and whether *this* frame is the one that first believed a
+    /// leap — the transition, not the state, so the caller resets the gate once
+    /// rather than holding it open for the whole stale-anchor window.
+    ///
+    /// [`update`]: MelodyTracker::update
+    fn pin_octave(&mut self, bank_midi: f32, anchor: Option<(f32, f32)>) -> (f32, bool) {
         // No anchor, or pYIN is not voiced enough for its octave to be worth taking.
         let confident = anchor.filter(|(_, clarity)| *clarity >= YIN_OCTAVE_CONFIDENCE);
         let Some((anchor_midi, _)) = confident else {
             self.octave_dispute = 0;
-            return Some((bank_midi, strength));
+            return (bank_midi, false);
         };
 
         let snapped = snap_to_anchor_octave(bank_midi, anchor_midi);
@@ -146,7 +195,7 @@ impl MelodyTracker {
             // The anchor agrees with the bank's own octave (or declined to move it):
             // nothing is in dispute.
             self.octave_dispute = 0;
-            return Some((snapped, strength));
+            return (snapped, false);
         }
 
         // The anchor wants to move the bank a whole octave. Believe it only while the
@@ -154,9 +203,9 @@ impl MelodyTracker {
         // the anchor has not caught up to yet, i.e. a real leap.
         self.octave_dispute += 1;
         if self.octave_dispute > LEAP_CONFIRM_FRAMES {
-            Some((bank_midi, strength))
+            (bank_midi, self.octave_dispute == LEAP_CONFIRM_FRAMES + 1)
         } else {
-            Some((snapped, strength))
+            (snapped, false)
         }
     }
 }
@@ -303,6 +352,30 @@ mod tests {
         assert!(
             (midi - 69.0).abs() < 1e-4,
             "dispute leaked across silence, got {midi}"
+        );
+    }
+
+    /// REGRESSION: with **no** anchor to snap against, a lone slip must still be
+    /// rejected outright rather than passed on as a wrong note.
+    ///
+    /// This is layer 3's whole reason to exist: layer 2 stands down exactly when pYIN
+    /// has no opinion, and that is when a bank slip would otherwise reach the panels.
+    /// It must come back as `None` — the same as silence — because downstream a gap is
+    /// absorbed by the staff's release grace while a wrong-octave frame tears the held
+    /// note in two and restarts its timer.
+    #[test]
+    fn lone_slip_is_a_gap_not_a_wrong_note() {
+        let mut m = MelodyTracker::default();
+        for _ in 0..5 {
+            assert!(m.update(Some((69.0, 0.9)), None).is_some()); // establish A4
+        }
+        assert!(
+            m.update(Some((81.0, 0.9)), None).is_none(),
+            "a lone slip must be dropped, not passed on"
+        );
+        assert!(
+            m.update(Some((71.0, 0.9)), None).is_some(),
+            "a trill-sized interval must still pass"
         );
     }
 

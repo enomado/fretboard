@@ -1,4 +1,17 @@
+/// Lowest fundamental the tracker will look for — C0, the bottom of the note grid
+/// (`NOTE_BUCKET_MIN_MIDI` = 12). Sets YIN's longest lag.
 pub(crate) const LOWEST_TRACKED_FREQUENCY: f32 = 16.0;
+/// Highest fundamental the tracker will look for — C8 (MIDI 108), the top of the
+/// note grid. Sets YIN's *shortest* lag, and getting it wrong is not a soft failure.
+///
+/// `yin_pick` scans lags upward and takes the first dip below threshold, so a period
+/// shorter than this is not merely *missed*: the first dip it can still reach is the
+/// note's **sub-octave**, and the note is reported an octave flat. Measured at the
+/// old value of 1000 Hz (B5): C6, E6 and A6 all came back exactly −12.00 semitones
+/// (`pyin::tests::ceiling_probe`), silently transposing the whole upper half of the
+/// violin's range. C8 clears every instrument here — violin's E7 = 2637 Hz included —
+/// with margin, and costs only a few extra lags to scan.
+pub(crate) const HIGHEST_TRACKED_FREQUENCY: f32 = 4186.0;
 
 /// The cumulative mean normalized difference function (YIN step 3) plus the lag
 /// search bounds — the substrate probabilistic YIN ([`super::pyin`]) turns into
@@ -13,7 +26,7 @@ pub(crate) struct Cmndf {
 /// Compute the CMNDF for one analysis window. `None` when the window is too short
 /// for even a single lag of the tracked range.
 pub(crate) fn cmndf(window: &[f32], sample_rate: f32) -> Option<Cmndf> {
-    let min_lag = (sample_rate / 1000.0).max(1.0) as usize;
+    let min_lag = (sample_rate / HIGHEST_TRACKED_FREQUENCY).max(1.0) as usize;
     let max_lag = (sample_rate / LOWEST_TRACKED_FREQUENCY) as usize;
     let search_end = max_lag.min(window.len().saturating_sub(1));
     if min_lag >= search_end {

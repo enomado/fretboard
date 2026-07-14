@@ -7,6 +7,7 @@
 //! so wasm reuses the exact same analysis instead of a parallel copy.
 pub(crate) mod analysis_math;
 pub(crate) mod melody;
+pub(crate) mod octave_gate;
 pub(crate) mod onset;
 pub(crate) mod pitch;
 pub(crate) mod pyin;

@@ -30,7 +30,6 @@ use eframe::egui::{
     vec2,
 };
 
-use super::octave_gate::OctaveGate;
 use super::{
     App,
     pill,
@@ -121,11 +120,6 @@ pub struct StaffTrainer {
     /// Last onset counter seen from the engine; a change means a fresh attack, used
     /// to split a re-bowed repeat of the same pitch into a new note.
     last_onset_seq: u64,
-    /// Drops lone octave slips before they reach note segmentation. Shared with the
-    /// pitch-roll panel — see [`OctaveGate`]. The staff needs this *more* than the
-    /// roll does: a slip costs the roll one invisible pixel of gap, but it tears the
-    /// staff's held note in two and restarts the note timer (see [`Self::update`]).
-    octave_gate:    OctaveGate,
 }
 
 impl StaffTrainer {
@@ -133,25 +127,6 @@ impl StaffTrainer {
     /// confident, in-range pitch was detected, `None` for silence. `level` is the
     /// input level for trail intensity. `now` is the egui clock in seconds.
     pub fn update(&mut self, pitch: Option<(i32, f32, f32)>, level: f32, now: f64, onset_seq: u64) {
-        // Reject lone octave slips *before* anything downstream sees them. This has
-        // to happen here, ahead of the segmentation, because of an asymmetry: a
-        // `None` frame is harmless (the `RELEASE_SECONDS` grace period below carries
-        // the held note straight through it), whereas a wrong-octave frame is read as
-        // a pitch *change* — it commits the held note, opens a bogus one, and resets
-        // the note's `onset` timer. A slip every few frames therefore means no note
-        // ever reaches `MIN_NOTE_SECONDS` and nothing is written at all.
-        let pitch = match pitch {
-            Some((midi, cents, midi_f)) => {
-                self.octave_gate
-                    .accept(midi_f)
-                    .map(|midi_f| (midi, cents, midi_f))
-            }
-            None => {
-                self.octave_gate.reset();
-                None
-            }
-        };
-
         // Feed the continuous trail every frame (newest at the back).
         self.trail.push_back(pitch.map(|(_, _, midi_f)| (midi_f, level)));
         while self.trail.len() > TRAIL_CAP {
@@ -755,9 +730,9 @@ mod tests {
         // slipping an octave (A4 and A5 are the same pitch class), so it additionally
         // pays `melody::LEAP_CONFIRM_FRAMES` × the bank's 16 ms cadence before the
         // leap is believed. That is the deliberate price of not re-breaking the
-        // octave wandering the snap exists to fix; it was 328 ms when the anchor was
-        // trusted outright, and it is the *only* interval that pays it.
-        const OCTAVE_BUDGET_MS: f32 = 130.0;
+        // octave wandering the snap exists to fix, and it is the *only* interval that
+        // pays it — it was 328 ms when the anchor was trusted outright.
+        const OCTAVE_BUDGET_MS: f32 = 100.0;
         println!("\n=== staff end-to-end latency (what the user sees) ===");
         for (name, from, to, budget) in [
             ("A4->B4  (2nd)  ", 440.0f32, 493.88f32, BUDGET_MS),
@@ -826,42 +801,47 @@ mod tests {
         assert!(t.history.is_empty());
     }
 
-    /// REGRESSION: a lone octave slip mid-note must not tear the held note apart.
+    /// REGRESSION: a dropped frame mid-note must not tear the held note apart.
     ///
-    /// The fused tracker still emits rare single-frame octave slips (a sub-bass
-    /// ghost, or an overtone crowned by the resonator bank). Read as a pitch
-    /// *change* they commit the held note early, open a bogus one and — the real
-    /// damage — restart the note's `onset` timer, so with slips recurring nothing
-    /// ever reaches `MIN_NOTE_SECONDS` and the staff writes nothing. The old
-    /// `MIDI_MIN = 48` floor hid the sub-bass half of this by chance; lowering it to
-    /// 24 for the bass clefs exposed it. [`OctaveGate`] is the actual guard.
+    /// This is the staff's half of the octave-slip contract. The engine
+    /// (`audio::dsp::melody`) judges the octave and hands a rejected slip over as
+    /// `None`, exactly like silence — it does that *because* of the asymmetry this
+    /// test pins: a `None` is absorbed by `RELEASE_SECONDS`, whereas a wrong-octave
+    /// frame would read as a pitch *change*, commit the held note early, open a bogus
+    /// one and — the real damage — restart the note's `onset` timer. With slips
+    /// recurring, nothing would ever reach `MIN_NOTE_SECONDS` and the staff would
+    /// write nothing at all, which is precisely how this was reported live.
     #[test]
-    fn lone_octave_slip_does_not_tear_the_held_note() {
+    fn a_dropped_frame_does_not_tear_the_held_note() {
         let mut t = StaffTrainer::default();
         for i in 0..5 {
             t.update(play(69, 0.0), LVL, i as f64 * 0.02, NO_ONSET); // hold A4
         }
-        // One frame of sub-bass ghost, an octave-plus below the held note.
-        t.update(play(57, 0.0), LVL, 0.10, NO_ONSET);
+        // The engine rejected a frame (a slip, or a momentary dropout).
+        t.update(None, LVL, 0.10, NO_ONSET);
         assert_eq!(
             t.current().unwrap().0,
             69,
-            "the slip must not become the current note"
+            "a dropped frame must not disturb the held note"
         );
-        assert!(t.history.is_empty(), "a slip must not commit the held note");
+        assert!(
+            t.history.is_empty(),
+            "a dropped frame must not commit the held note"
+        );
 
         // The note carries on and, once released, is written as exactly ONE note —
-        // not the two fragments the slip used to produce.
+        // not the two fragments a slip used to produce.
         t.update(play(69, 0.0), LVL, 0.12, NO_ONSET);
         t.update(None, 0.0, 0.12 + RELEASE_SECONDS + 0.01, NO_ONSET);
-        assert_eq!(t.history.len(), 1, "the held note should survive the slip intact");
+        assert_eq!(t.history.len(), 1, "the held note should survive the gap intact");
         assert_eq!(t.history[0].midi, 69);
     }
 
-    /// A *sustained* leap to a new octave is still written — the gate rejects lone
-    /// slips, not real leaps, so the staff must not go deaf after a big interval.
+    /// A leap to a new octave is tracked — the staff must not go deaf after a big
+    /// interval. (Whether the leap is real is settled upstream; by the time it
+    /// reaches here it is simply a new pitch.)
     #[test]
-    fn sustained_octave_leap_is_still_written() {
+    fn octave_leap_is_still_written() {
         let mut t = StaffTrainer::default();
         for i in 0..5 {
             t.update(play(69, 0.0), LVL, i as f64 * 0.02, NO_ONSET); // A4
@@ -869,11 +849,7 @@ mod tests {
         for i in 0..6 {
             t.update(play(81, 0.0), LVL, 0.10 + i as f64 * 0.02, NO_ONSET); // hold A5
         }
-        assert_eq!(
-            t.current().unwrap().0,
-            81,
-            "a held octave leap must be tracked once the median follows"
-        );
+        assert_eq!(t.current().unwrap().0, 81, "a held octave leap must be tracked");
     }
 
     /// A re-attack on the *same* pitch (onset counter advances) splits into a new

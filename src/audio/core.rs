@@ -34,7 +34,10 @@ use crate::audio::dsp::analysis_math::{
 };
 use crate::audio::dsp::melody::MelodyTracker;
 use crate::audio::dsp::onset::OnsetDetector;
-use crate::audio::dsp::pitch::LOWEST_TRACKED_FREQUENCY;
+use crate::audio::dsp::pitch::{
+    HIGHEST_TRACKED_FREQUENCY,
+    LOWEST_TRACKED_FREQUENCY,
+};
 use crate::audio::dsp::pyin::PitchTracker;
 use crate::audio::dsp::resonator::{
     ResonatorAnalyzer,
@@ -347,7 +350,7 @@ impl AnalysisPipeline {
             self.pitch_tracker
                 .process(&window, self.sample_rate, bank_pitch, is_onset)
                 .and_then(|(f, c)| {
-                    (LOWEST_TRACKED_FREQUENCY..=1200.0)
+                    (LOWEST_TRACKED_FREQUENCY..=HIGHEST_TRACKED_FREQUENCY)
                         .contains(&f)
                         .then_some(PitchEstimate {
                             frequency_hz: f,

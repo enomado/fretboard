@@ -158,7 +158,12 @@ impl Default for ResonatorSettings {
     fn default() -> Self {
         Self {
             min_midi:  PNote::new(12).unwrap(),
-            max_midi:  PNote::new(84).unwrap(),
+            // C8. The bank IS the melody line's pitch (see `dsp::melody`), so this is
+            // the ceiling on what the staff and pitch roll can hear — it has to clear
+            // the violin's top (E7 = 2637 Hz), not just the guitar's. Costs
+            // resonators: the bank is per-sample IIR, so the span is a direct CPU
+            // dial, and it stays user-adjustable for weak devices.
+            max_midi:  PNote::new(108).unwrap(),
             bins:      5,
             alpha:     1.0,
             beta:      1.0,

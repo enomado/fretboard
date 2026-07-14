@@ -140,9 +140,11 @@ fn pyin_candidates(c: &Cmndf, prior: &ThresholdPrior, sample_rate: f32) -> (Vec<
 /// octave decision is exact; the reported frequency comes from the candidate, not
 /// the bin, so display cents stay sharp.
 const BINS_PER_SEMITONE: usize = 10;
-/// Tracked pitch span, C1..C7 — covers voice and the whole violin range with room.
+/// Tracked pitch span, C1..C8. The top must clear
+/// [`super::pitch::HIGHEST_TRACKED_FREQUENCY`], or a note the front end resolves
+/// correctly lands outside the HMM grid and decodes as unvoiced instead.
 const MIN_MIDI: f32 = 24.0;
-const MAX_MIDI: f32 = 96.0;
+const MAX_MIDI: f32 = 108.0;
 /// Number of pitch states; index `N_PITCH` is the extra unvoiced state.
 const N_PITCH: usize = ((MAX_MIDI - MIN_MIDI) as usize) * BINS_PER_SEMITONE;
 /// Transition reaches ±1 octave; beyond that a move must go through unvoiced.
@@ -726,6 +728,46 @@ mod tests {
                 }
             }
             println!();
+        }
+    }
+
+    /// REGRESSION: every note up to the violin's top must track with no octave error.
+    ///
+    /// A ceiling here fails *silently and wrongly*, which is why this asserts rather
+    /// than just reports. `yin_pick` scans lags upward and takes the first dip, so a
+    /// note above the ceiling is not dropped — the first dip it can still reach is
+    /// that note's **sub-octave**, and it comes back an octave flat. At the old
+    /// `min_lag = sr/1000` (B5) this measured exactly −12.00 semitones for C6, E6 and
+    /// A6: the upper half of a violin's range, silently transposed down, on the tuner
+    /// and fretboard as well as the staff.
+    #[test]
+    fn ceiling_probe() {
+        let sr = 48_000.0f32;
+        println!("\n=== reported pitch vs true pitch, across the 1000 Hz ceiling ===");
+        for (name, hz) in [
+            ("A4  440 Hz         ", 440.0f32),
+            ("E5  659 Hz         ", 659.25),
+            ("A5  880 Hz         ", 880.0),
+            ("B5  988 Hz (ceiling)", 987.77),
+            ("C6 1047 Hz         ", 1046.5),
+            ("E6 1319 Hz         ", 1318.5),
+            ("A6 1760 Hz         ", 1760.0),
+            ("E7 2637 Hz (violin top)", 2637.0),
+        ] {
+            let win = violin_tone(hz, sr, 6144, 0.0);
+            let mut t = PitchTracker::new();
+            let mut out = None;
+            for _ in 0..6 {
+                out = t.process(&win, sr, None, false);
+            }
+            let (f, _) = out.unwrap_or_else(|| panic!("{name}: went unvoiced on a clean tone"));
+            let err = 12.0 * (f / hz).log2();
+            println!("{name} -> {f:>8.1} Hz  ({err:>+6.2} semitones)");
+            assert!(
+                err.abs() < 0.5,
+                "{name}: tracked {f:.1} Hz, off by {err:+.2} semitones — a whole-semitone \
+                 error here means the lag search excluded the true period"
+            );
         }
     }
 

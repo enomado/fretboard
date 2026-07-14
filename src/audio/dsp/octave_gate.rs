@@ -1,4 +1,4 @@
-//! Lone-octave-slip rejection for the live pitch panels.
+//! Lone-octave-slip rejection for the melody line.
 //!
 //! The fused pYIN pitch on `TunerReading::frequency_hz` is octave-*stable*, not
 //! octave-*perfect*. Two single-frame excursions survive the tracker: the resonator
@@ -51,7 +51,7 @@ const MEDIAN_WINDOW: usize = 5;
 ///
 /// [`accept`]: OctaveGate::accept
 /// [`reset`]: OctaveGate::reset
-pub(super) struct OctaveGate {
+pub(crate) struct OctaveGate {
     /// Recent *raw* (pre-rejection) voiced pitches, oldest → newest. Holds the raw
     /// values, not the accepted ones: a median of already-filtered samples could
     /// never follow a genuine sustained leap, and the gate would latch to the first
@@ -74,7 +74,7 @@ impl OctaveGate {
     ///
     /// The sample being judged is itself part of the median window — that is what
     /// lets a sustained leap take the median over within ~3 frames.
-    pub(super) fn accept(&mut self, midi_f: f32) -> Option<f32> {
+    pub(crate) fn accept(&mut self, midi_f: f32) -> Option<f32> {
         self.raw_recent.push_back(midi_f);
         while self.raw_recent.len() > MEDIAN_WINDOW {
             self.raw_recent.pop_front();
@@ -87,7 +87,7 @@ impl OctaveGate {
 
     /// Silence ends the phrase: forget the median so the next note is judged on its
     /// own rather than against the previous phrase's octave.
-    pub(super) fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.raw_recent.clear();
     }
 }

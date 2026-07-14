@@ -230,7 +230,7 @@ fn draw_rows(
 
         // Label the row when it is tall enough to read; always label C so there is
         // an octave anchor even in a zoomed-out (many-row) view.
-        if row_h >= 9.0 || pc == 0 {
+        if row_h >= LABEL_MIN_ROW_H || pc == 0 {
             let (color, size) = if pc == 0 {
                 (Color32::from_rgb(196, 202, 211), (row_h * 0.72).clamp(9.0, 13.0))
             } else {
@@ -246,6 +246,15 @@ fn draw_rows(
         }
     }
 }
+
+/// Row height (px) below which a note name no longer fits, so only the C rows stay
+/// labelled.
+///
+/// This is what couples the *framing* to what the panel actually reads like: rows are
+/// `plot_height / span` tall, so an over-wide view silently degrades the grid to
+/// octave landmarks only. Framing that keeps the span under `plot_height / this` is
+/// what keeps every note named — see `app::pitch_roll_panel::reframe`.
+pub(crate) const LABEL_MIN_ROW_H: f32 = 9.0;
 
 /// Below this normalized magnitude a heat bin is treated as noise and skipped —
 /// keeps the field to a note + its partials (not a wash) and the mesh small.
