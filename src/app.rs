@@ -4,6 +4,7 @@ mod controls;
 mod drone_panel;
 mod fretboard_panel;
 mod live_analysis;
+mod octave_gate;
 mod persist;
 mod pitch_roll_panel;
 mod resonator_panel;

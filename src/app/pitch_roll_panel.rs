@@ -24,6 +24,7 @@ use eframe::egui::{
 };
 
 use super::App;
+use super::octave_gate::OctaveGate;
 use crate::ui::pianoroll::{
     self,
     PitchPoint,
@@ -40,19 +41,6 @@ const LEVEL_GATE: f32 = 0.02;
 /// Accepted pitch range (MIDI), matching the pYIN tracker's own grid: C1..≈G7.
 const MIDI_MIN: i32 = 24;
 const MIDI_MAX: i32 = 103;
-
-/// Reject a sample this many semitones or more off the local median. The fast
-/// resonator-bank pitch occasionally crowns an overtone → a lone **+12** octave
-/// spike (the "peaks at C6/A5" artefact); a trill or vibrato interval is at most a
-/// few semitones. Gating on the *interval* rather than the *duration* is what lets
-/// even the fastest trill through while dropping octave jumps — a duration filter
-/// (median/glitch-length) can't tell a 2-frame trill note from a 2-frame spike.
-const OCTAVE_REJECT: f32 = 7.0;
-/// Window (frames) of recent raw pitch whose median is the spike-rejection
-/// reference. Short on purpose: a lone spike never moves the median (rejected),
-/// but a *sustained* real octave leap re-establishes it within ~3 frames and is
-/// then accepted — so genuine leaps aren't permanently folded away.
-const MEDIAN_WINDOW: usize = 5;
 
 /// How many frames of pitch to keep — the graph fills the plot width with these,
 /// so this is also the visible time span (~10 s at 60 fps, ~20 s at 30 fps).
@@ -71,18 +59,18 @@ const VIEW_EASE: f32 = 0.08;
 pub struct PitchRoll {
     /// Per-frame melody-line pitch (fused pYIN), oldest → newest, *after* spike
     /// rejection. `None` = a silent frame or a rejected octave glitch (a gap).
-    samples:    VecDeque<Option<PitchPoint>>,
+    samples:     VecDeque<Option<PitchPoint>>,
     /// Per-frame resonator column aligned 1:1 with `samples` (same index = same
     /// instant), oldest → newest. An *empty* `Vec` marks a silent frame. This is
     /// the spectral-heat ground truth; unlike the line it makes no octave decision.
-    heat:       VecDeque<Vec<f32>>,
-    /// Recent *raw* (pre-filter) voiced pitches, for the spike-rejection median.
-    /// Cleared on silence so a new phrase starts fresh. See [`OCTAVE_REJECT`].
-    raw_recent: VecDeque<f32>,
+    heat:        VecDeque<Vec<f32>>,
+    /// Drops lone octave slips out of the melody line before they reach the curve
+    /// or the framing. Shared with the staff panel — see [`OctaveGate`].
+    octave_gate: OctaveGate,
     /// Eased fractional-MIDI window shown on screen (`view_lo` bottom, `view_hi`
     /// top). Auto-frames the graph on the played range without per-frame jumps.
-    view_lo:    f32,
-    view_hi:    f32,
+    view_lo:     f32,
+    view_hi:     f32,
 }
 
 impl Default for PitchRoll {
@@ -90,11 +78,11 @@ impl Default for PitchRoll {
         // Default window ≈ violin open strings (G3=55 .. E5=76) with headroom, so
         // the panel looks sensible before the first note eases it to real data.
         Self {
-            samples:    VecDeque::with_capacity(HISTORY_FRAMES),
-            heat:       VecDeque::with_capacity(HISTORY_FRAMES),
-            raw_recent: VecDeque::with_capacity(MEDIAN_WINDOW),
-            view_lo:    53.0,
-            view_hi:    79.0,
+            samples:     VecDeque::with_capacity(HISTORY_FRAMES),
+            heat:        VecDeque::with_capacity(HISTORY_FRAMES),
+            octave_gate: OctaveGate::default(),
+            view_lo:     53.0,
+            view_hi:     79.0,
         }
     }
 }
@@ -104,27 +92,19 @@ impl PitchRoll {
     /// when confident+in-range, `None` for silence; `level` fades the line;
     /// `heat_col` is this frame's resonator column (empty = silent → a gap in the
     /// heat). Isolated octave glitches in the *line* are rejected here (see
-    /// [`OCTAVE_REJECT`]) so they never reach the curve or the framing — the heat,
+    /// [`OctaveGate`]) so they never reach the curve or the framing — the heat,
     /// which makes no octave decision, is passed through untouched as ground truth.
     pub fn update(&mut self, pitch: Option<f32>, level: f32, heat_col: Vec<f32>) {
         let accepted = match pitch {
+            // A rare tracker octave slip is dropped to a gap; trill/vibrato
+            // intervals are far smaller and always pass.
             Some(midi_f) => {
-                self.raw_recent.push_back(midi_f);
-                while self.raw_recent.len() > MEDIAN_WINDOW {
-                    self.raw_recent.pop_front();
-                }
-                // Judge against the local median once there is enough history; a
-                // sample an octave (≥ OCTAVE_REJECT semitones) off it is a rare
-                // tracker octave slip, not a note — drop it to a gap. Trill/vibrato
-                // intervals are far smaller and always pass.
-                let spike =
-                    self.raw_recent.len() >= 3 && (midi_f - median(&self.raw_recent)).abs() >= OCTAVE_REJECT;
-                (!spike).then_some(PitchPoint { midi_f, level })
+                self.octave_gate
+                    .accept(midi_f)
+                    .map(|midi_f| PitchPoint { midi_f, level })
             }
             None => {
-                // Silence ends the phrase: forget the median so the next note is
-                // judged on its own, not against the previous note's octave.
-                self.raw_recent.clear();
+                self.octave_gate.reset();
                 None
             }
         };
@@ -167,14 +147,6 @@ impl PitchRoll {
         self.view_lo += (target_lo - self.view_lo) * VIEW_EASE;
         self.view_hi += (target_hi - self.view_hi) * VIEW_EASE;
     }
-}
-
-/// Median of a small non-empty window — the robust reference for octave-spike
-/// rejection (one or two outliers can't move it, unlike a mean).
-fn median(values: &VecDeque<f32>) -> f32 {
-    let mut v: Vec<f32> = values.iter().copied().collect();
-    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    v[v.len() / 2]
 }
 
 impl App {
