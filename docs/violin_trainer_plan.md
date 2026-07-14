@@ -13,6 +13,88 @@ progress / not started) and note the commit when a phase ships.
 > that before touching pitch, octaves, note starts/ends or latency. This file is the
 > history; that one is the current shape, with the measured numbers.
 
+---
+
+## ▶ Start here — handoff (2026-07-14)
+
+### Where it stands
+
+The melody line's latency regression is **fixed and confirmed by ear**: 128→28 ms for
+ordinary intervals, 328→78 ms for an octave leap. Read
+[`note_detection.md`](note_detection.md) first — it is the whole mechanism in one
+place, and the rest of this section assumes it.
+
+Three commits landed, in order:
+
+| commit | what | live-verified? |
+|---|---|---|
+| `1a8c6e1` | melody rides the resonator bank again; latency measured | ✅ **yes** — "работает неплохо" |
+| `969e37b` | universal ceiling (C8), quantile framing, one octave decision | ❌ **no** |
+| `a063606` | systematisation doc; panel range clamps dropped | ❌ **no** |
+
+**That table is the most important thing on this page.** The user's "работает неплохо"
+was given *after `1a8c6e1` and before the other two*. Everything since is
+tests-and-reasoning only — which is the exact state Phases 1.4–1.6 were in when they
+shipped a 100 ms regression that took weeks to notice. Do **not** record `969e37b` /
+`a063606` as verified on the strength of that sentence.
+
+### Live-verify checklist (next session, with the instrument)
+
+In rough order of risk:
+
+1. **Octave stability on sustain.** Highest risk. `melody::LEAP_CONFIRM_FRAMES = 4`
+   (≈64 ms) was picked from an *argument* — that the bank's wandering is intermittent
+   while a real leap's disagreement is unbroken — not from live data. If octaves
+   flicker on held notes, raise it; if octave leaps feel sluggish, lower it. If
+   wandering turns out to be *sustained* rather than intermittent, the whole
+   discriminator is wrong and needs rethinking, not tuning.
+2. **Cents.** Phase 1.3 flagged this as the one thing YIN did better: the bank's grid
+   is ~12.5 cents/bin + sub-bin refine + Δφ. Intonation feedback is the point of the
+   panel, so if cents feel coarse, take *cents only* from the anchor and keep timing
+   and octave from the bank.
+3. **High notes.** C6..E7 are newly reachable and have only ever been tested on
+   synthetic tones. Does the bank actually hold a real violin's E string up in the high
+   positions?
+4. **CPU.** The bank went **360 → 480 resonators** (+33%) with the C8 ceiling, and it
+   is per-sample IIR. Watch this on Android especially. `ResonatorSettings::max_midi`
+   is user-adjustable, so the escape hatch exists.
+5. **Pitch roll framing.** Does the view sit tight and calm, with notes named rather
+   than only octaves? Constants: `FRAMING_FRAMES`, `VIEW_QUANTILE_*`,
+   `VIEW_SHRINK_SLACK`.
+
+### Next work, in order
+
+1. **Finish taking the decision engine off the UI clock** (agreed, not started — see
+   [`note_detection.md`](note_detection.md) §4). Note segmentation
+   (`MIN_NOTE_SECONDS`, `RELEASE_SECONDS`, `CENTS_EMA`) still runs inside
+   `StaffTrainer` driven by `ui.input(|i| i.time)`, and the pitch roll's history is
+   sampled per UI frame — its own comment admits the span is "~10 s at 60 fps, ~20 s
+   at 30 fps", i.e. the waterfall's time axis is not time. Shape: a `NoteSegmenter` in
+   `dsp`, clocked off the **sample count** (which also makes note durations
+   sample-accurate instead of frame-quantised), note history on `SharedState`, panels
+   left with clef/key/drawing only. This is the last place a dropped frame changes a
+   musical decision.
+2. **`LOWEST_TRACKED_FREQUENCY = 16 Hz`** makes `cmndf` search lags to 3000 samples —
+   **13.9M ops/frame** for a band no instrument here plays, and the low tail is where
+   the sub-bass ghost lives. Cheap win; needs a decision on the real floor.
+3. **The inert `BANK_WEIGHT`/`ATTACK_BANK_WEIGHT` fusion** still runs in `pyin`. It is
+   harmless and marked "do not fix latency with this", but it is dead weight and it is
+   what made Phase 1.5 look reasonable in the first place.
+
+### Landmines
+
+- **The bank is park-gated.** Any panel reading `melody_pitch` must call
+  `AudioEngine::request_resonator()` every frame or it sits at "play a note…" forever.
+  YIN runs unconditionally; the bank does not.
+- **`audio::dsp` is `pub(crate)` only under `cfg(test)`** (see `audio/mod.rs`). That is
+  deliberate — the latency tests drive the real bank + tracker end to end, and the
+  absence of exactly that test is how this regression shipped. Production code reads
+  finished values off `TunerReading`.
+- **`MelodyTracker::update` must be driven at the bank's cadence, once per bank
+  frame.** Its hysteresis and the gate's median are counted in those frames. The 40 ms
+  pYIN path deliberately re-stamps the last value instead of recomputing.
+- Uncommitted in the tree and **not mine**: `Cargo.lock`, `src/ui/segmented.rs`.
+
 ## Vision
 
 A practice panel that renders **standard notation** (treble clef staff) and, while
@@ -380,6 +462,46 @@ tidiness must now fail a test, not a live session weeks later.
   the sub-bass ghost lives.
 - The now-inert `BANK_WEIGHT`/`ATTACK_BANK_WEIGHT` fusion still runs in `pyin`. It is
   harmless but it is dead weight, and it is what made 1.5 look reasonable.
+
+### Phase 1.8 — universal ceiling, quantile framing, one octave decision  ⚠ BUILT, NOT LIVE-VERIFIED
+Landed `969e37b` + `a063606`, straight after 1.7 was confirmed by ear. Labelled
+honestly: 1.7's fix is verified, **this is not** — see the handoff at the top.
+
+**The ceiling was silently transposing, not dropping.** `cmndf`'s `min_lag = sr/1000`
+capped YIN at B5, and `yin_pick` scans lags upward taking the first dip — so with the
+true period excluded, the first dip still *reachable* is the note's sub-octave.
+Measured C6/E6/A6 at exactly **−12.00 semitones**: the upper half of a violin's range,
+an octave flat, on the tuner and fretboard too. Made the bounds universal rather than
+accidental — `HIGHEST_TRACKED_FREQUENCY` = C8 (4186 Hz) beside the existing C0 floor,
+pyin's grid to match, and `NOTE_BUCKET_MAX_MIDI` 84→108 so the bank (which *is* the
+melody's pitch) can hear up there at all. C0..E7 now tracks within 0.04 semitones,
+asserted by `ceiling_probe` — a ceiling fails silently, so it must fail a test.
+Cost: bank 360 → 480 resonators.
+
+**Pitch roll framed on the whole waterfall.** `reframe()` took min/max over all 600
+frames (~10–20 s), so a phrase from fifteen seconds ago kept the view stretched and one
+slip pinned it an octave wider. At three octaves the rows fall under
+`pianoroll::LABEL_MIN_ROW_H` and only the Cs stay labelled — reported as "больше не
+рисуются ноты, только октавы", which was never a labelling bug. Rebuilt on three rules:
+recent frames only (`FRAMING_FRAMES`), quantile bounds (`VIEW_QUANTILE_*`) instead of
+min/max, hysteresis on shrink (`VIEW_SHRINK_SLACK`). Growing is no longer eased at all —
+at `VIEW_EASE` a leap took ~0.6 s to cover and the line was *off screen* for it.
+
+**The octave is now decided once, off the UI clock.** It had been judged in four
+places, the last being `OctaveGate` — living in the panels, duplicated in both, driven
+**per UI frame**: a DSP filter whose median window was measured in frames, so a
+stuttering UI quietly changed its timescale. Moved into `dsp::melody` at the bank's
+16 ms cadence, which now states its three layers plainly (bank harmonic scoring → snap
+to pYIN's octave → gate for what's left). The move surfaced a real interaction: the
+gate rejected the very leap the hysteresis had just confirmed, its median still on the
+old octave — a second conservatism tax on a decision already paid for over five frames.
+A confirmed leap now resets the gate: **octave leap 111 → 78 ms**.
+
+Panels now do **no DSP at all**. Writing `note_detection.md` immediately exposed the
+last of it: staff clamped to 12..103, pitch roll to 24..103 "matching the pYIN
+tracker's own grid" — untrue since the melody moved to the bank (12..108), with the
+staff's G7 ceiling sitting *below* the grid's C8. Two private second opinions about the
+range, both already drifted. Removed; the melody's range simply is the bank's.
 
 ### Phase 2 — Target / call-and-response mode  ⬜ NOT STARTED
 Show a **target** (a single note, then a short phrase/scale) the user must play;
