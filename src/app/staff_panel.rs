@@ -10,10 +10,16 @@
 //! begins is settled in the engine, on an audio clock, and arrives finished on
 //! `TunerReading::note_line` — see [`crate::audio::dsp::segmenter`] for why it may
 //! not be decided here. What lives in [`StaffTrainer`] is what is genuinely the
-//! panel's own: which clef, which key signature, and the decorative pitch trail.
-//! The stateless staff/clef drawing lives in [`crate::ui::staff`].
-
-use std::collections::VecDeque;
+//! panel's own: which clef, which key signature. The stateless staff/clef drawing
+//! lives in [`crate::ui::staff`].
+//!
+//! **The waterfall behind the notes is one waterfall.** Its two layers — the bank's
+//! heat and the pitch trail — are two views of the same [`MelodyFrame`], placed by the
+//! same `t` through the same `x_of`. They used to be two buffers on two clocks (the
+//! trail per UI frame, the heat per bank column, each spread over the width by its own
+//! count), which had them scrolling at ~200 px/s and ~375 px/s against each other —
+//! reported live as "два водопада… один медленнее другой быстрее". A shared span is
+//! not something the two layers agree on now; there is only one of it.
 
 use eframe::egui::{
     Align2,
@@ -37,7 +43,11 @@ use super::{
     pill_colored,
     pill_muted,
 };
-use crate::audio::NoteLine;
+use crate::audio::{
+    MelodyFrame,
+    MelodyHistory,
+    NoteLine,
+};
 use crate::core_types::note::{
     AccidentalStyle,
     CIRCLE_OF_FIFTHS,
@@ -73,47 +83,77 @@ const STAFF_LINE: Color32 = Color32::from_rgb(96, 104, 116);
 /// panel, so it never reads as intonation (which is the green→red ramp).
 const TRAIL_BLUE: Color32 = Color32::from_rgb(96, 176, 214);
 
-/// Frames of continuous pitch kept for the live "waterfall" trail behind the
-/// notes (~a few seconds at UI frame rate).
-const TRAIL_CAP: usize = 240;
-
-/// One frame of continuous pitch for the waterfall trail: `(fractional MIDI,
-/// level)`. `None` marks a silent frame (a gap in the trail).
-type TrailPoint = Option<(f32, f32)>;
+/// How far back the waterfall reaches, **in seconds of played audio**.
+///
+/// One span for one waterfall. Its two layers — the bank's heat and the pitch trail
+/// drawn on top of it — used to measure the width in different units entirely: the
+/// trail in 240 *UI frames* (≈4 s at 60 fps, ≈8 s at 30), the heat in 52 *bank
+/// columns* (≈0.83 s) and then squeezed into a `clamp(2.0, 6.0)` step so it did not
+/// even reach the left edge. Two layers of the same sound scrolling at ~200 px/s and
+/// ~375 px/s: reported live as "два водопада… один медленнее другой быстрее".
+///
+/// They cannot disagree now — both are placed from the same [`MelodyFrame::t`], and
+/// the frames they read are the same frames.
+const WATERFALL_SECONDS: f64 = 4.0;
 
 /// What the staff panel itself owns.
 ///
 /// Note capture is **not** here: it is the engine's, on the engine's clock (see the
 /// module docs). What is left is the reading surface — which clef, which key — plus
-/// the trail, which is a decoration rather than a decision.
-#[derive(Default)]
+/// the waterfall's frames, which are the engine's too; the panel only holds them long
+/// enough to draw them.
 pub struct StaffTrainer {
-    /// Recent continuous pitch, oldest → newest, for the trail behind the notes.
+    /// The bank frames behind the notes, oldest → newest, trimmed to
+    /// [`WATERFALL_SECONDS`] of played audio.
     ///
-    /// Still sampled per UI frame, and that is tolerable *only* because nothing is
-    /// decided from it: it is a fading glow showing glide and vibrato, so a dropped
-    /// frame costs one dot. Anything read off it would inherit the UI clock, which is
-    /// the mistake `dsp::segmenter` exists to undo — the pitch roll's history has the
-    /// same shape and the same caveat (`docs/note_detection.md` §4).
-    trail: VecDeque<TrailPoint>,
+    /// **Both** waterfall layers read this, which is the point: the heat and the trail
+    /// are two views of one frame, so they are aligned 1:1 and travel at one speed by
+    /// construction rather than by two constants agreeing. The trail used to be
+    /// sampled per UI frame and the heat pulled from a second buffer entirely.
+    frames: MelodyHistory,
+    /// How far the panel has read the engine's history. Ours, not the engine's — the
+    /// pitch roll holds its own and reads the same frames (`AudioEngine::melody_since`).
+    cursor: Option<u64>,
     /// The clef the staff is drawn in — user-selectable (default treble). One
     /// staff at a time: notes never migrate between clefs.
-    clef:  Clef,
+    clef:   Clef,
     /// The key signature drawn after the clef (default C major = none). It fixes
     /// the sharps/flats at the clef and, in turn, how each note is spelled and
     /// whether it carries its own accidental (see [`KeySignature::note_glyph`]).
-    key:   KeySignature,
+    key:    KeySignature,
+}
+
+impl Default for StaffTrainer {
+    fn default() -> Self {
+        Self {
+            frames: MelodyHistory::with_retention(WATERFALL_SECONDS),
+            cursor: None,
+            clef:   Clef::default(),
+            key:    KeySignature::default(),
+        }
+    }
 }
 
 impl StaffTrainer {
-    /// Feed one UI frame of melody pitch into the trail. `pitch` is the melody line's
-    /// fractional MIDI (`None` = silence or a rejected slip, already decided in the
-    /// engine); `level` sets the trail's intensity.
-    pub fn update(&mut self, pitch: Option<f32>, level: f32) {
-        self.trail.push_back(pitch.map(|midi_f| (midi_f, level)));
-        while self.trail.len() > TRAIL_CAP {
-            self.trail.pop_front();
+    /// Take the bank frames the engine has published since the last read.
+    ///
+    /// Empty, one, or several per repaint — all ordinary. The waterfall is paced by
+    /// the audio; the repaint only decides when the frames are collected.
+    pub fn update(&mut self, fresh: Vec<MelodyFrame>) {
+        let Some(last_seq) = fresh.last().map(|f| f.seq) else {
+            return;
+        };
+        self.cursor = Some(last_seq);
+        // The ring trims by time and heals across a stream restart — its rules, not
+        // the panel's. See `MelodyHistory::push`.
+        for frame in fresh {
+            self.frames.push(frame);
         }
+    }
+
+    /// The newest frame's timestamp: the playhead, in audio time.
+    fn now(&self) -> Option<f64> {
+        self.frames.newest().map(|f| f.t)
     }
 }
 
@@ -133,7 +173,6 @@ impl App {
         let key = self.staff.key;
         let style = key.style().unwrap_or(settings.accidental);
         let reading = self.audio.reading();
-        let level = self.audio.input_level();
 
         // The written line arrives DECIDED. Note starts, ends, the glitch/release
         // grace and the cents average are all settled in `audio::dsp::segmenter`, at
@@ -143,13 +182,13 @@ impl App {
         // renderer ticks. Reading it is all that is left to do.
         let note_line = reading.as_ref().map(|r| r.note_line.clone()).unwrap_or_default();
 
-        // The trail's own pitch: the melody line, already silence-gated and octave-
-        // decided upstream (`audio::dsp::melody`). `level` only sets its intensity.
-        let pitch = reading
-            .as_ref()
-            .and_then(|r| r.melody_pitch)
-            .map(|(midi_f, _)| midi_f);
-        self.staff.update(pitch, level);
+        // The waterfall's frames, taken by cursor at the bank's cadence — the melody
+        // line, its heat and the audio time of both, in one record. Not `reading()`
+        // sampled per repaint: that is what made the trail a count of renderer ticks
+        // while the heat next to it counted bank columns, and the two scroll at
+        // different speeds the moment their rulers differ.
+        let fresh = self.audio.melody_since(self.staff.cursor);
+        self.staff.update(fresh);
 
         Frame::new()
             .fill(color::PANEL_FILL)
@@ -233,25 +272,13 @@ impl App {
                 let width = ui.available_width();
                 let (rect, _resp) = ui.allocate_exact_size(vec2(width, 260.0), Sense::hover());
                 let painter = ui.painter_at(rect);
-                // Fast, low-latency pitch-energy history straight from the resonator
-                // bank (published ~60 Hz), independent of the slow YIN note-commit.
-                // Empty until the first reading; its bin→pitch mapping spans the
-                // bank's own MIDI range (see `draw_resonator_waterfall`).
-                let res_wf = reading
-                    .as_ref()
-                    .map_or(&[][..], |r| r.resonator_waterfall.as_slice());
+                // The bank's pitch range: what maps a heat bin to a pitch. The heat
+                // itself rides the frames now (`MelodyFrame::heat`) rather than a
+                // second history off the reading — which is what let it drift from the
+                // trail drawn on top of it.
                 let res_min = settings.resonator.min_midi.as_u8() as i32;
                 let res_max = settings.resonator.max_midi.as_u8() as i32;
-                draw_staff(
-                    &painter,
-                    rect,
-                    &self.staff,
-                    &note_line,
-                    style,
-                    res_wf,
-                    res_min,
-                    res_max,
-                );
+                draw_staff(&painter, rect, &self.staff, &note_line, style, res_min, res_max);
             });
     }
 }
@@ -284,7 +311,6 @@ fn draw_staff(
     trainer: &StaffTrainer,
     line: &NoteLine,
     style: AccidentalStyle,
-    res_wf: &[Vec<f32>],
     res_min_midi: i32,
     res_max_midi: i32,
 ) {
@@ -318,26 +344,34 @@ fn draw_staff(
     let ksig_right = staff::draw_key_signature(painter, &geom, clef, key, STAFF_INK);
     geom.notes_left = geom.notes_left.max(ksig_right + gap * 0.8);
 
-    // The current note (and the trail's newest sample) live at this x; notes step
-    // left from here, the trail flows into it from the left.
+    // The current note (and the waterfall's newest frame) live at this x; notes step
+    // left from here, the waterfall flows into it from the left.
     let right_x = geom.notes_right - gap * 1.6;
 
-    // Fast resonator waterfall on the very bottom layer: the low-latency
-    // pitch-energy heat that flows into the notes far sooner than the YIN commit.
-    draw_resonator_waterfall(
-        painter,
-        &geom,
-        clef,
-        res_wf,
-        res_min_midi,
-        res_max_midi,
-        style,
-        right_x,
-    );
+    // ONE ruler for the whole waterfall. Both layers below are placed through this and
+    // nothing else, so "the heat and the trail scroll together" is not a property to
+    // be maintained — there is no second number that could disagree.
+    let px_per_second = (right_x - geom.notes_left) / WATERFALL_SECONDS as f32;
+    let x_of = |age_s: f32| right_x - age_s * px_per_second;
 
-    // Live pitch "waterfall" trail behind the notes, aligned to the staff lines:
-    // the continuous detected pitch as a fading glow (shows glide, vibrato, lag).
-    draw_trail(painter, &geom, clef, trainer, style, right_x);
+    if let Some(now) = trainer.now() {
+        // Bottom layer: the bank's pitch-energy heat, which lights a new note up long
+        // before the windowed detector commits it.
+        draw_resonator_waterfall(
+            painter,
+            &geom,
+            clef,
+            &trainer.frames,
+            now,
+            res_min_midi,
+            res_max_midi,
+            style,
+            &x_of,
+        );
+        // On top of it, the same frames' melody pitch as a fading glow — glide,
+        // vibrato and the lag between the two, readable because they now line up.
+        draw_trail(painter, &geom, clef, &trainer.frames, now, style, &x_of);
+    }
 
     // Notes newest-last. Place right→left so a new note enters at the right and
     // older ones scroll toward the clef, dropping off once past `notes_left`.
@@ -417,29 +451,27 @@ fn draw_trail(
     painter: &Painter,
     geom: &StaffGeom,
     clef: Clef,
-    trainer: &StaffTrainer,
+    frames: &MelodyHistory,
+    now: f64,
     style: AccidentalStyle,
-    right_x: f32,
+    x_of: &impl Fn(f32) -> f32,
 ) {
-    let n = trainer.trail.len();
-    if n == 0 {
-        return;
-    }
-    let dx = ((right_x - geom.notes_left) / TRAIL_CAP as f32).max(0.8);
     let radius = (geom.gap * 0.17).max(1.2);
-    for (i, point) in trainer.trail.iter().enumerate() {
-        let Some((midi_f, level)) = *point else {
-            continue; // silent frame → gap in the trail
+    for frame in frames.iter() {
+        let Some(midi_f) = frame.pitch else {
+            continue; // silence, or a rejected slip → a gap in the trail
         };
-        let age = (n - 1 - i) as f32; // 0 = newest
-        let x = right_x - age * dx;
+        let age_s = (now - frame.t) as f32;
+        let x = x_of(age_s);
         if x < geom.notes_left {
             continue;
         }
         let y = staff::midi_to_y(geom, style, clef, midi_f);
-        // Fade with age, intensify with level.
-        let recency = 1.0 - age / n as f32;
-        let alpha = (level.clamp(0.0, 1.0).sqrt() * recency * 165.0).clamp(0.0, 165.0) as u8;
+        // Fade with age, intensify with level. Age is in *seconds* now, so the fade is
+        // a real half-life rather than "how much of the buffer ago" — at 30 fps the
+        // old trail faded over twice as much time as at 60.
+        let recency = 1.0 - (age_s / WATERFALL_SECONDS as f32).clamp(0.0, 1.0);
+        let alpha = (frame.level.clamp(0.0, 1.0).sqrt() * recency * 165.0).clamp(0.0, 165.0) as u8;
         painter.circle_filled(
             pos2(x, y),
             radius,
@@ -472,35 +504,45 @@ fn draw_resonator_waterfall(
     painter: &Painter,
     geom: &StaffGeom,
     clef: Clef,
-    waterfall: &[Vec<f32>],
+    frames: &MelodyHistory,
+    now: f64,
     res_min_midi: i32,
     res_max_midi: i32,
     style: AccidentalStyle,
-    right_x: f32,
+    x_of: &impl Fn(f32) -> f32,
 ) {
-    let n = waterfall.len();
-    let bin_count = waterfall.first().map_or(0, Vec::len);
-    if n == 0 || bin_count < 2 || res_max_midi <= res_min_midi {
+    let n = frames.len();
+    let bin_count = frames
+        .iter()
+        .map(|f| f.heat.as_slice())
+        .find(|c| !c.is_empty())
+        .map_or(0, <[f32]>::len);
+    if n < 2 || bin_count < 2 || res_max_midi <= res_min_midi {
         return;
     }
     // Derived, not assumed: (bins − 1) spread over the semitone span.
     let bins_per_semitone = (bin_count - 1) as f32 / (res_max_midi - res_min_midi) as f32;
 
-    // Columns march left from the playhead. Clamp the step so the strip stays a
-    // thin band of small rects ("напротив линий") rather than fat bars.
-    let dx = ((right_x - geom.notes_left) / n as f32).clamp(2.0, 6.0);
-    let cell_w = dx.min(5.0);
+    // A cell is one *frame*, so it is as wide as the gap between frames — measured
+    // rather than assumed (the bank's cadence is a user setting, 8..80 ms, and the
+    // publish jitters around it). It used to be `clamp(2.0, 6.0)`, which is what
+    // squeezed ~0.8 s of heat into ~300 px and set it scrolling at nearly twice the
+    // trail's speed; the step is not a look to be dialled in, it is what the clock
+    // says.
+    let mean_gap_s = ((now - frames.oldest().unwrap().t) / (n - 1) as f64) as f32;
+    let cell_w = (mean_gap_s * (x_of(0.0) - x_of(1.0)).abs() + 0.6).clamp(1.0, 5.0);
     let cell_h = (geom.gap * 0.5).max(3.0);
     let clip = painter.clip_rect();
 
-    for (col, row) in waterfall.iter().enumerate() {
-        let age = (n - 1 - col) as f32; // 0 = newest, at right_x
-        let x = right_x - age * dx;
+    for frame in frames.iter() {
+        let age_s = (now - frame.t) as f32;
+        let x = x_of(age_s);
         if x < geom.notes_left {
             continue;
         }
-        let recency = 1.0 - age / n as f32; // fade older columns
-        for (bin, &value) in row.iter().enumerate() {
+        // Fades over seconds, exactly like the trail above it — one clock, one fade.
+        let recency = 1.0 - (age_s / WATERFALL_SECONDS as f32).clamp(0.0, 1.0);
+        for (bin, &value) in frame.heat.iter().enumerate() {
             if value < RES_WF_GATE {
                 continue;
             }
