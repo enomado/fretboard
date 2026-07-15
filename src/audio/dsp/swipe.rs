@@ -313,6 +313,50 @@ impl SalienceFrame {
         })
     }
 
+    /// Adopt a curve **someone else scored**, with the column its verdict must be resolved
+    /// against — the constructor `dsp::rtswipe` builds its frames through.
+    ///
+    /// The bank has one column per frame, so [`Self::score`] can do both jobs at once.
+    /// RT-SWIPE has *eight*, one per window of its ladder, and its curve is a λ-blend
+    /// across them (Camacho eq. 3-14) — so the scoring happens outside and the frame is
+    /// handed the result. Everything downstream (`resolve`, `argmax`, `curve_over_tracked`,
+    /// the Viterbi in `dsp::melody`) then works on an RT-SWIPE frame exactly as it does on a
+    /// bank frame, which is the whole point of having one kernel and two frontends.
+    ///
+    /// # Contract, and why `norm` is 1.0 rather than a stub
+    ///
+    /// - `curve` must already be **normalized** — each `S_k` divided by its own column's
+    ///   [`spectrum_norm`] *before* the blend. `norm = 1.0` here is that fact recorded, not
+    ///   a placeholder: the frame's invariant is `curve/norm = confidence`, and a blended
+    ///   curve is a convex combination of normalized inner products, i.e. already the 0..1
+    ///   confidence. Dividing again would be dividing twice.
+    ///
+    ///   Skipping it upstream would not merely rank oddly — [`Self::resolve`] would report a
+    ///   strength of ~50 on a 0..1 scale, since `SwipeKernel::salience` divides by the
+    ///   *kernel's* norm alone and its output still carries the column's. `rtswipe::blend` is
+    ///   where the dividing happens, and where the measurements behind it are written down.
+    /// - `magnitudes` must be **raw** (no `sqrt_warp`, no display gamma) and on the same grid
+    ///   as `curve`, since [`refine_on_partials`] reads the fine pitch straight off it.
+    pub(crate) fn from_curve(
+        curve: Vec<f32>,
+        magnitudes: Vec<f32>,
+        min_midi: f32,
+        bins_per_semitone: f32,
+    ) -> Self {
+        assert_eq!(
+            curve.len(),
+            magnitudes.len(),
+            "curve and column must share a grid: resolve() reads a bin of one as a bin of the other"
+        );
+        Self {
+            curve,
+            magnitudes,
+            min_midi,
+            bins_per_semitone,
+            norm: 1.0,
+        }
+    }
+
     pub(crate) fn bins_per_semitone(&self) -> f32 {
         self.bins_per_semitone
     }
@@ -366,30 +410,11 @@ impl SalienceFrame {
         self.min_midi + bin as f32 / self.bins_per_semitone
     }
 
-    /// The bins of the app's pitch domain (C1..C8) on this grid — the only candidates worth
-    /// scoring — **clamped to what this column actually reaches**.
-    ///
-    /// Candidates come from the app's pitch domain, **not** from the column's own extent.
-    /// The column reaches down to C0 = 16 Hz because that suits the spectrum waterfall, and
-    /// scoring candidates there lets room rumble win: see `pitch::TRACKED_MIN_MIDI` for the
-    /// mechanism and the measurement.
-    ///
-    /// But the domain is an *intent* and the column is a *fact*, and where they disagree the
-    /// column wins: the bank's span is a user-facing slider (`ResonatorSettings::min_midi`/
-    /// `max_midi`, a direct CPU dial for weak devices), so a bank that stops at C6 has no
-    /// evidence about C7 to offer and pretending otherwise reads off the end of the curve.
-    /// This clamp is the only place that reconciles the two, which is why every consumer must
-    /// come through it rather than re-derive the domain from the constants — one that did
-    /// crashed the audio thread on any ceiling but the default (`melody::decode`).
+    /// This frame's candidate bins — see [`tracked_bins`], the free function this delegates
+    /// to. A method as well because most callers hold a frame and have no business
+    /// re-deriving its grid.
     pub(crate) fn tracked_bins(&self) -> Option<std::ops::RangeInclusive<usize>> {
-        let first = (((TRACKED_MIN_MIDI - self.min_midi) * self.bins_per_semitone)
-            .ceil()
-            .max(0.0)) as usize;
-        let last = (((TRACKED_MAX_MIDI - self.min_midi) * self.bins_per_semitone)
-            .floor()
-            .max(0.0) as usize)
-            .min(self.curve.len().saturating_sub(1));
-        (first <= last).then_some(first..=last)
+        tracked_bins(self.curve.len(), self.min_midi, self.bins_per_semitone)
     }
 
     /// The fine pitch and strength of an **already-decided** bin — by whatever decided it:
@@ -449,6 +474,43 @@ impl SalienceFrame {
         let first = *self.tracked_bins().unwrap().start();
         Some(self.resolve(first + peak_bin))
     }
+}
+
+/// The bins of the app's pitch domain (C1..C8) on a grid of `len` bins that starts at
+/// `min_midi` — the only candidates worth scoring — **clamped to what the grid actually
+/// reaches**.
+///
+/// Candidates come from the app's pitch domain, **not** from the column's own extent.
+/// The column reaches down to C0 = 16 Hz because that suits the spectrum waterfall, and
+/// scoring candidates there lets room rumble win: see `pitch::TRACKED_MIN_MIDI` for the
+/// mechanism and the measurement.
+///
+/// But the domain is an *intent* and the column is a *fact*, and where they disagree the
+/// column wins: the bank's span is a user-facing slider (`ResonatorSettings::min_midi`/
+/// `max_midi`, a direct CPU dial for weak devices), so a bank that stops at C6 has no
+/// evidence about C7 to offer and pretending otherwise reads off the end of the curve.
+/// This clamp is the only place that reconciles the two, which is why every consumer must
+/// come through it rather than re-derive the domain from the constants — one that did
+/// crashed the audio thread on any ceiling but the default (`melody::decode`).
+///
+/// Free rather than a method on [`SalienceFrame`] because `dsp::rtswipe` has to know the
+/// domain *before* a frame exists: it picks its winner off a blended curve and needs that
+/// winner to choose the column the frame is then built with. Re-deriving the domain there
+/// from the constants is exactly the mistake this gate exists to prevent, so the gate
+/// became callable instead.
+pub(crate) fn tracked_bins(
+    len: usize,
+    min_midi: f32,
+    bins_per_semitone: f32,
+) -> Option<std::ops::RangeInclusive<usize>> {
+    let first = (((TRACKED_MIN_MIDI - min_midi) * bins_per_semitone)
+        .ceil()
+        .max(0.0)) as usize;
+    let last = (((TRACKED_MAX_MIDI - min_midi) * bins_per_semitone)
+        .floor()
+        .max(0.0) as usize)
+        .min(len.saturating_sub(1));
+    (first <= last).then_some(first..=last)
 }
 
 /// SWIPE's spectral warping: the **square root** of the magnitude.

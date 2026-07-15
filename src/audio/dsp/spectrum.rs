@@ -8,6 +8,7 @@ use super::analysis_math::{
     SPIRAL_BIN_COUNT,
     accumulate_note_energy,
     accumulate_spiral_energy,
+    hann_taper,
     normalize_bars,
     smooth_bars,
     spectrum_bucket_index,
@@ -25,15 +26,10 @@ pub(crate) fn spectrum_bars_for_window(
 }
 
 fn apply_hann_window(input: &[f32]) -> Vec<f32> {
-    let len = input.len() as f32;
-    input
+    hann_taper(input.len())
         .iter()
-        .enumerate()
-        .map(|(i, s)| {
-            let phase = (2.0 * std::f32::consts::PI * i as f32) / (len - 1.0);
-            let mult = 0.5 * (1.0 - phase.cos());
-            s * mult
-        })
+        .zip(input)
+        .map(|(taper, sample)| taper * sample)
         .collect()
 }
 

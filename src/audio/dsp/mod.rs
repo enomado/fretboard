@@ -17,6 +17,10 @@ pub(crate) mod pitch;
 mod pitch_bench;
 pub(crate) mod pyin;
 pub(crate) mod resonator;
+/// SWIPE′ over windowed FFTs — the same kernel as [`swipe`], a different frontend from
+/// [`resonator`]. Not wired into either engine yet: it exists to be measured against the
+/// bank in `pitch_bench` first (`memory/kickstart_rtswipe_and_swiftf0_oracle.md`, track R).
+pub(crate) mod rtswipe;
 pub(crate) mod segmenter;
 pub(crate) mod spectrum;
 pub(crate) mod swipe;

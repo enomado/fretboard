@@ -42,6 +42,23 @@ pub(crate) fn parabolic_tau(values: &[f32], tau: usize) -> f32 {
     }
 }
 
+/// A symmetric Hann taper of `len` points — the one window shape this app analyses with.
+///
+/// Shared rather than inlined at each call site because there are now two: the display's
+/// FFT ([`super::spectrum`], which tapers a fresh buffer every frame) and `dsp::rtswipe`
+/// (which tapers eight, and caches these tables since its ladder is fixed). Two sites
+/// spelling out `0.5·(1 − cos(2πi/(N−1)))` is two chances for them to stop being the same
+/// window, and a detector that tapers differently from the spectrum it is debugged against
+/// is a trap nobody would think to look for.
+pub(crate) fn hann_taper(len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|i| {
+            let phase = (2.0 * std::f32::consts::PI * i as f32) / (len - 1) as f32;
+            0.5 * (1.0 - phase.cos())
+        })
+        .collect()
+}
+
 pub(crate) fn normalize_bars(values: &mut [f32], gamma: f32) {
     let max = values.iter().copied().fold(0.0, f32::max);
     if max > 0.0 {
