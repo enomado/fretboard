@@ -10,6 +10,7 @@ mod pitch_roll_panel;
 mod resonator_panel;
 mod scale_finder;
 mod staff_panel;
+mod take_marks;
 mod take_panel;
 mod take_roll;
 mod workspace;

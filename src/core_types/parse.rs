@@ -9,6 +9,7 @@ use nom::character::complete::{
 };
 use nom::combinator::{
     map,
+    map_res,
     opt,
 };
 use nom::multi::separated_list1;
@@ -55,9 +56,15 @@ fn parse_ass(input: &str) -> IResult<&str, Accidental> {
 }
 
 /// Парсинг октавы (цифра или несколько)
+///
+/// `map_res`, а не `map` + `unwrap`: `take_while1` съедает ЛЮБУЮ длину цифр, так
+/// что "G999" давало `"999".parse::<u8>()` → `Err` → панику. Пока сюда попадали
+/// только литералы из кода, мина не стреляла; с полем ввода (декларация ноты в
+/// `app::take_marks`) её жмёт юзер, набирая текст. Теперь это обычная ошибка
+/// разбора — вызывающий видит `Err` и решает сам.
 fn parse_octave(input: &str) -> IResult<&str, Octave> {
-    map(take_while1(|c: char| c.is_ascii_digit()), |s: &str| {
-        Octave(s.parse::<u8>().unwrap())
+    map_res(take_while1(|c: char| c.is_ascii_digit()), |s: &str| {
+        s.parse::<u8>().map(Octave)
     })
     .parse(input)
 }

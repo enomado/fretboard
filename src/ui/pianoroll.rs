@@ -176,6 +176,66 @@ pub fn plot_rect(rect: Rect) -> Rect {
     )
 }
 
+/// Where a (time, pitch) lands in the plot — **the** answer, not an answer.
+///
+/// Every layer here places things by these two formulas, and so does anything a panel
+/// paints *on top* of the roll: `app::take_roll` draws the player's note marks against
+/// the same grid as the heat they are marking. A mark drawn by a second copy of this
+/// arithmetic would sit a few pixels off the evidence it points at — and would drift
+/// further the day either formula changed, silently, because both pictures would still
+/// look plausible.
+///
+/// This module has already paid for that lesson once: the time span used to be a
+/// constant baked into four separate places, which is why a scrollable roll could not
+/// exist at all until they were unified into [`TimeAxis`].
+#[derive(Clone, Copy)]
+pub struct RollMapping {
+    plot:          Rect,
+    view_lo:       f32,
+    /// Visible pitch span in semitones, never zero — a pixel is always worth something.
+    span:          f32,
+    time:          TimeAxis,
+    px_per_second: f32,
+}
+
+impl RollMapping {
+    /// `view_lo`/`view_hi` are the fractional MIDI numbers at the plot's bottom/top.
+    pub fn new(rect: Rect, view_lo: f32, view_hi: f32, time: TimeAxis) -> Self {
+        let plot = plot_rect(rect);
+        let span = (view_hi - view_lo).max(1.0);
+        Self {
+            plot,
+            view_lo,
+            span,
+            time,
+            px_per_second: plot.width() / time.span_s(),
+        }
+    }
+
+    /// The plot's rect — what the axes are measured against.
+    pub fn plot(self) -> Rect {
+        self.plot
+    }
+
+    /// Pitch → y: higher pitch is higher on screen (smaller y).
+    pub fn y_of(self, midi_f: f32) -> f32 {
+        self.plot.bottom() - (midi_f - self.view_lo) / self.span * self.plot.height()
+    }
+
+    /// Age → x: the right edge is the newest instant on screen (`near_s` — the playhead
+    /// itself on the live roll), the past runs left at a fixed number of pixels per
+    /// second. This is the whole axis fix — a column lands where its *time* says, not
+    /// where its position in the buffer says.
+    pub fn x_of(self, age_s: f32) -> f32 {
+        self.plot.right() - (age_s - self.time.near_s) * self.px_per_second
+    }
+
+    /// Pixels per semitone — a row's height.
+    fn px_per_semitone(self) -> f32 {
+        self.plot.height() / self.span
+    }
+}
+
 /// Paint the pitch roll into `rect`.
 ///
 /// `columns` are the published bank frames oldest → newest, each carrying its own
@@ -188,6 +248,12 @@ pub fn plot_rect(rect: Rect) -> Rect {
 /// Columns outside `time` are the caller's to leave out: it knows the cadence, so it
 /// can keep the one column either side that the line needs to enter and leave the
 /// edges, which this function could only guess at.
+/// `show_line` paints the melody line — the detector's **decision**. It is a parameter
+/// because the two panels want opposite defaults, and for a reason that is not taste:
+/// the live roll is a mirror to play into and the line is the whole point of it, while
+/// a take being *marked up* must not show the marker the answer they are supposed to be
+/// providing (`app::take_marks`). The heat underneath is unaffected either way — it
+/// decides nothing, so it can be looked at without being agreed with.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pitch_roll(
     painter: &Painter,
@@ -199,43 +265,25 @@ pub fn draw_pitch_roll(
     view_hi: f32,
     time: TimeAxis,
     style: AccidentalStyle,
+    show_line: bool,
 ) {
-    let plot = plot_rect(rect);
-    let span = (view_hi - view_lo).max(1.0);
-    // Pitch → y: higher pitch is higher on screen (smaller y).
-    let y_of = |midi_f: f32| plot.bottom() - (midi_f - view_lo) / span * plot.height();
-    // Age → x: the right edge is the newest instant on screen (`near_s` — the playhead
-    // itself on the live roll), the past runs left at a fixed number of pixels per
-    // second. This is the whole axis fix — a column lands where its *time* says, not
-    // where its position in the buffer says.
-    let px_per_second = plot.width() / time.span_s();
-    let x_of = |age_s: f32| plot.right() - (age_s - time.near_s) * px_per_second;
+    let map = RollMapping::new(rect, view_lo, view_hi, time);
+    let plot = map.plot();
 
     painter.rect_filled(plot, 0.0, color::HEAT_BG);
 
     // Layer order: grid rows + time ruler (bottom) → spectral heat → melody line.
-    draw_rows(painter, rect, plot, view_lo, view_hi, span, &y_of, style);
-    draw_time_grid(painter, plot, time, &x_of);
-    draw_heat(
-        painter,
-        plot,
-        span,
-        columns,
-        res_min_midi,
-        res_max_midi,
-        time,
-        px_per_second,
-        &y_of,
-        &x_of,
-    );
-    draw_graph(painter, plot, columns, time, &y_of, &x_of);
+    draw_rows(painter, rect, map, view_lo, view_hi, style);
+    draw_time_grid(painter, map);
+    draw_heat(painter, map, columns, res_min_midi, res_max_midi);
+    if show_line {
+        draw_graph(painter, map, columns);
+    }
     draw_right_scale(
         painter,
-        plot,
+        map,
         view_lo,
         view_hi,
-        span,
-        &y_of,
         style,
         columns,
         res_min_midi,
@@ -284,7 +332,8 @@ fn tick_step_s(span_s: f32) -> f32 {
 /// The lines are placed on round **ruler** values rather than round ages, which is
 /// what makes them stand still while a frozen take is scrolled under them: you read
 /// 2.0, 2.5, 3.0, not 2.13, 2.63, 3.13 sliding along with the drag.
-fn draw_time_grid(painter: &Painter, plot: Rect, time: TimeAxis, x_of: &impl Fn(f32) -> f32) {
+fn draw_time_grid(painter: &Painter, map: RollMapping) {
+    let (plot, time) = (map.plot(), map.time);
     let step = tick_step_s(time.span_s());
     // Ruler value ↔ age is `label = zero_age_s - age`, so walk the labels the window
     // spans and convert each back to the age that places it. The left edge is the older
@@ -303,7 +352,7 @@ fn draw_time_grid(painter: &Painter, plot: Rect, time: TimeAxis, x_of: &impl Fn(
     let mut tick = (label_lo / step).ceil();
     while tick * step <= label_hi {
         let label = tick * step;
-        let x = x_of(time.zero_age_s - label);
+        let x = map.x_of(time.zero_age_s - label);
         tick += 1.0;
         // A line on the right edge has no room for its label — it would be painted over
         // the note scale in the gutter. On the live roll that edge is also the playhead,
@@ -332,16 +381,15 @@ fn draw_time_grid(painter: &Painter, plot: Rect, time: TimeAxis, x_of: &impl Fn(
 #[allow(clippy::too_many_arguments)]
 fn draw_right_scale(
     painter: &Painter,
-    plot: Rect,
+    map: RollMapping,
     view_lo: f32,
     view_hi: f32,
-    span: f32,
-    y_of: &impl Fn(f32) -> f32,
     style: AccidentalStyle,
     columns: &[RollColumn<'_>],
     res_min_midi: i32,
     res_max_midi: i32,
 ) {
+    let plot = map.plot();
     // "Now" = the newest *non-empty* column, so a one-frame dropout doesn't blink
     // the whole scale dark.
     let current = columns.iter().rev().map(|c| c.heat).find(|c| !c.is_empty());
@@ -353,7 +401,7 @@ fn draw_right_scale(
         1.0
     };
 
-    let row_h = plot.height() / span;
+    let row_h = map.px_per_semitone();
     let lo = view_lo.floor() as i32;
     let hi = view_hi.ceil() as i32;
     let x = plot.right() + 6.0;
@@ -381,7 +429,7 @@ fn draw_right_scale(
             (row_h * 0.68).clamp(8.0, 12.0)
         };
         painter.text(
-            pos2(x, y_of(midi as f32)),
+            pos2(x, map.y_of(midi as f32)),
             Align2::LEFT_CENTER,
             style.midi_name(midi),
             FontId::proportional(size),
@@ -407,23 +455,22 @@ fn label_heat_color(energy: f32) -> Color32 {
 fn draw_rows(
     painter: &Painter,
     rect: Rect,
-    plot: Rect,
+    map: RollMapping,
     view_lo: f32,
     view_hi: f32,
-    span: f32,
-    y_of: &impl Fn(f32) -> f32,
     style: AccidentalStyle,
 ) {
+    let plot = map.plot();
     // Semitones per pixel is `span / height`; invert for pixels per semitone, which
     // decides whether a per-row label fits.
-    let row_h = plot.height() / span;
+    let row_h = map.px_per_semitone();
     let lo = view_lo.floor() as i32;
     let hi = view_hi.ceil() as i32;
 
     for midi in lo..=hi {
-        let center_y = y_of(midi as f32);
-        let top_y = y_of(midi as f32 + 0.5);
-        let bottom_y = y_of(midi as f32 - 0.5);
+        let center_y = map.y_of(midi as f32);
+        let top_y = map.y_of(midi as f32 + 0.5);
+        let bottom_y = map.y_of(midi as f32 - 0.5);
         let pc = midi.rem_euclid(12);
         // Black keys on a piano: C#, D#, F#, G#, A#.
         let is_accidental = matches!(pc, 1 | 3 | 6 | 8 | 10);
@@ -512,19 +559,14 @@ fn mean_gap_s(columns: &[RollColumn<'_>]) -> f32 {
 /// Bin → pitch: the bank spans `res_min_midi..=res_max_midi`; bins-per-semitone is
 /// derived from a column's length (it changes with the reassignment toggle, so we
 /// read it rather than assume it), the same way the staff's waterfall does.
-#[allow(clippy::too_many_arguments)]
 fn draw_heat(
     painter: &Painter,
-    plot: Rect,
-    span: f32,
+    map: RollMapping,
     columns: &[RollColumn<'_>],
     res_min_midi: i32,
     res_max_midi: i32,
-    time: TimeAxis,
-    px_per_second: f32,
-    y_of: &impl Fn(f32) -> f32,
-    x_of: &impl Fn(f32) -> f32,
 ) {
+    let (plot, time) = (map.plot(), map.time);
     let bin_count = columns
         .iter()
         .map(|c| c.heat)
@@ -541,9 +583,8 @@ fn draw_heat(
     // interval: a frame the engine never published then leaves a hole exactly its own
     // width, instead of its neighbour smearing across the missing time. +0.6 closes
     // the hairline seams fractional sizes leave.
-    let cell_w = mean_gap_s(columns) * px_per_second + 0.6;
-    let px_per_semitone = span.recip() * plot.height();
-    let cell_h = (px_per_semitone / bins_per_semitone + 0.6).max(1.5);
+    let cell_w = mean_gap_s(columns) * map.px_per_second + 0.6;
+    let cell_h = (map.px_per_semitone() / bins_per_semitone + 0.6).max(1.5);
 
     let mut mesh = Mesh::default();
     let uv = egui::epaint::WHITE_UV;
@@ -551,7 +592,7 @@ fn draw_heat(
         if column.heat.is_empty() {
             continue; // silent frame → gap
         }
-        let cx = x_of(column.age_s);
+        let cx = map.x_of(column.age_s);
         // Older columns fade toward the far edge — but only where there is a "now" to
         // fade away from (see [`RollMode`]). Keyed off time, so the fade is a real
         // half-life rather than "how much of the buffer ago" — the same reading
@@ -565,7 +606,7 @@ fn draw_heat(
                 continue;
             }
             let midi = res_min_midi as f32 + bin as f32 / bins_per_semitone;
-            let cy = y_of(midi);
+            let cy = map.y_of(midi);
             if cy < plot.top() || cy > plot.bottom() {
                 continue; // off the visible pitch window
             }
@@ -599,14 +640,8 @@ fn heat_color(value: f32, recency: f32) -> Color32 {
 /// flows in from the left and ends at the playhead (right edge). Each segment is
 /// coloured by that frame's intonation and faded by its level; a silent frame
 /// breaks the line so rests show as gaps.
-fn draw_graph(
-    painter: &Painter,
-    plot: Rect,
-    columns: &[RollColumn<'_>],
-    time: TimeAxis,
-    y_of: &impl Fn(f32) -> f32,
-    x_of: &impl Fn(f32) -> f32,
-) {
+fn draw_graph(painter: &Painter, map: RollMapping, columns: &[RollColumn<'_>]) {
+    let (plot, time) = (map.plot(), map.time);
     if !columns.iter().any(|c| c.pitch.is_some()) {
         // Nothing to draw. On the live roll that is an invitation; on a frozen take it
         // is a rest, and a rest is an answer — printing "play a note…" over a stretch
@@ -637,10 +672,10 @@ fn draw_graph(
             prev = None; // silence (or a rejected slip) → break the line
             continue;
         };
-        let x = x_of(column.age_s);
+        let x = map.x_of(column.age_s);
         // Clamp to the plot so a note briefly outside the eased window rides the
         // edge instead of drawing off into space; the window normally keeps it in.
-        let y = y_of(point.midi_f).clamp(plot.top(), plot.bottom());
+        let y = map.y_of(point.midi_f).clamp(plot.top(), plot.bottom());
         let here = pos2(x, y);
 
         let cents = (point.midi_f - point.midi_f.round()) * 100.0;
@@ -663,7 +698,7 @@ fn draw_graph(
     // a take still playing it walks across the window as the line fills in, and parks
     // where the line ends. Scrolled off, it is simply not drawn: a marker clamped to
     // the edge would claim the line ends there.
-    let head_x = x_of(0.0);
+    let head_x = map.x_of(0.0);
     if head_x >= plot.left() && head_x <= plot.right() {
         painter.line_segment(
             [pos2(head_x - 0.5, plot.top()), pos2(head_x - 0.5, plot.bottom())],

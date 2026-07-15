@@ -27,31 +27,39 @@
 //! detector did something wrong in it, so the outlier the live roll is right to throw
 //! out is the entire subject, and the framing is the full played range.
 //!
-//! ## What this panel is for, and what it is not for yet
+//! ## Two jobs here, and they must not be confused
 //!
-//! Triage, as the user put it: «я играю — потом размечаю поверх того что задетектилось.
-//! и там будет видно пики куда что зашло не туда». Seeing the detector's line *is* that
-//! job, so the line is on.
+//! **Triage**, as the user put it: «я играю — потом размечаю поверх того что
+//! задетектилось. и там будет видно пики куда что зашло не туда». Seeing the detector's
+//! line *is* that job, so the line is on by default when you are only reading.
 //!
-//! Marking notes up is Ф2b and is not here yet — which matters, because the rules invert
-//! when it lands. The line being read here is the line a marker would be *agreeing with*,
-//! and a corpus that agrees with the detector proves nothing about it
-//! (`memory/kickstart_recording_and_annotation.md`). Then: a mark's pitch comes from a
-//! declaration made *before* playing, the line becomes a layer that is off by default,
-//! and only the *time* axis is marked on. The time axis is legitimate — the user is the
-//! authority on when a note started. The pitch axis is the mirror.
+//! **Marking**, which is the point of the whole exercise: recording what was actually
+//! played, so the detector can be scored against it. Here the line is a liability — a
+//! corpus that agrees with the detector proves nothing about it. The resolution is not
+//! to hide the roll but to split the truth: **the pitch is declared before playing**
+//! (the field above the roll, which is also the take's name), and only the **time** is
+//! marked on screen. The time axis is legitimate — the player is the authority on when a
+//! note started. The pitch axis is the mirror.
+//!
+//! So arming a declaration turns the line off, and the toggle is still there if the user
+//! wants it (they asked for it): what it costs is *recorded on the mark*
+//! ([`MarkedAgainst`]) rather than forbidden. See [`crate::app::take_marks`] and
+//! `memory/kickstart_recording_and_annotation.md`.
 
 use std::ops::Range;
 use std::path::PathBuf;
 
 use eframe::egui::{
+    self,
     Align,
+    Color32,
     Context,
     Layout,
     Rect,
     Response,
     RichText,
     Sense,
+    Stroke,
     Ui,
     Vec2,
     vec2,
@@ -64,6 +72,13 @@ use super::pitch_roll_panel::{
     VIEW_PAD,
     columns_of,
 };
+use super::take_marks::{
+    Declaration,
+    MarkedAgainst,
+    NoteMark,
+    load_marks,
+    save_marks,
+};
 use crate::audio::{
     MelodyFrame,
     MelodyHistory,
@@ -75,6 +90,7 @@ use crate::ui::pianoroll::{
     RollMode,
     TimeAxis,
 };
+use crate::ui::segmented::RowCaption;
 use crate::ui::tokens::color;
 
 /// How much of the take the history keeps: **all of it**.
@@ -118,8 +134,26 @@ const CULL_MARGIN_S: f32 = 0.1;
 /// same order as the live roll's, with room for the controls above it.
 const PLOT_HEIGHT: f32 = 320.0;
 
+/// A note mark's bar: half-height either side of its declared row, and the ticks at its
+/// two ends.
+///
+/// **Violet, and that is not decoration.** The roll already speaks two colour languages
+/// and a mark belongs to neither: the heat is a cool blue ramp (`pianoroll::heat_color`)
+/// and the line runs green → yellow → orange → red by intonation
+/// (`ui::theme::intonation_color`). Amber was the first choice and was wrong — the
+/// line's "a bit flat" is `(236, 150, 72)`, within a few units of it, so a mark and a
+/// slightly sour note would have looked alike **exactly** when the user turns the line
+/// on to compare them against each other, which is the one moment the picture has to be
+/// unambiguous. Violet appears nowhere else in the roll, so anything violet is the
+/// player speaking, not the detector.
+const MARK_BAR_H: f32 = 9.0;
+const MARK_TICK_H: f32 = 7.0;
+const MARK_FILL: Color32 = Color32::from_rgba_premultiplied(92, 48, 122, 175);
+const MARK_EDGE: Color32 = Color32::from_rgb(198, 128, 255);
+/// The boundary already clicked, waiting for its pair.
+const MARK_DRAFT: Color32 = Color32::from_rgb(198, 128, 255);
+
 /// The frozen roll's state.
-#[derive(Default)]
 pub struct TakeRoll {
     /// The take on screen. `None` = nothing has been replayed this session, which is a
     /// real state and not a missing value: the panel has nothing to draw and says so.
@@ -127,11 +161,58 @@ pub struct TakeRoll {
     /// Everything that only means something *with* a take lives inside, so that none of
     /// it can be read as a zero when there is no take — a take is never 0.0 s long, and
     /// a field claiming so would be a lie the type system was helping to tell.
-    loaded: Option<LoadedTake>,
+    loaded:    Option<LoadedTake>,
     /// Which layer is painted under the line. Outside [`LoadedTake`] because it is a
     /// property of the *looking*, not of the take: having chosen to read the salience,
     /// you mean to keep reading it as you step through take after take.
-    layer:  RollLayer,
+    layer:     RollLayer,
+    /// The declaration, as typed — "F5", "G3". Parsed every frame into a
+    /// [`Declaration`]; the text is what the user is editing, and holding the parsed
+    /// form here instead would mean deciding what a half-typed "F" means.
+    ///
+    /// Outside [`LoadedTake`], like the layer: you declare what you are about to play
+    /// and then play it, so the declaration outlives any one take on screen.
+    declared:  String,
+    /// Whether the detector's **line** is painted. See [`MarkedAgainst`] — this is the
+    /// mirror, and marking is what it must not be in the way of.
+    ///
+    /// `true` by default because reading a take without marking it is triage, the panel's
+    /// first job and the one that found the open-G sub-octave. Arming a declaration
+    /// turns it off (see [`TakeRoll::armed`]).
+    show_line: bool,
+    /// Was a declaration armed on the previous frame?
+    ///
+    /// The line is hidden on the *transition* into marking, not on every frame that
+    /// marking is armed — otherwise turning the line back on would be impossible, and
+    /// the user's own stated workflow («размечаю поверх того что задетектилось») would
+    /// be forbidden rather than merely discouraged. What it costs them is recorded, not
+    /// prevented: the mark carries [`MarkedAgainst::TheLineToo`].
+    was_armed: bool,
+}
+
+impl Default for TakeRoll {
+    fn default() -> Self {
+        Self {
+            loaded:    None,
+            layer:     RollLayer::default(),
+            declared:  String::new(),
+            show_line: true,
+            was_armed: false,
+        }
+    }
+}
+
+impl TakeRoll {
+    /// The declared note, if the field holds one — and therefore whether clicking the
+    /// roll marks anything.
+    ///
+    /// Marking is armed by the declaration alone, which is the whole design in one line:
+    /// **there is no way to make a mark without having said what you played first.** Not
+    /// a validation — a construction. You cannot click a note's boundaries into being
+    /// and then look up at the line to decide what note it was.
+    fn armed(&self) -> Option<Declaration> {
+        Declaration::parse(&self.declared)
+    }
 }
 
 /// The resonator bank's pitch range, in fractional MIDI — the bounds of where evidence
@@ -170,42 +251,79 @@ enum PitchFraming {
     Manual,
 }
 
+/// Everything a click needs to become a mark: what was declared, and what was on screen
+/// while the user was deciding.
+///
+/// The two travel together because they are recorded together and neither means much
+/// alone — the declaration is the mark's pitch, and [`MarkedAgainst`] is the honest note
+/// about how the timing was arrived at. Passing them as one value is also what stops a
+/// caller from arming the marking while forgetting to say what the user could see.
+#[derive(Clone, Copy)]
+struct Marking {
+    declared: Declaration,
+    against:  MarkedAgainst,
+}
+
 /// A take, and the window onto it.
 struct LoadedTake {
     /// Which take this is — the identity the harvest compares against to notice that a
     /// different one started playing.
-    path:    PathBuf,
+    path:       PathBuf,
     /// The take's length in seconds, from the corpus listing (the WAV's own header).
     /// This is what "the whole take" means for fitting and for clamping the window.
-    seconds: f32,
+    seconds:    f32,
     /// Every frame the engine published for this take, oldest → newest — the take's
     /// line, entire. See [`TAKE_RETENTION_S`].
-    frames:  MelodyHistory,
+    frames:     MelodyHistory,
     /// How far this panel has read the engine's history. Ours alone, so the live roll
     /// reads the same frames with its own (see `AudioEngine::melody_since`).
-    cursor:  Option<u64>,
+    cursor:     Option<u64>,
     /// The visible slice, **in take seconds** — 0.0 is the take's first sample.
     ///
     /// Take seconds rather than ages, because that is the frame the user reasons in
     /// («слип на третьей секунде») and it is the only one that holds still: an age is
     /// measured from the playhead, and the playhead moves while the take plays. The
     /// conversion to the renderer's ages happens once, in [`Self::time_axis`].
-    window:  Range<f32>,
+    window:     Range<f32>,
     /// Fractional-MIDI window at the plot's bottom/top edges, framed on the take's full
     /// played range (see the module docs on why full, not quantiles).
     ///
     /// Always the *effective* window, whoever framed it — the renderer asks one
     /// question ("what is at the edges") and must get one answer. Who chose it is
     /// [`Self::framing`], and that is a separate question.
-    view_lo: f32,
-    view_hi: f32,
+    view_lo:    f32,
+    view_hi:    f32,
     /// See [`PitchFraming`].
-    framing: PitchFraming,
+    framing:    PitchFraming,
+    /// The player's own truth about this take, loaded from `<take>.marks.jsonl` when it
+    /// opened and written back on every change. See [`crate::app::take_marks`].
+    marks:      Vec<NoteMark>,
+    /// The click-click gesture in progress: the take-second the first click fixed,
+    /// waiting for the second.
+    ///
+    /// `Option` earns its place here — "no gesture in progress" is the resting state of
+    /// a gesture, not a value we are missing. Click-click rather than drag, copied from
+    /// `main_app`'s annotator (`ui/notes/annotate.rs`): between the two clicks the user
+    /// is free to scroll and zoom, which matters because a note's two ends are often not
+    /// on screen at the same magnification.
+    draft:      Option<f64>,
+    /// Why the last write of the marks file failed, if it did. `None` = the file on disk
+    /// matches what is on screen.
+    ///
+    /// Kept and shown rather than logged: marking into a read-only corpus looks exactly
+    /// like marking into a working one, and the user would find out an evening later.
+    save_error: Option<String>,
 }
 
 impl LoadedTake {
     fn new(path: PathBuf, seconds: f32) -> Self {
         Self {
+            // The take's marks come with the take, from beside its WAV: they are part of
+            // the corpus, not of this session, and a take opened on a different machine
+            // a year from now must arrive with its truth attached.
+            marks: load_marks(&path),
+            draft: None,
+            save_error: None,
             path,
             seconds,
             frames: MelodyHistory::with_retention(TAKE_RETENTION_S),
@@ -258,6 +376,18 @@ impl LoadedTake {
                 lo = lo.min(pitch);
                 hi = hi.max(pitch);
             }
+        }
+        // 🔑 The player's marks are framed too, and this is not a nicety.
+        //
+        // Framing on the detector's line alone puts the user's own answer off screen in
+        // precisely the case this panel exists for: declare F5, watch the detector
+        // insist on F4, and the framing — computed from *its* pitches — never includes
+        // row 77 at all. The marks would be invisible exactly when they disagree, which
+        // is when they matter. A take's evidence is the line; a take's truth is the
+        // marks; the window has to hold both.
+        for mark in &self.marks {
+            lo = lo.min(mark.midi as f32);
+            hi = hi.max(mark.midi as f32);
         }
         if !lo.is_finite() {
             return; // not a single note yet — keep the current framing
@@ -314,6 +444,117 @@ impl LoadedTake {
             playhead_t,
             layer,
         )
+    }
+
+    /// One click of the click-click marking gesture: the first fixes a boundary, the
+    /// second closes the mark.
+    ///
+    /// **Only the time is taken from the click. The pitch is the declaration's**, and
+    /// that is the whole design: the user says "F5" before playing, then says *when* —
+    /// so the answer never passes through an eye looking at the detector's output. See
+    /// [`crate::app::take_marks`].
+    ///
+    /// A zero-length mark is dropped rather than stored. Two clicks in the same place is
+    /// how a mis-click looks, not how a note does; and an empty interval would match
+    /// nothing in Ф3's scoring while still sitting in the file looking like evidence.
+    fn mark_click(&mut self, t: f64, marking: Marking) {
+        let t = t.clamp(0.0, self.seconds as f64);
+        let Some(start) = self.draft.take() else {
+            self.draft = Some(t);
+            return;
+        };
+        let mark = NoteMark::new(start, t, marking.declared, marking.against);
+        if mark.seconds() <= 0.0 {
+            return; // a mis-click, not a note
+        }
+        self.marks.push(mark);
+        // Re-frame now, not on the next batch of frames: a finished take publishes
+        // nothing ever again, so `update` would never run and a mark declared outside
+        // the line's range would stay invisible for good. See [`Self::reframe`].
+        self.reframe();
+        self.persist();
+    }
+
+    /// Drop the newest mark. The undo for a boundary put in the wrong place — which is
+    /// most of what goes wrong while marking, and is otherwise unfixable without leaving
+    /// the app to edit the file by hand.
+    fn undo_mark(&mut self) {
+        self.marks.pop();
+        // Symmetric with `mark_click`: the framing counts the marks, so dropping one
+        // that had stretched the window must let it close again.
+        self.reframe();
+        self.persist();
+    }
+
+    /// Write the marks back beside the WAV, now.
+    ///
+    /// On every change rather than on some "save" — these are hand-made and cannot be
+    /// regenerated by re-running anything, so the cost of losing them to a crash is an
+    /// evening of playing, while the cost of writing tens of lines of JSON is nothing.
+    ///
+    /// A failure is surfaced, not swallowed: [`Self::save_error`] puts it on screen. If
+    /// the corpus directory is read-only the user is marking into a void, and the one
+    /// thing worse than that is not being told.
+    fn persist(&mut self) {
+        self.save_error = save_marks(&self.path, &self.marks).err();
+    }
+
+    /// Paint the marks, and the half-made one.
+    ///
+    /// On top of the roll rather than inside `ui::pianoroll`, because a mark is not a
+    /// layer of the picture — it is the *answer* about the picture, and it belongs to
+    /// this panel alone. Placed through [`pianoroll::RollMapping`] though, and pointedly
+    /// not by arithmetic of its own: a mark drawn a few pixels off the heat it points at
+    /// would misrepresent the very thing it is evidence about.
+    ///
+    /// A mark is a bar on its **declared** row. That it may sit nowhere near the line is
+    /// not a rendering problem — it is the finding.
+    fn draw_marks(&self, painter: &egui::Painter, map: pianoroll::RollMapping, playhead_t: f64) {
+        let plot = map.plot();
+        // Take-second → the renderer's age: the mapping speaks ages, the marks speak
+        // take time, and `playhead_t` is the one number that converts between them.
+        let x_of_t = |t: f64| map.x_of((playhead_t - t) as f32);
+
+        for mark in &self.marks {
+            let y = map.y_of(mark.midi as f32);
+            if y < plot.top() || y > plot.bottom() {
+                continue; // scrolled out of the pitch window
+            }
+            let (x0, x1) = (x_of_t(mark.interval.start), x_of_t(mark.interval.end));
+            if x1 < plot.left() || x0 > plot.right() {
+                continue; // scrolled out of the time window
+            }
+            let bar = Rect::from_min_max(
+                egui::pos2(x0.max(plot.left()), y - MARK_BAR_H * 0.5),
+                egui::pos2(x1.min(plot.right()), y + MARK_BAR_H * 0.5),
+            );
+            painter.rect_filled(bar, 2.0, MARK_FILL);
+            // The ends are what the user actually placed, so they are drawn as the
+            // crisp thing and the bar as the soft one: a boundary is a claim, its
+            // interior is just the consequence.
+            for x in [x0, x1] {
+                if x >= plot.left() && x <= plot.right() {
+                    painter.line_segment(
+                        [egui::pos2(x, y - MARK_TICK_H), egui::pos2(x, y + MARK_TICK_H)],
+                        Stroke::new(1.5, MARK_EDGE),
+                    );
+                }
+            }
+        }
+
+        // The half-made mark: a full-height line at the boundary already fixed. Full
+        // height because it has no pitch yet to sit at — the pitch arrives with the
+        // declaration, not with the click, and drawing it at the declared row would
+        // quietly claim the second click had already happened.
+        if let Some(start) = self.draft {
+            let x = x_of_t(start);
+            if x >= plot.left() && x <= plot.right() {
+                painter.line_segment(
+                    [egui::pos2(x, plot.top()), egui::pos2(x, plot.bottom())],
+                    Stroke::new(1.5, MARK_DRAFT),
+                );
+            }
+        }
     }
 
     /// Show the take whole, on both axes: the entire time span, and the pitch range
@@ -432,12 +673,37 @@ impl LoadedTake {
     /// gestures cannot both fire, so there is nothing left to arbitrate.
     ///
     /// `bank` is the resonator's pitch range — the bounds of where evidence can exist at
-    /// all (see [`Self::clamp_pitch`]).
-    fn interact(&mut self, ui: &Ui, resp: &Response, plot: Rect, bank: BankRange) {
+    /// all (see [`Self::clamp_pitch`]). `marking` is the armed declaration, if any — see
+    /// [`Self::mark_click`].
+    fn interact(&mut self, ui: &Ui, resp: &Response, plot: Rect, bank: BankRange, marking: Option<Marking>) {
+        let px_per_second = plot.width() / self.span_s();
+        let t_at = |x: f32| self.window.start as f64 + ((x - plot.left()) / px_per_second) as f64;
+
         // Double-click = "show me the whole thing" — the way back from any window,
         // without hunting for a button, and the way back to auto pitch framing.
+        //
+        // 🔑 It comes first, and it wins over marking, because the two gestures cannot
+        // collide: a double-click is two clicks in the *same place* within egui's
+        // double-click window, and a note's two ends are never in the same place — a
+        // note has duration. So the gesture that fits is precisely the gesture that
+        // could not have been a mark, and nothing has to be arbitrated. A half-made
+        // mark is dropped, which is what asking for the whole take back means.
+        //
+        // The corollary is worth stating: a note too short to have two *distinguishable*
+        // ends at the current zoom cannot be marked at that zoom. That is honest — at
+        // that zoom the user cannot see where its ends are either, and the fit they get
+        // instead is visible and undoable, not a silently wrong mark.
         if resp.double_clicked() {
+            self.draft = None;
             self.fit();
+            return;
+        }
+
+        if let Some(marking) = marking
+            && resp.clicked()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            self.mark_click(t_at(pos.x), marking);
             return;
         }
 
@@ -539,6 +805,104 @@ impl App {
         }
     }
 
+    /// The declaration row: what you played, said before you mark when.
+    ///
+    /// This row **is** the defence against the mirror, so it comes before the roll and
+    /// not in a menu: the order on screen is the order of the workflow. Declare, then
+    /// mark. The field is small because the claim is small — a note name, the same one
+    /// already in the take's file name.
+    fn draw_declaration(&mut self, ui: &mut Ui) {
+        let armed = self.take_roll.armed();
+        // Arming is the moment marking begins, and the moment the line stops being a
+        // help and starts being an answer sheet. Flip it off *once*, here, rather than
+        // hold it off: the user may turn it back on (their stated workflow), and the
+        // mark records that they did.
+        if armed.is_some() && !self.take_roll.was_armed {
+            self.take_roll.show_line = false;
+        }
+        self.take_roll.was_armed = armed.is_some();
+
+        ui.horizontal(|ui| {
+            ui.add(RowCaption::new("Played"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.take_roll.declared)
+                    .desired_width(80.0)
+                    .hint_text("F5"),
+            );
+
+            let (text, tint) = match armed {
+                Some(declared) => {
+                    (
+                        format!(
+                            "{} — click the note's start, then its end. The pitch is yours, not \
+                             the detector's",
+                            declared.name()
+                        ),
+                        color::STATUS_LISTENING,
+                    )
+                }
+                // Not an error — the resting state. Marking is armed by a declaration
+                // and by nothing else, so with the field empty a click is just a click.
+                None if self.take_roll.declared.trim().is_empty() => {
+                    (
+                        "Say what you played (e.g. F5) — then mark only *when* it sounded".to_owned(),
+                        color::TEXT_HINT,
+                    )
+                }
+                None => {
+                    (
+                        format!("\"{}\" is not a note name", self.take_roll.declared.trim()),
+                        color::STATUS_ERROR,
+                    )
+                }
+            };
+            ui.label(RichText::new(text).color(tint).size(12.0));
+        });
+
+        let Some(loaded) = self.take_roll.loaded.as_mut() else {
+            return;
+        };
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let marks = loaded.marks.len();
+            ui.label(
+                RichText::new(match marks {
+                    0 => "no marks yet".to_owned(),
+                    1 => "1 mark".to_owned(),
+                    n => format!("{n} marks"),
+                })
+                .color(color::TEXT_HINT)
+                .monospace()
+                .size(11.0),
+            );
+            if ui
+                .add_enabled(marks > 0, egui::Button::new("Undo last"))
+                .clicked()
+            {
+                loaded.undo_mark();
+            }
+            if loaded.draft.is_some() {
+                ui.label(
+                    RichText::new("…click the other end (esc to drop it)")
+                        .color(color::STATUS_LISTENING)
+                        .size(11.0),
+                );
+                // Escape drops a half-made mark. Without it the only way out of a
+                // mis-click is to complete a mark you do not want and undo it.
+                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    loaded.draft = None;
+                }
+            }
+            if let Some(error) = &loaded.save_error {
+                ui.label(
+                    RichText::new(format!("marks NOT saved: {error}"))
+                        .color(color::STATUS_ERROR)
+                        .size(11.0),
+                );
+            }
+        });
+    }
+
     /// The frozen roll: the take, with the window the user put on it.
     pub(super) fn draw_take_roll(&mut self, ui: &mut Ui) {
         let settings = self.audio.analysis_settings();
@@ -555,13 +919,34 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Take Roll").color(color::TEXT_CAPTION).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // The line is a layer you switch on, not part of the picture: it is the
+                // detector's answer, and it is the thing a marker would agree with.
+                ui.selectable_value(&mut self.take_roll.show_line, true, "line");
+                ui.selectable_value(&mut self.take_roll.show_line, false, "no line");
+                ui.separator();
                 ui.selectable_value(&mut self.take_roll.layer, RollLayer::Salience, "SWIPE′");
                 ui.selectable_value(&mut self.take_roll.layer, RollLayer::Spectrum, "spectrum");
             });
         });
         ui.add_space(6.0);
+        self.draw_declaration(ui);
+        ui.add_space(6.0);
 
         let layer = self.take_roll.layer;
+        let marking = self.take_roll.armed().map(|declared| {
+            Marking {
+                declared,
+                // Recorded, not prevented: the user asked to mark over the detected line
+                // and may do so — but the mark says it was made that way, and Ф3 can
+                // then score the clean marks separately and find out whether it mattered.
+                against: if self.take_roll.show_line {
+                    MarkedAgainst::TheLineToo
+                } else {
+                    MarkedAgainst::Evidence
+                },
+            }
+        });
+        let show_line = self.take_roll.show_line;
         let Some(loaded) = self.take_roll.loaded.as_mut() else {
             ui.label(
                 RichText::new("Play a take above — the whole line lands here, to scroll and zoom")
@@ -584,9 +969,10 @@ impl App {
         // The plot is inset from `rect` by the label gutters, and the pointer has to be
         // read against the plot, not the widget — see `pianoroll::plot_rect`.
         let plot = pianoroll::plot_rect(rect);
-        loaded.interact(ui, &resp, plot, bank);
+        loaded.interact(ui, &resp, plot, bank, marking);
 
         let painter = ui.painter_at(rect);
+        let time = loaded.time_axis(playhead_t);
         pianoroll::draw_pitch_roll(
             &painter,
             rect,
@@ -595,15 +981,22 @@ impl App {
             res_max_midi,
             loaded.view_lo,
             loaded.view_hi,
-            loaded.time_axis(playhead_t),
+            time,
             style,
+            show_line,
+        );
+        // The marks go on top, through the renderer's own mapping — see `draw_marks`.
+        loaded.draw_marks(
+            &painter,
+            pianoroll::RollMapping::new(rect, loaded.view_lo, loaded.view_hi, time),
+            playhead_t,
         );
 
         ui.add_space(6.0);
         ui.label(
             RichText::new(format!(
                 "{} · {:.2}–{:.2} s of {:.1} · {:.0}–{:.0} midi{} · drag to pan, ctrl+wheel to \
-                 zoom, double-click to fit",
+                 zoom, double-click to fit{}",
                 loaded.path.file_name().unwrap().to_string_lossy(),
                 loaded.window.start,
                 loaded.window.end,
@@ -616,6 +1009,13 @@ impl App {
                 match loaded.framing {
                     PitchFraming::Auto => "",
                     PitchFraming::Manual => " (manual)",
+                },
+                // Naming the marking gesture only while it is armed: with no
+                // declaration a click does nothing, and offering it would be a lie.
+                if marking.is_some() {
+                    ", click-click to mark"
+                } else {
+                    ""
                 },
             ))
             .color(color::TEXT_HINT)
@@ -643,6 +1043,7 @@ mod tests {
 
     use super::*;
     use crate::audio::AudioEngine;
+    use crate::core_types::note::AccidentalStyle;
 
     /// A take: `seconds` long, replayed at the bank's cadence.
     const CADENCE_S: f64 = 0.016;
@@ -686,6 +1087,9 @@ mod tests {
     /// the panel was still unusable (`memory/interaction-needs-kittest-not-state-tests.md`).
     struct Rig {
         take:     LoadedTake,
+        /// The armed declaration, if the test is marking. `None` = reading, which is
+        /// what every pan/zoom test wants: a click must not quietly become a mark.
+        marking:  Option<Marking>,
         /// Where the pane has scrolled to — the thing the roll used to eat.
         offset_y: f32,
         /// The roll's plot rect, recorded from inside the layout so the test aims the
@@ -705,6 +1109,12 @@ mod tests {
     fn rig(take: LoadedTake) -> Harness<'static, Rig> {
         Harness::builder()
             .with_size(egui::Vec2::new(PANE_W, PANE_H))
+            // A real frame time. The default is 0.25 s/step, which is *longer than
+            // egui's double-click window* (0.3 s for two clicks, i.e. two steps) — so a
+            // harness at the default cannot produce a double-click at all, and any test
+            // asserting about one quietly passes by never testing it. Found exactly that
+            // way.
+            .with_step_dt(1.0 / 60.0)
             .build_ui_state(
                 |ui, rig: &mut Rig| {
                     // The workspace pane, as `app::workspace::pane_ui` builds it.
@@ -717,12 +1127,13 @@ mod tests {
                                 Sense::click_and_drag(),
                             );
                             rig.plot = pianoroll::plot_rect(rect);
-                            rig.take.interact(ui, &resp, rig.plot, BANK);
+                            rig.take.interact(ui, &resp, rig.plot, BANK, rig.marking);
                         });
                     rig.offset_y = out.state.offset.y;
                 },
                 Rig {
                     take,
+                    marking: None,
                     offset_y: 0.0,
                     plot: Rect::ZERO,
                 },
@@ -945,6 +1356,346 @@ mod tests {
             "zoomed out is exactly the bank: {:.1}..{:.1}",
             loaded.view_lo,
             loaded.view_hi
+        );
+    }
+
+    /// A click at a take-second, aimed through the real plot.
+    fn click_at_t(harness: &Harness<'_, Rig>, t: f64) {
+        let (plot, window) = {
+            let rig = harness.state();
+            (rig.plot, rig.take.window.clone())
+        };
+        let frac = (t as f32 - window.start) / (window.end - window.start);
+        let at = egui::pos2(plot.left() + frac * plot.width(), on_screen(plot).y);
+        harness.hover_at(at);
+        harness.drag_at(at);
+        harness.drop_at(at);
+    }
+
+    /// 🔑 **THE POINT OF THE WHOLE KICKSTART**, driven end to end: two clicks make a
+    /// mark, and the mark's pitch is the *declaration's* — never the detector's.
+    ///
+    /// The take here is fed a line at A4 (69) throughout while the user declares F5
+    /// (77). If the mark ever came off the picture instead of off the declaration it
+    /// would say 69, and the corpus would be a mirror of what the detector already
+    /// thought — the failure this whole feature exists to refuse.
+    #[test]
+    fn two_clicks_make_a_mark_whose_pitch_is_the_declaration_not_the_line() {
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(69.0)); // the detector's line says A4, all take long
+
+        let mut harness = rig(loaded);
+        harness.state_mut().marking = Some(Marking {
+            declared: Declaration::parse("F5").unwrap(),
+            against:  MarkedAgainst::Evidence,
+        });
+        harness.run_steps(3);
+
+        click_at_t(&harness, 2.0);
+        harness.run_steps(2);
+        assert!(
+            harness.state().take.draft.is_some(),
+            "the first click must open the gesture, not make a mark"
+        );
+        assert!(harness.state().take.marks.is_empty(), "one click is not a note");
+
+        click_at_t(&harness, 4.0);
+        harness.run_steps(2);
+
+        let marks = &harness.state().take.marks;
+        assert_eq!(marks.len(), 1, "the second click closes the mark");
+        assert_eq!(
+            marks[0].midi, 77,
+            "the mark must carry the DECLARED F5, not the A4 the detector drew under it"
+        );
+        assert!(
+            (marks[0].interval.start - 2.0).abs() < 0.2 && (marks[0].interval.end - 4.0).abs() < 0.2,
+            "the mark's time comes from the clicks: {:?}",
+            marks[0].interval
+        );
+        assert!(
+            harness.state().take.draft.is_none(),
+            "the gesture is finished, not still open"
+        );
+    }
+
+    /// Marking is armed by the declaration and by **nothing else**: with no note
+    /// declared, a click on the roll is just a click.
+    ///
+    /// This is the construction the whole design rests on — there is no path from a
+    /// click to a mark that does not pass through having said what you played first. A
+    /// "mark now, name it later" affordance would put the naming *after* the looking,
+    /// which is exactly the mirror.
+    #[test]
+    fn without_a_declaration_a_click_marks_nothing() {
+        let mut harness = rig(take(10.0));
+        harness.state_mut().marking = None; // nothing declared
+        harness.run_steps(3);
+
+        click_at_t(&harness, 2.0);
+        harness.run_steps(2);
+        click_at_t(&harness, 4.0);
+        harness.run_steps(2);
+
+        assert!(harness.state().take.marks.is_empty(), "a click is not a mark");
+        assert!(harness.state().take.draft.is_none(), "and no gesture was opened");
+    }
+
+    /// The gesture survives scrolling and zooming between its two clicks — which is why
+    /// it is click-click and not a drag (the pattern is `main_app`'s, `ui/notes/
+    /// annotate.rs`). A note's two ends are routinely not both on screen at the
+    /// magnification you need to place either of them.
+    #[test]
+    fn the_two_clicks_may_be_zoomed_between() {
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(69.0));
+        let mut harness = rig(loaded);
+        harness.state_mut().marking = Some(Marking {
+            declared: Declaration::parse("G3").unwrap(),
+            against:  MarkedAgainst::Evidence,
+        });
+        harness.run_steps(3);
+
+        click_at_t(&harness, 2.0);
+        harness.run_steps(2);
+
+        // Zoom in hard between the clicks: the draft is in take seconds, so it must not
+        // move with the window.
+        let plot = harness.state().plot;
+        wheel(&harness, on_screen(plot), 60.0, Modifiers::COMMAND);
+        harness.run_steps(6);
+        assert!(
+            harness.state().take.span_s() < 9.0,
+            "the zoom did not take, so this test is not testing anything"
+        );
+        assert_eq!(
+            harness.state().take.draft,
+            Some(2.0),
+            "the half-made mark must stay at the take-second it was clicked at"
+        );
+
+        click_at_t(&harness, 3.0);
+        harness.run_steps(2);
+        let marks = &harness.state().take.marks;
+        assert_eq!(marks.len(), 1, "the mark closes across the zoom");
+        assert_eq!(marks[0].midi, 55, "G3, as declared");
+    }
+
+    /// The two gestures cannot collide, and this is what says so: a **double-click
+    /// fits** even while marking is armed, because two clicks in the same place cannot
+    /// be a note's two ends.
+    ///
+    /// Without the rule, marking would silently eat "double-click to fit": the first
+    /// click always opens a draft, so a fit could never fire while a declaration was
+    /// armed — and the caption under the roll promises it. That is not a collision to
+    /// arbitrate, it is a gesture that means one thing.
+    #[test]
+    fn a_double_click_fits_even_while_marking_is_armed() {
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(69.0));
+        loaded.window = 2.0..6.0; // a window `fit` will visibly undo
+
+        let mut harness = rig(loaded);
+        harness.state_mut().marking = Some(Marking {
+            declared: Declaration::parse("F5").unwrap(),
+            against:  MarkedAgainst::Evidence,
+        });
+        harness.run_steps(3);
+
+        // Two clicks in the same place, back to back — a double-click.
+        let at = on_screen(harness.state().plot);
+        harness.hover_at(at);
+        for _ in 0..2 {
+            harness.drag_at(at);
+            harness.drop_at(at);
+        }
+        harness.run_steps(4);
+
+        assert_eq!(
+            harness.state().take.window,
+            0.0..10.0,
+            "a double-click must fit the take, armed or not"
+        );
+        assert!(
+            harness.state().take.marks.is_empty(),
+            "two clicks in one place are not a note — they have no duration"
+        );
+        assert!(
+            harness.state().take.draft.is_none(),
+            "and the gesture must not be left half-open"
+        );
+    }
+
+    /// REGRESSION, found by the render test below and worse than what it was looking
+    /// for: **the framing must contain the marks**, not just the detector's line.
+    ///
+    /// The auto framing is min/max over the pitches the *engine* published. Declare F5,
+    /// have the detector insist on F4, and the window is framed on F4 — so the user's
+    /// own marks sit above its top edge and are simply not drawn. That is not a corner
+    /// case, it is `g_flageolet_f5`: the take this whole kickstart was started for, where
+    /// the detector is wrong by an octave and the marks exist to say so. The marks would
+    /// have been invisible in exactly the case they were made for.
+    #[test]
+    fn the_framing_holds_the_marks_and_not_only_the_detectors_line() {
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(65.0)); // the detector hears F4
+        assert!(
+            loaded.view_hi < 77.0,
+            "precondition: framed on the line alone, F5 is outside ({:.1})",
+            loaded.view_hi
+        );
+
+        loaded.mark_click(1.0, marking_f5());
+        loaded.mark_click(3.0, marking_f5()); // the player says it was F5
+
+        assert!(
+            loaded.view_hi > 77.0,
+            "the mark at F5 (77) is above the window's top ({:.1}) — the player's own \
+             answer is off screen precisely where it disagrees with the detector",
+            loaded.view_hi
+        );
+        assert!(
+            loaded.view_lo < 65.0,
+            "and the line it disagrees with must stay in view too: {:.1}",
+            loaded.view_lo
+        );
+
+        // Symmetric: dropping the mark lets the window close again.
+        loaded.undo_mark();
+        assert!(
+            loaded.view_hi < 77.0,
+            "undo must let the framing close back onto the take: {:.1}",
+            loaded.view_hi
+        );
+    }
+
+    /// An F5 declaration, marked against the evidence.
+    fn marking_f5() -> Marking {
+        Marking {
+            declared: Declaration::parse("F5").unwrap(),
+            against:  MarkedAgainst::Evidence,
+        }
+    }
+
+    /// 🔑 **The design, in pixels**: the mark is painted on the row it was *declared* at,
+    /// nowhere near the row the detector drew.
+    ///
+    /// Every other test here checks the mark's `midi` field, which proves the number is
+    /// carried correctly and proves nothing about the picture the user reads. The claim
+    /// this panel makes to its user is visual — *this bar is your F5, that line is the
+    /// detector's opinion, look how far apart they are* — and a placement bug would keep
+    /// every field correct while drawing the answer somewhere it means nothing. Rendered
+    /// through the real egui/epaint/wgpu stack, like `tests/pill_layout.rs`.
+    ///
+    /// The line is off here, which is both the marking default and a necessity for the
+    /// test: violet was chosen for marks precisely because nothing else in the roll is
+    /// violet, and this is where that pays — the assertion can say "violet ⇒ the player",
+    /// which it could not have said about the amber this started as (the intonation
+    /// ramp's "slightly flat" is a few units away from it).
+    #[test]
+    fn a_mark_is_painted_on_its_declared_row_not_on_the_detectors() {
+        const RECT_W: f32 = 600.0;
+        const RECT_H: f32 = 320.0;
+        // The detector's line, all take long. The mark will declare F5 = 77 — an
+        // interval away, and the whole point.
+        const LINE_MIDI: f32 = 69.0;
+        const DECLARED: u8 = 77;
+
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(LINE_MIDI));
+        loaded.marks.push(NoteMark::new(
+            2.0,
+            4.0,
+            Declaration::parse("F5").unwrap(),
+            MarkedAgainst::Evidence,
+        ));
+        // The framing counts the marks (see `reframe`) — without this the window is
+        // 62..76, framed on the detector's A4, and F5 at 77 is off the top edge. That is
+        // the bug this test found.
+        loaded.reframe();
+        let playhead_t = loaded.playhead_t().unwrap();
+        let time = loaded.time_axis(playhead_t);
+        let (view_lo, view_hi) = (loaded.view_lo, loaded.view_hi);
+
+        // The rect is *recorded*, not assumed: kittest wraps the ui in a central panel
+        // with an 8 px outer margin, so the plot does not start at the screen's origin.
+        // Assuming it did put every assertion 8 px out — which this test still passed,
+        // by 0.6 px of slack. Measure the layout, do not derive it.
+        let mut harness = Harness::builder()
+            .with_pixels_per_point(1.0)
+            .with_size(egui::Vec2::new(RECT_W + 40.0, RECT_H + 40.0))
+            .build_ui_state(
+                move |ui, drawn: &mut Rect| {
+                    let (rect, _) = ui.allocate_exact_size(vec2(RECT_W, RECT_H), Sense::hover());
+                    *drawn = rect;
+                    let painter = ui.painter_at(rect);
+                    let map = pianoroll::RollMapping::new(rect, view_lo, view_hi, time);
+                    pianoroll::draw_pitch_roll(
+                        &painter,
+                        rect,
+                        &loaded.columns(playhead_t, RollLayer::Spectrum),
+                        43,
+                        96,
+                        view_lo,
+                        view_hi,
+                        time,
+                        AccidentalStyle::Sharps,
+                        false, // marking: the mirror is off
+                    );
+                    loaded.draw_marks(&painter, map, playhead_t);
+                },
+                Rect::ZERO,
+            );
+        harness.run_steps(3);
+        let img = harness.render().expect("wgpu render failed");
+        let rect = *harness.state();
+
+        // Violet ink: strongly red+blue, clearly less green. Nothing else in the roll
+        // can produce it — the heat is blue-dominant with little red, the grid is grey.
+        let violet_rows: Vec<u32> = (0..img.height())
+            .filter(|&y| {
+                (0..img.width()).any(|x| {
+                    let p = img.get_pixel(x, y).0;
+                    p[0] > 110
+                        && p[2] > 150
+                        && (p[0] as i32 - p[1] as i32) > 45
+                        && (p[2] as i32 - p[1] as i32) > 45
+                })
+            })
+            .collect();
+        assert!(
+            !violet_rows.is_empty(),
+            "the mark was not painted at all — nothing violet in the render"
+        );
+
+        // Where the mark landed, back in MIDI — against the rect the layout actually used.
+        let map = pianoroll::RollMapping::new(rect, view_lo, view_hi, time);
+        let (top, bottom) = (
+            *violet_rows.iter().min().unwrap() as f32,
+            *violet_rows.iter().max().unwrap() as f32,
+        );
+        let center_y = 0.5 * (top + bottom);
+        let declared_y = map.y_of(DECLARED as f32);
+        let line_y = map.y_of(LINE_MIDI);
+
+        println!("\n=== where the mark landed ===");
+        println!("  violet rows : {top}..{bottom} (centre {center_y:.1})");
+        println!("  F5 (declared, {DECLARED}) row : y = {declared_y:.1}");
+        println!("  A4 (the line, {LINE_MIDI}) row : y = {line_y:.1}");
+
+        // Two pixels, not "about a bar's height": the mark is centred on its row, so the
+        // ink is symmetric about it and this can afford to be exact. A loose bound here
+        // passed while the whole picture sat 8 px off, and said nothing.
+        assert!(
+            (center_y - declared_y).abs() < 2.0,
+            "the mark is painted at y={center_y:.1}; F5 — what the player DECLARED — is \
+             the row at y={declared_y:.1}"
+        );
+        assert!(
+            (center_y - line_y).abs() > MARK_BAR_H * 2.0,
+            "the mark landed on the detector's own row (y={line_y:.1}) — the declaration \
+             is being ignored, which is the one failure this whole feature exists to \
+             prevent"
         );
     }
 

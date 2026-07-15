@@ -439,6 +439,9 @@ impl App {
                         self.pitch_roll.view_hi,
                         LIVE_TIME_AXIS,
                         style,
+                        // The live roll IS the line: it is the mirror you play into, and
+                        // there is nothing here to contaminate — see `app::take_marks`.
+                        true,
                     );
                     return;
                 };
@@ -452,6 +455,7 @@ impl App {
                     self.pitch_roll.view_hi,
                     LIVE_TIME_AXIS,
                     style,
+                    true,
                 );
             });
     }
