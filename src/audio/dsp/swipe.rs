@@ -959,6 +959,78 @@ mod tests {
     }
 }
 
+/// PROBE: **F5 falls into F4** — the live report, and the kickstart's open question.
+///
+/// The kickstart records it on a synthetic A5: `s(A4)` overtakes `s(A5)` after ~136 ms, and
+/// the mechanism is *not proven*. The field report is F5 → F4, same shape. The 136 ms is
+/// the tell — it is not a scoring result, it is a **time** result: the kernel is a fixed
+/// vector, so a static column cannot produce it. Something upstream must be changing, which
+/// means the bank, not SWIPE′.
+///
+/// So this drives the real bank and prints the two candidates *per frame*. Two tones,
+/// because the report named flageolets: a bowed F5 (partials) and a near-pure F5 (a
+/// flageolet is close to a sine — a stopped node kills the modes that are not multiples).
+#[cfg(test)]
+mod sub_octave_in_time_probe {
+    use super::*;
+    use crate::audio::dsp::analysis_math::{
+        NOTE_BUCKET_MIN_MIDI,
+        SPIRAL_BINS_PER_SEMITONE,
+    };
+    use crate::audio::dsp::resonator::ResonatorAnalyzer;
+    use crate::core_types::note::AccidentalStyle;
+
+    fn tone(frequency_hz: f32, sample_rate: f32, len: usize, partials: &[f32]) -> Vec<f32> {
+        (0..len)
+            .map(|i| {
+                let t = i as f32 / sample_rate;
+                partials
+                    .iter()
+                    .enumerate()
+                    .map(|(h, a)| a * (TAU * frequency_hz * (h + 1) as f32 * t).sin())
+                    .sum::<f32>()
+                    / 3.0
+            })
+            .collect()
+    }
+
+    #[test]
+    fn does_f5_fall_into_f4_and_when() {
+        let sr = 48_000.0f32;
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        let min_midi = NOTE_BUCKET_MIN_MIDI as f32;
+        let bin_of = |midi: f32| ((midi - min_midi) * bps).round() as usize;
+
+        for (label, partials) in [
+            ("bowed F5 (partials)", &[1.0f32, 0.8, 0.6, 0.35, 0.2][..]),
+            ("pure F5 (flageolet-ish)", &[1.0f32][..]),
+        ] {
+            let mut analyzer = ResonatorAnalyzer::new(sr);
+            let samples = tone(698.46, sr, (sr * 0.5) as usize, partials); // F5 = MIDI 77
+            let hop = (sr * 0.016) as usize;
+            let mut fed = 0usize;
+
+            println!("\n=== {label} — does F4 overtake F5, and when? ===");
+            println!("   t(ms)     s(F5)     s(F4)   winner");
+            while fed + hop <= samples.len() {
+                analyzer.process_samples(&samples[fed..fed + hop], true);
+                fed += hop;
+                let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
+                let Some(frame) = snapshot.salience.as_ref() else {
+                    continue;
+                };
+                let f5 = frame.salience_at(bin_of(77.0));
+                let f4 = frame.salience_at(bin_of(65.0));
+                let t_ms = fed as f32 / sr * 1000.0;
+                println!(
+                    "  {t_ms:6.0}  {f5:8.4}  {f4:8.4}   {}",
+                    if f5 > f4 { "F5" } else { "F4  <-- SUB-OCTAVE" }
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod low_register_probe {
     //! Why does a bowed G3 ever score C0..C2? Live report: the pitch roll plunges
