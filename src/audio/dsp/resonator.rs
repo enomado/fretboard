@@ -10,9 +10,12 @@ use super::analysis_math::{
     NOTE_BUCKET_MIN_MIDI,
     SPIRAL_BINS_PER_SEMITONE,
     normalize_bars,
-    resonator_fundamental,
     resonator_note_labels,
     splat_linear,
+};
+use super::swipe::{
+    SwipeKernel,
+    pick_fundamental,
 };
 use crate::audio::types::AnalysisSettings;
 use crate::core_types::note::AccidentalStyle;
@@ -65,11 +68,6 @@ pub(crate) struct ResonatorViewSettings {
     reference_hz:      f32,
 }
 
-// A resonator bin below this normalized magnitude is noise rather than a partial —
-// the floor for picking the played fundamental. Same idea (and value) as the
-// staff panel's `RES_WF_GATE` paint threshold.
-const FUNDAMENTAL_FLOOR: f32 = 0.18;
-
 #[derive(Clone, Debug)]
 pub(crate) struct ResonatorSnapshot {
     pub(crate) spectrum:    Vec<f32>,
@@ -94,6 +92,13 @@ pub(crate) struct ResonatorAnalyzer {
     detuning_hz: Vec<f32>,
     pending:     usize,
     have_phase:  bool,
+
+    // SWIPE′ kernels — fixed vectors, so they are built once per grid rather than per
+    // frame (see `dsp::swipe`). Two, because the two snapshot paths score on two
+    // different grids: the reassigned path on the fixed `OUTPUT_BINS_PER_SEMITONE`, the
+    // rollback path on the bank's own user-adjustable resolution.
+    swipe_output: SwipeKernel,
+    swipe_bank:   SwipeKernel,
 }
 
 impl ResonatorViewSettings {
@@ -137,6 +142,7 @@ impl From<&AnalysisSettings> for ResonatorViewSettings {
 impl ResonatorAnalyzer {
     pub(crate) fn new(sample_rate: f32) -> Self {
         let settings = ResonatorViewSettings::default();
+        let settings_bins = settings.bins_per_semitone;
         let bank = build_resonator_bank(sample_rate, &settings);
         let n = bank.len();
         Self {
@@ -147,12 +153,18 @@ impl ResonatorAnalyzer {
             detuning_hz: vec![0.0; n],
             pending: 0,
             have_phase: false,
+            swipe_output: SwipeKernel::new(OUTPUT_BINS_PER_SEMITONE as f32),
+            swipe_bank: SwipeKernel::new(settings_bins as f32),
         }
     }
 
     pub(crate) fn sync_settings(&mut self, requested: ResonatorViewSettings) -> bool {
         if requested == self.settings {
             return false;
+        }
+        // The bank's resolution is user-adjustable, and the kernel is cut to a grid.
+        if requested.bins_per_semitone != self.settings.bins_per_semitone {
+            self.swipe_bank = SwipeKernel::new(requested.bins_per_semitone as f32);
         }
         self.settings = requested;
         self.bank = build_resonator_bank(self.sample_rate, &self.settings);
@@ -230,7 +242,15 @@ impl ResonatorAnalyzer {
     }
 
     pub(crate) fn snapshot(&self, reassign: bool, style: AccidentalStyle) -> ResonatorSnapshot {
-        resonator_snapshot(&self.bank, &self.settings, &self.detuning_hz, reassign, style)
+        resonator_snapshot(
+            &self.bank,
+            &self.settings,
+            &self.detuning_hz,
+            reassign,
+            style,
+            &self.swipe_bank,
+            &self.swipe_output,
+        )
     }
 
     pub(crate) fn note_labels(&self, style: AccidentalStyle) -> Vec<String> {
@@ -278,6 +298,8 @@ fn resonator_snapshot(
     detuning_hz: &[f32],
     reassign: bool,
     style: AccidentalStyle,
+    swipe_bank: &SwipeKernel,
+    swipe_output: &SwipeKernel,
 ) -> ResonatorSnapshot {
     // Fallback (safety net): plain per-bin magnitude at the bin's nominal pitch,
     // at the bank's own resolution. This is the original, pre-reassignment path —
@@ -288,13 +310,17 @@ fn resonator_snapshot(
         } else {
             bank.magnitudes()
         };
-        normalize_bars(&mut spectrum, settings.gamma);
-        let fundamental = resonator_fundamental(
+        // Score BEFORE `normalize_bars`: `gamma` and `power` are display controls (a
+        // waterfall-contrast slider, `controls.rs`), and a display knob must not steer
+        // the octave decision — which it did, for as long as this line came second.
+        // SWIPE does its own warping (√), and it is not negotiable by the UI.
+        let fundamental = pick_fundamental(
             &spectrum,
             settings.min_midi as f32,
             settings.bins_per_semitone as f32,
-            FUNDAMENTAL_FLOOR,
+            swipe_bank,
         );
+        normalize_bars(&mut spectrum, settings.gamma);
         return ResonatorSnapshot {
             spectrum,
             note_labels: settings.note_labels(style),
@@ -334,13 +360,15 @@ fn resonator_snapshot(
         splat_linear(&mut spectrum, position, weight * gate);
     }
 
-    normalize_bars(&mut spectrum, settings.gamma);
-    let fundamental = resonator_fundamental(
+    // Same rule as the rollback path above: the detector reads the bank's own column,
+    // the display gets its `gamma` afterwards.
+    let fundamental = pick_fundamental(
         &spectrum,
         settings.min_midi as f32,
         OUTPUT_BINS_PER_SEMITONE as f32,
-        FUNDAMENTAL_FLOOR,
+        swipe_output,
     );
+    normalize_bars(&mut spectrum, settings.gamma);
     ResonatorSnapshot {
         spectrum,
         note_labels: settings.note_labels(style),
@@ -509,7 +537,38 @@ mod tests {
         let snap = an.snapshot(true, AccidentalStyle::Sharps);
         let (midi, strength) = snap.fundamental.expect("fundamental should be detected");
         assert!((midi - 69.0).abs() < 0.2, "expected ~A4 (69), got {midi}");
-        assert!(strength > FUNDAMENTAL_FLOOR);
+        // `strength` changed meaning with `dsp::swipe`: it used to be the fundamental
+        // bin's own magnitude against `FUNDAMENTAL_FLOOR` — a quantity that reads ~0 for
+        // a perfectly clear open G, which is the defect SWIPE′ exists to fix. It is now
+        // SWIPE's pitch strength: how well a harmonic series at this f0 explains the
+        // whole spectrum.
+        //
+        // Its *absolute* scale does not carry over from the paper, and no threshold is
+        // asserted here on purpose. SWIPE normalizes by the norm of the entire spectrum;
+        // Camacho's is a narrow FFT band, ours is 480 resonators spanning C0..C8 whose
+        // skirts spread energy across far more bins, so the same tone scores lower here
+        // than the paper's 0..1 intuition suggests (measured: ~0.15 for this tone). Any
+        // fixed number here would be invented rather than derived.
+        //
+        // What *is* meaningful is the comparison, so assert that instead: a harmonic tone
+        // must out-score noise through the same bank, which is the only claim the quantity
+        // actually supports.
+        let mut noisy = ResonatorAnalyzer::new(sr);
+        // Deterministic pseudo-noise — no rand dependency, and a fixed sequence keeps the
+        // test reproducible.
+        let noise: Vec<f32> = (0..sr as usize)
+            .map(|i| ((i as f32 * 12.9898).sin() * 43758.547).fract() * 2.0 - 1.0)
+            .collect();
+        noisy.process_samples(&noise, true);
+        let noise_strength = noisy
+            .snapshot(true, AccidentalStyle::Sharps)
+            .fundamental
+            .map(|(_, s)| s)
+            .unwrap_or(0.0);
+        assert!(
+            strength > noise_strength,
+            "a harmonic tone ({strength}) must out-score noise ({noise_strength})"
+        );
     }
 
     /// Empty / silent input must not panic and yields an all-zero spiral.

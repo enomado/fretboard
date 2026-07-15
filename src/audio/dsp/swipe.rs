@@ -44,6 +44,8 @@
 
 use std::f32::consts::TAU;
 
+use super::analysis_math::parabolic_tau;
+
 /// Harmonics the SWIPE′ kernel keeps: `{1} ∪ primes`.
 ///
 /// The ceiling is **not** a tuning knob — it falls out of the grid. Lobe `h` spans
@@ -74,6 +76,7 @@ fn lobe_weight(r: f32, h: usize) -> f32 {
 }
 
 /// A SWIPE′ kernel sampled once onto a log-frequency grid.
+#[derive(Debug)]
 pub(crate) struct SwipeKernel {
     /// `weights[j]` applies at bin offset `first_offset + j` from the candidate's bin.
     /// Already carries the `1/√r` envelope (SWIPE's harmonic decay, `p = 1/2` — the
@@ -181,6 +184,134 @@ impl SwipeKernel {
     pub(crate) fn salience_curve(&self, warped: &[f32]) -> Vec<f32> {
         (0..warped.len()).map(|bin| self.salience(warped, bin)).collect()
     }
+}
+
+/// Bins searched either side of a partial's predicted position when reading its fine
+/// frequency.
+///
+/// Not a tolerance to tune: the salience's own refine is clamped to ±½ bin, and a
+/// log-frequency axis shifts *every* harmonic of a candidate by the same amount, so one
+/// bin covers the coarse estimate's whole error for all of them. The second bin covers
+/// [`splat_linear`]'s two-bin footprint.
+///
+/// [`splat_linear`]: super::analysis_math::splat_linear
+const PARTIAL_SEARCH_BINS: isize = 2;
+
+/// Fine pitch for an already-decided harmonic series: read the frequency off the
+/// **strongest partial** and divide by its harmonic number.
+///
+/// Two things this deliberately does *not* do, both of which were tried and measured:
+///
+/// - **Not the salience curve's apex.** That curve's peak is *broad* — the h=1 lobe alone
+///   spans 71 bins at 8 bins/semitone — so its parabolic apex sits nowhere near a
+///   partial's true position. Refining it throws away exactly the sub-bin precision the
+///   Δφ reassignment exists to provide; measured at **23 cents** of error on a clean A4,
+///   against a 20-cent budget (`resonator::fundamental_on_harmonic_tone_resolves_to_root`).
+/// - **Not the fundamental's own peak** (what the old comb refined). That is the one
+///   partial this app cannot rely on: on a bowed G it is nearly absent, which is the whole
+///   reason SWIPE′ is here.
+///
+/// So the two jobs are split by what each source is actually good at: SWIPE′ says *which*
+/// harmonic series, and the loudest member of that series — whichever it turns out to be —
+/// says *exactly where*. On an open G that is the 2nd harmonic at 392 Hz, loud and cleanly
+/// reassigned, which yields **better** cents than the old code could ever read off the
+/// 196 Hz fundamental it insisted on.
+///
+/// The estimator is a **centroid**, not a parabola, because of how the energy got here:
+/// `splat_linear` distributes each resonator's magnitude *linearly* across two bins at its
+/// reassigned position, and many resonators splat into the same neighbourhood. The
+/// energy-weighted mean of that blob is precisely the mean reassigned frequency — which is
+/// what the reassignment measured in the first place. A parabola would assume a symmetric
+/// peak shape that a linear splat does not have (for a lone partial at bin 100.3 it
+/// returns 99.93; the centroid returns 100.3).
+fn refine_on_partials(magnitudes: &[f32], coarse_bin: f32, bins_per_semitone: f32) -> f32 {
+    let bins_per_octave = 12.0 * bins_per_semitone;
+    let mut best_magnitude = 0.0f32;
+    let mut best_f0_bin = coarse_bin;
+
+    for &h in &HARMONICS {
+        let harmonic_offset = bins_per_octave * (h as f32).log2();
+        let centre = (coarse_bin + harmonic_offset).round() as isize;
+        let low = (centre - PARTIAL_SEARCH_BINS).max(0);
+        let high = (centre + PARTIAL_SEARCH_BINS).min(magnitudes.len() as isize - 1);
+        if high < low {
+            continue;
+        }
+
+        let mut weight_sum = 0.0f32;
+        let mut weighted_bin = 0.0f32;
+        let mut peak = 0.0f32;
+        for bin in low..=high {
+            let magnitude = magnitudes[bin as usize];
+            weight_sum += magnitude;
+            weighted_bin += magnitude * bin as f32;
+            peak = peak.max(magnitude);
+        }
+        // Compare partials by their peak, not their summed window: the sum grows with
+        // whatever noise shares the window, the peak is the partial itself.
+        if weight_sum <= 0.0 || peak <= best_magnitude {
+            continue;
+        }
+        best_magnitude = peak;
+        best_f0_bin = weighted_bin / weight_sum - harmonic_offset;
+    }
+    best_f0_bin
+}
+
+/// The played fundamental for one bank column: `(fractional_midi, pitch_strength)`.
+///
+/// This is the engine's entry point and the replacement for
+/// `analysis_math::resonator_fundamental`. `magnitudes` must be the bank's **raw**
+/// column — *not* the display's `gamma`-warped copy (see the module docs).
+///
+/// Differences from what it replaces, all of them consequences of the algorithm rather
+/// than choices:
+///
+/// - **No floor.** Nothing requires the candidate's own bin to carry energy, because on
+///   the instrument this app is for, it frequently does not.
+/// - **The refine happens on the salience curve, not on the spectrum.** The old code
+///   parabola-refined the fundamental's own spectral peak, which is meaningless when
+///   that peak is absent. SWIPE refines its own strength curve — thesis Chapter 5:
+///   *"compute a coarse pitch strength curve and then fine tune it by using parabolic
+///   interpolation"*.
+/// - **`pitch_strength` means something different, and better.** It used to be "how loud
+///   is the fundamental's bin" — which reads ~0 for a perfectly clear open G. It is now
+///   the normalized inner product: *how well does a harmonic series at this f0 explain
+///   the whole spectrum*, in 0..1. That is what a confidence should mean.
+///
+/// Returns `None` only for an empty column. Silence is **not** this function's job — the
+/// engine gates the melody on `level` upstream (`core::MELODY_LEVEL_GATE`), and a second
+/// opinion here would just be a magic number in a new place.
+pub(crate) fn pick_fundamental(
+    magnitudes: &[f32],
+    min_midi: f32,
+    bins_per_semitone: f32,
+    kernel: &SwipeKernel,
+) -> Option<(f32, f32)> {
+    let warped = sqrt_warp(magnitudes);
+    let norm = spectrum_norm(&warped);
+    if norm <= 0.0 {
+        return None;
+    }
+    let curve = kernel.salience_curve(&warped);
+    let (peak_bin, &peak) = curve
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.total_cmp(b))
+        .unwrap();
+    if peak <= 0.0 {
+        return None;
+    }
+    // The salience decides the harmonic series, to within its own grid: parabola-refined
+    // and clamped to ±½ bin, because a peak that is not a clean local extremum must not
+    // fling the estimate across the grid. This is a *coarse* f0 — good enough to identify
+    // the series, nowhere near good enough for cents.
+    let coarse = parabolic_tau(&curve, peak_bin).clamp(peak_bin as f32 - 0.5, peak_bin as f32 + 0.5);
+    // The partials decide the frequency. See `refine_on_partials` for why this is a
+    // separate step and not a refinement of the line above.
+    let refined = refine_on_partials(magnitudes, coarse, bins_per_semitone);
+    let midi = min_midi + refined / bins_per_semitone;
+    Some((midi, (peak / norm).clamp(0.0, 1.0)))
 }
 
 /// SWIPE's spectral warping: the **square root** of the magnitude.
@@ -391,17 +522,11 @@ mod tests {
     #[test]
     #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
     fn real_violin_g_probe() {
-        // `ResonatorViewSettings::default().gamma` — the *display's* contrast, which the
-        // shipped `resonator_snapshot` bakes into the column before scoring it. Undone
-        // below to recover the bank's own magnitudes; see design §1.4 for why a display
-        // knob must not reach a detector in the first place.
-        const DISPLAY_GAMMA: f32 = 0.72;
         const G3_MIDI: f32 = 55.0;
         const G4_MIDI: f32 = 67.0;
 
         let bps = SPIRAL_BINS_PER_SEMITONE as f32;
         let min_midi = NOTE_BUCKET_MIN_MIDI as f32;
-        let kernel = SwipeKernel::new(bps);
 
         for name in ["g_open_slow_strokes", "g_open_fast_strokes", "g_open_real_octave"] {
             let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
@@ -427,7 +552,13 @@ mod tests {
                 fed += hop;
                 let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
 
-                let Some((old_midi, _strength)) = snapshot.fundamental else {
+                // The OLD comb, fed exactly what it was fed in production: the column
+                // *after* `normalize_bars(gamma)`, with the shipped 0.18 floor. That is
+                // why `resonator_fundamental` is still alive — it is the oracle, and it
+                // goes when this probe does.
+                let Some((old_midi, _strength)) =
+                    resonator_fundamental(&snapshot.spectrum, min_midi, bps, 0.18)
+                else {
                     old_silent += 1;
                     continue;
                 };
@@ -440,25 +571,9 @@ mod tests {
                     old_other += 1;
                 }
 
-                // Undo the display's gamma to recover the bank's magnitudes up to the
-                // column max: `normalize_bars` computes `(v/max)^gamma` and the clamp is a
-                // no-op because `max` is the max. The residual `1/max` is a global scale,
-                // and SWIPE's numerator is linear in `√|X|` with a candidate-independent
-                // denominator, so it cannot move the argmax.
-                let magnitudes: Vec<f32> = snapshot
-                    .spectrum
-                    .iter()
-                    .map(|v| v.powf(1.0 / DISPLAY_GAMMA))
-                    .collect();
-                let warped = sqrt_warp(&magnitudes);
-                let curve = kernel.salience_curve(&warped);
-                let best = curve
-                    .iter()
-                    .enumerate()
-                    .max_by(|(_, a), (_, b)| a.total_cmp(b))
-                    .map(|(bin, _)| bin)
-                    .unwrap();
-                let new_midi = min_midi + best as f32 / bps;
+                // The NEW scorer, straight off the production snapshot — this probe now
+                // measures the wired engine, not a re-implementation of it.
+                let new_midi = snapshot.fundamental.unwrap().0;
                 new_verdicts.push(new_midi);
                 if near(new_midi, G3_MIDI) {
                     new_g3 += 1;
