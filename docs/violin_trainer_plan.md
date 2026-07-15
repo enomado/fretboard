@@ -695,9 +695,27 @@ Two knowing cosmetic deltas are listed in the commit message (cell width reads
 `px_per_second` directly; note names are drawn after all the heads, so the header row
 stays readable where a high head reaches into it). Tests 112 → 116.
 
-### Phase 1.11 — SWIPE′ salience: the octave decision by construction  ⬜ DESIGNED, NOT BUILT
+### Phase 1.11 — SWIPE′ salience: the octave decision by construction  ✅ DONE — measured on a real violin
+Landed `e318f83` (kernel + evidence), `6d8294e` (real-audio probe), `c05fdc9` (wired).
 Design: [`swipe_salience_design.md`](swipe_salience_design.md). Triggered by a live
 report — **on the G string, bow strokes throw the pitch to the phantom octave**.
+
+> **This one is not "built, not live-verified".** The user recorded their own violin
+> (`testdata/`, three takes: slow strokes, fast strokes, a deliberate octave) through the
+> same PulseAudio source the app captures from. Both scorers run on the **same column of
+> the same bank frame**, so the only variable is the scoring:
+>
+> | | OLD comb | SWIPE′ |
+> |---|---|---|
+> | slow strokes | G3 33.7% · **phantom G4 57.2%** | G3 73.5% · **G4 0.0%** |
+> | fast strokes | G3 **1.4%** · phantom G4 43.3% | G3 79.0% · G4 0.3% |
+> | real octave | G3 7.8% · G4 47.3% | G3 41.6% · **G4 14.2%** |
+>
+> On slow strokes the shipped comb called the phantom **more often than the truth**; on
+> fast strokes it was right in **1.4%** of frames. The third take is the control that
+> keeps this honest — SWIPE′ *does* report G4 there, so this is a discriminator and not
+> an octave bias. (It also caught the user playing the octave a semitone sharp, reported
+> as G#4 — the app doing its actual job.)
 
 **The literature describes our bug literally, and on our frequencies.** Camacho's SWIPE
 thesis enumerates three scorings (Fig. 3-13): positive lobes only → *"peaks at sub and
@@ -767,10 +785,57 @@ G3, and today's code cannot pass — at 0.08 the fundamental never even becomes 
 Sweeping the fundamental to *exactly zero* and asserting the decision holds is the "by
 construction" claim made falsifiable. Full checklist in the design, §7.
 
-**Biggest risk, decide before cutting** (design §4.3, §8): the reassigned column is spiky
-where SWIPE expects a dense √-spectrum. The valleys should still collect the odd
-harmonics — that is where the reassigned spikes are — but measure it on a real column
-before building the rest.
+**§4.3 — the risk that could have sunk this — is answered.** The reassigned column is
+spiky where SWIPE expects a dense √-spectrum; the valleys fire on it anyway, because that
+is exactly where the reassigned spikes of the odd harmonics land.
+
+**Two things the tests caught, both real:**
+
+1. **Cents (fixed).** Refining the *salience curve's* apex threw away the reassignment's
+   sub-bin precision — that curve's peak is broad (the h=1 lobe alone spans 71 bins), so
+   its apex is nowhere near a partial. Measured **23 cents** of error against a 20-cent
+   budget. The fix splits the jobs by what each source is good at: **SWIPE′ says which
+   harmonic series, the loudest member of that series says exactly where.** On a bowed G
+   that is the 2nd harmonic — loud and cleanly reassigned — so cents come out *better*
+   than the old code could read off the 196 Hz fundamental it insisted on. Estimator is a
+   centroid, not a parabola: `splat_linear` spreads energy linearly over two bins and a
+   parabola assumes a symmetry that is not there.
+2. **Latency — an accepted trade, not a silent one.** The valleys that kill the phantom
+   also punish a *real* leap while the old note still rings in the bank: its partials sit
+   in the new candidate's valleys and vote against it, and until the bank decays they are
+   **right**. Two independent costs, and the numbers separate them cleanly:
+   - **geometry** — the octave is worst (every partial of A4 feeds A5's valleys): 56 ms,
+     against 13 ms for a fifth from the same note;
+   - **register** — A4→E5 and G3→D4 are the *same* fifth, identical kernel geometry, and
+     measure 13 ms vs 80 ms. The bank is constant-Q, so its ring-down is a fixed number of
+     *cycles* — longer in seconds down low.
+
+   Budgets raised deliberately, with the reasoning in the tests: bank 40 → 75 (octave) /
+   100 (low register); end-to-end 60 → 130 (low register), octave 100 → 130. Knowingly
+   past the ~40 ms perceptual threshold. **The scorer this replaced answered in 8–29 ms
+   and was wrong on 57% of a real open G's frames.** These are budgets, not targets:
+   shrinking them means the bank's ring-down (`heuristic_alpha`, a time/frequency trade),
+   never a weaker kernel.
+
+**⏳ The payoff not yet taken — and the reason to record it here.** The octave's 120 ms is
+the bank's 56 ms **plus `LEAP_CONFIRM_FRAMES` × 16 ms = 64 ms**. That second term exists
+for exactly one job: telling a real octave leap from *the bank slipping an octave*. SWIPE′
+does not slip — 0 of 612 frames on a real bowed G. So **more than half the octave's
+latency is now a guard against a bug that no longer happens**, and deleting it should
+bring the octave to ~72 ms, better than it has ever been. The rest of the repair layer
+(`snap_to_anchor_octave`, `YIN_OCTAVE_CONFIDENCE`, `OCTAVE_AGREE_SEMITONES`, `OctaveGate`)
+goes the same way, and with it the melody path's dependency on the slow pYIN anchor.
+
+**Not done, on purpose.** The evidence is *one string* — the open G, which is where the
+phantom lived. Retiring the guard for the whole range on that basis would be this plan's
+own recurring mistake, the one Phases 1.4–1.6 and the `ATTACK_BANK_WEIGHT` doc both made:
+a number verified in one condition, restated as a property. **Next step: recordings of the
+D, A and E strings** — then the layer comes out with evidence behind it.
+
+**Still open:** the low-register junk SWIPE′ reports on the strokes takes (G2 ~4%, then
+scattered C0–E1). The bank offers candidates down to C0 = 16 Hz, where no violin plays and
+where the plan already suspects a sub-bass ghost. That is a candidate-range question and
+must **not** be answered with a violin-shaped magic floor.
 
 ### Phase 1.12 — the two "cheap debts", and what measuring them actually found  ✅ DONE
 The handoff listed two cheap cleanups. Both were done — and **both write-ups were

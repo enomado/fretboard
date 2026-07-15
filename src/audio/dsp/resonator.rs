@@ -450,19 +450,49 @@ mod tests {
         // Comfortably under pYIN's 128 ms, with headroom over the ~40 ms perceptual
         // threshold so this fails on a real regression, not on measurement noise.
         const BUDGET_MS: f32 = 40.0;
+        // Two cases pay more, and Phase 1.11 (`dsp::swipe`) is why. SWIPE′ asks whether a
+        // harmonic series *explains* the column, valleys included — so while the old note
+        // rings on in the bank, its partials sit in the new candidate's valleys and vote
+        // against it. They are not wrong: it really is still sounding. That is the same
+        // mechanism that took the phantom octave from 57% of frames to 0% on a real bowed
+        // G, so this is the price of the fix rather than a defect in it.
+        //
+        // The two costs are independent, which is why there are two numbers:
+        //   * GEOMETRY — the octave is the worst interval, because every partial of A4
+        //     feeds A5's valleys. 56 ms measured, against 13 ms for a fifth from the very
+        //     same note.
+        //   * REGISTER — A4->E5 and G3->D4 are the same fifth (identical kernel geometry)
+        //     yet measure 13 ms and 80 ms. The bank is constant-Q: its ring-down is a
+        //     roughly fixed number of *cycles*, so it lasts longer in seconds down low.
+        //
+        // Both are knowingly past the ~40 ms perceptual threshold — the accepted trade,
+        // recorded in the plan (Phase 1.11). These are budgets, not targets: shrinking
+        // them means the bank's ring-down (a time/frequency trade in `heuristic_alpha`),
+        // never a weaker kernel.
+        const OCTAVE_BUDGET_MS: f32 = 75.0;
+        const LOW_REGISTER_BUDGET_MS: f32 = 100.0;
         println!("\n=== resonator bank note-change latency (pYIN = 128 ms) ===");
-        for (name, from, to) in [
-            ("A4->B4 (2nd)  ", 440.0f32, 493.88f32),
-            ("A4->E5 (5th)  ", 440.0, 659.25),
-            ("A4->A5 (8ve)  ", 440.0, 880.0),
-            ("E5->A4 (down) ", 659.25, 440.0),
-            ("G3->D4 (violin G->D)", 196.0, 293.66),
-        ] {
-            let ms = probe(from, to);
-            println!("{name} -> {ms:>7.1} ms");
+        let cases = [
+            ("A4->B4 (2nd)  ", 440.0f32, 493.88f32, BUDGET_MS),
+            ("A4->E5 (5th)  ", 440.0, 659.25, BUDGET_MS),
+            ("A4->A5 (8ve)  ", 440.0, 880.0, OCTAVE_BUDGET_MS),
+            ("E5->A4 (down) ", 659.25, 440.0, BUDGET_MS),
+            ("G3->D4 (violin G->D)", 196.0, 293.66, LOW_REGISTER_BUDGET_MS),
+        ];
+        // Measure every case before asserting any: a probe that dies on the first
+        // failure hides the shape of a regression behind its first symptom, and the
+        // shape is the diagnosis.
+        let measured: Vec<(&str, f32, f32)> = cases
+            .iter()
+            .map(|&(name, from, to, budget)| (name, probe(from, to), budget))
+            .collect();
+        for (name, ms, budget) in &measured {
+            println!("{name} -> {ms:>7.1} ms  (budget {budget:.0})");
+        }
+        for (name, ms, budget) in &measured {
             assert!(
-                ms <= BUDGET_MS,
-                "{name}: bank took {ms:.1} ms, budget {BUDGET_MS:.0} ms — the melody \
+                ms <= budget,
+                "{name}: bank took {ms:.1} ms, budget {budget:.0} ms — the melody \
                  line rides the bank precisely because it is this fast"
             );
         }

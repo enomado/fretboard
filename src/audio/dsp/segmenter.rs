@@ -295,19 +295,70 @@ mod tests {
         // slipping an octave (A4 and A5 are the same pitch class), so it additionally
         // pays `melody::LEAP_CONFIRM_FRAMES` × the bank's 16 ms cadence before the leap
         // is believed. That is the deliberate price of not re-breaking the octave
-        // wandering the snap exists to fix, and it is the *only* interval that pays it
-        // — it was 328 ms when the anchor was trusted outright.
-        const OCTAVE_BUDGET_MS: f32 = 100.0;
+        // wandering the snap exists to fix — it was 328 ms when the anchor was trusted
+        // outright.
+        //
+        // 130 ms since Phase 1.11, and the arithmetic is worth knowing because it points
+        // at the next fix rather than excusing this one: the measured 120 ms is the bank's
+        // 56 ms (see `resonator::bank_latency_probe` — the octave is the interval whose
+        // valleys the old note feeds longest) plus `LEAP_CONFIRM_FRAMES` × 16 ms = 64 ms.
+        //
+        // That second term is now **suspect**. It exists for exactly one job: telling a
+        // real octave leap from the *bank slipping an octave*, which no single frame can
+        // do because A4 and A5 share a pitch class. SWIPE′ does not slip: 0 of 612 frames
+        // on a real bowed open G (`swipe::real_violin_g_probe`). So more than half of this
+        // budget is a guard against a bug that no longer happens, and deleting it should
+        // bring the octave back to ~72 ms — better than it has ever been.
+        //
+        // It is NOT deleted yet, on purpose. The evidence is one string: the open G, which
+        // is where the phantom lived. Retiring the guard for the whole range on the
+        // strength of that would be this plan's own recurring mistake — a number verified
+        // in one condition, restated as a property. It needs recordings of the other
+        // strings first.
+        const OCTAVE_BUDGET_MS: f32 = 130.0;
+        // The LOW register pays too, and Phase 1.11 (`dsp::swipe`) is why.
+        //
+        // SWIPE′ decides a note by asking whether a harmonic series *explains* the
+        // column — including the energy in that candidate's valleys. While the old note
+        // is still ringing in the bank, its partials sit in the new candidate's valleys
+        // and vote against it. Until the bank decays they are not wrong: the old note
+        // really is still sounding. This is the same mechanism that took the phantom
+        // octave from 57% of frames to 0% on a real bowed G, so the cost is the price of
+        // the fix, not a defect in it.
+        //
+        // Why the register and not the interval: A4->E5 and G3->D4 are the *same* fifth,
+        // so the kernel geometry is identical — but they measure 13 ms and 80 ms in the
+        // bank. The bank is constant-Q, so its ring-down is a roughly fixed number of
+        // *cycles*, which is longer in seconds the lower you go. G3 is 196 Hz.
+        //
+        // 130 ms is the measurement (104 ms) plus headroom, and it is knowingly past the
+        // ~40 ms perceptual threshold. That is the accepted trade, recorded in the plan
+        // (Phase 1.11): the scorer this replaced answered in 8-29 ms and was wrong on
+        // 57% of the frames of a real open G. A fast wrong note is not a note.
+        //
+        // This is a budget, not a target. If it is ever *reached*, something regressed;
+        // the way to make it smaller is the bank's ring-down (a time/frequency trade in
+        // `heuristic_alpha`), not a weaker kernel.
+        const LOW_REGISTER_BUDGET_MS: f32 = 130.0;
         println!("\n=== melody end-to-end latency (what the user sees) ===");
-        for (name, from, to, budget) in [
+        let cases = [
             ("A4->B4  (2nd)  ", 440.0f32, 493.88f32, BUDGET_MS),
             ("A4->D5  (4th)  ", 440.0, 587.33, BUDGET_MS),
             ("A4->E5  (5th)  ", 440.0, 659.25, BUDGET_MS),
-            ("G3->D4  (violin G->D)", 196.0, 293.66, BUDGET_MS),
+            ("G3->D4  (violin G->D)", 196.0, 293.66, LOW_REGISTER_BUDGET_MS),
             ("A4->A5  (8ve)  ", 440.0, 880.0, OCTAVE_BUDGET_MS),
-        ] {
-            let ms = probe(from, to);
+        ];
+        // Measure everything before asserting anything: a probe that dies on its first
+        // failure hides the *shape* of a regression, and the shape is the diagnosis.
+        // (Exactly how Phase 1.11's two slow cases were told apart from each other.)
+        let measured: Vec<(&str, f32, f32)> = cases
+            .iter()
+            .map(|&(name, from, to, budget)| (name, probe(from, to), budget))
+            .collect();
+        for (name, ms, budget) in &measured {
             println!("{name} -> {ms:>7.1} ms  (budget {budget:.0})");
+        }
+        for (name, ms, budget) in &measured {
             assert!(
                 ms <= budget,
                 "{name}: the line took {ms:.1} ms to show the note, budget {budget:.0} ms"
