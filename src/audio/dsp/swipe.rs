@@ -322,6 +322,33 @@ impl SalienceFrame {
         self.curve[bin]
     }
 
+    /// A copy of the curve for a consumer that wants to *look* at the evidence rather than
+    /// decode it — the pitch roll's salience layer.
+    ///
+    /// Two properties, both load-bearing, neither of them cosmetic:
+    ///
+    /// - **Zeroed outside [`Self::tracked_bins`].** The grid spans the waterfall's C0..C8
+    ///   but candidates only ever come from the app's pitch domain, so salience below C1 is
+    ///   scored-but-never-eligible. Painting it would show a hump the decoder provably never
+    ///   considered, i.e. invent evidence. Zeroing keeps the **length** — the caller's
+    ///   bin→pitch mapping is derived from it (`ui::pianoroll::draw_heat`), so a trimmed
+    ///   curve would silently paint at the wrong pitch.
+    /// - **Raw, not normalized.** The scale is display's business (`normalize_bars` and its
+    ///   `gamma` live with the column this layer replaces); the scorer has no opinion about
+    ///   contrast. Zero *then* normalize, or an ineligible hump outside the domain would set
+    ///   the scale for the eligible ones inside it.
+    ///
+    /// Negative values survive on purpose: SWIPE′'s valleys are what punish 2·f0 (the whole
+    /// reason this scorer is here), and `normalize_bars` clamps them to 0 downstream — a
+    /// punished candidate should read as *absent*, not be quietly rectified into evidence.
+    pub(crate) fn curve_over_tracked(&self) -> Vec<f32> {
+        let mut out = vec![0.0f32; self.curve.len()];
+        if let Some(bins) = self.tracked_bins() {
+            out[bins.clone()].copy_from_slice(&self.curve[bins]);
+        }
+        out
+    }
+
     /// The bin holding `midi` on this grid, rounded. Bounds are the caller's problem: this
     /// grid spans the *waterfall's* C0..C8, and what lives outside the app's pitch domain is
     /// a question for `pitch::TRACKED_MIN_MIDI`, not for arithmetic.
@@ -482,6 +509,95 @@ mod tests {
             }
         }
         column
+    }
+
+    /// The display layer's contract with the renderer, which is **geometric** and fails
+    /// silently when broken.
+    ///
+    /// `ui::pianoroll::draw_heat` derives bins-per-semitone from the column's *length* —
+    /// deliberately, because that length changes with the reassignment toggle. So a curve
+    /// trimmed to the tracked domain would not draw a smaller picture, it would draw the
+    /// whole picture **at the wrong pitch**, with nothing anywhere to say so. Hence the
+    /// zeroing: same grid, same length, and what was never a candidate simply reads empty.
+    ///
+    /// The trimmed-vs-zeroed choice is invisible in every other test, which is why it gets
+    /// one of its own.
+    #[test]
+    fn the_display_curve_keeps_the_grid_and_zeroes_what_was_never_a_candidate() {
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        // The waterfall's C0 — pointedly *not* the tracker's floor. That gap is the whole
+        // subject of this test; if the two ever coincide it becomes vacuous, so it says so.
+        let min_midi = 12.0;
+        let kernel = SwipeKernel::new(bps);
+        let column = column_with_partials(196.0, &[0.08, 1.0, 0.7, 0.5], min_midi, bps);
+        let frame = SalienceFrame::score(&column, min_midi, bps, &kernel).unwrap();
+        let display = frame.curve_over_tracked();
+
+        assert_eq!(
+            display.len(),
+            column.len(),
+            "the renderer reads bin→pitch off this length; a short curve paints at the wrong note"
+        );
+
+        let first_tracked = ((TRACKED_MIN_MIDI - min_midi) * bps).ceil() as usize;
+        assert!(
+            first_tracked > 0,
+            "vacuous: the grid no longer reaches below the tracked domain"
+        );
+        assert!(
+            display[..first_tracked].iter().all(|&v| v == 0.0),
+            "salience painted below C1, where the decoder scores no candidate at all"
+        );
+        // Inside the domain it is the evidence itself — no smoothing, and above all no
+        // rectifying: a negative salience is a *punished* candidate (the valleys are why
+        // this scorer exists), and it must reach the display as such.
+        for bin in first_tracked..display.len() {
+            assert_eq!(
+                display[bin],
+                frame.salience_at(bin),
+                "bin {bin} was altered on the way to the display"
+            );
+        }
+    }
+
+    /// The layer has to be *legible*, and "broad" is not the same claim as "a solid wash".
+    ///
+    /// `ui::pianoroll::draw_heat` paints every bin over `HEAT_GATE` (0.16 of the column's
+    /// own max). The spectrum clears that in a handful of bins because partials are spikes;
+    /// SWIPE′'s curve is a 71-bin hump, so the honest worry is that normalizing it to its
+    /// own max floods the plot and the "layer" is a rectangle. This pins the actual number
+    /// so a future change to the kernel, the grid or the gate cannot quietly cross that line.
+    #[test]
+    fn the_display_curve_is_a_hump_and_not_a_wash() {
+        const HEAT_GATE: f32 = 0.16; // ui::pianoroll's, mirrored — it is private there
+
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        let min_midi = 12.0;
+        let kernel = SwipeKernel::new(bps);
+        let column = column_with_partials(196.0, &[0.08, 1.0, 0.7, 0.5, 0.4, 0.3, 0.22], min_midi, bps);
+        let frame = SalienceFrame::score(&column, min_midi, bps, &kernel).unwrap();
+        let mut display = frame.curve_over_tracked();
+        crate::audio::dsp::analysis_math::normalize_bars(&mut display, 0.72); // the default gamma
+
+        let painted = display.iter().filter(|&&v| v >= HEAT_GATE).count();
+        let share = painted as f32 / display.len() as f32;
+        let semitones = painted as f32 / bps;
+        println!("\n=== violin open G, the salience layer as painted ===");
+        println!(
+            "  bins over the gate : {painted} / {} ({:.1}%)",
+            display.len(),
+            share * 100.0
+        );
+        println!(
+            "  = {semitones:.1} semitones of the {:.0}-semitone grid",
+            display.len() as f32 / bps
+        );
+
+        assert!(
+            share < 0.5,
+            "the salience layer painted {:.0}% of the grid — that is a wash, not a picture",
+            share * 100.0
+        );
     }
 
     /// **The golden test.** A violin open G: the body barely radiates 196 Hz, so the

@@ -645,6 +645,15 @@ fn publish_resonator_snapshot(
             pitch: melody_pitch.map(|(midi, _)| midi),
             level,
             heat: resonator_spectrum.clone(),
+            // The scorer's own view of this same column, for the roll's debug layer. Taken
+            // from the snapshot rather than re-scored: re-running SWIPE′ for the picture
+            // would make the picture a *different* frame's evidence, drawn under a line it
+            // did not decide — which is the exact failure the 1:1 alignment above exists to
+            // rule out.
+            // Raw, exactly like `heat` above: the display gate is the panel's
+            // (`HEAT_LEVEL_GATE`), not the engine's. `MELODY_LEVEL_GATE` gated the copy the
+            // *decoder* saw and has no business deciding a picture.
+            salience: snapshot.salience_heat,
         });
         push_limited_history(
             &mut state.resonator_waterfall,

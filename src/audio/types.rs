@@ -78,12 +78,12 @@ pub struct NoteLine {
 /// One published bank frame of the melody line, exactly as the engine decided it.
 ///
 /// The unit the melody panels read *history* in, as opposed to [`TunerReading`],
-/// which is the instant. Both of a pitch roll's layers ride the **same** frame, so
-/// they cannot drift apart: the line and the heat under it are aligned 1:1 by
-/// construction rather than by two `push_back`s next to each other agreeing to be.
-/// That alignment is the heat's whole job — it is the ground truth the line is
-/// checked against by eye, and a heat column from a different instant would be a
-/// lie rather than a wobble.
+/// which is the instant. All of a pitch roll's layers ride the **same** frame, so
+/// they cannot drift apart: the line, the heat under it and the salience it was
+/// decoded from are aligned 1:1 by construction rather than by three `push_back`s
+/// next to each other agreeing to be. That alignment is the whole job of the layers
+/// under the line — they are what the line is checked against by eye, and a column
+/// from a different instant would be a lie rather than a wobble.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MelodyFrame {
     /// Delivery cursor: "have I seen this frame?".
@@ -92,7 +92,7 @@ pub struct MelodyFrame {
     /// stream — a consumer holding a cursor across a device switch must never be
     /// handed a number it has already seen, or it would silently skip the new
     /// stream's first frames.
-    pub seq:   u64,
+    pub seq:      u64,
     /// When it was played: seconds on the **sample clock** (`samples_seen /
     /// sample_rate`), the same clock the note segmenter's durations ride.
     ///
@@ -102,27 +102,50 @@ pub struct MelodyFrame {
     /// **with jitter** — `seq × update_ms` would be just another wrong ruler, in the
     /// same family as counting UI frames. Unlike `seq` it restarts with the stream,
     /// because it describes the audio rather than the delivery.
-    pub t:     f64,
+    pub t:        f64,
     /// The melody line's note, or `None` for silence *or* a rejected octave slip —
     /// decided in `dsp::melody`, and deliberately the same `None` for both (see
     /// `dsp::segmenter` for why a rejected frame must read as a gap, not a change).
-    pub pitch: Option<f32>,
+    pub pitch:    Option<f32>,
     /// The absolute input level the engine gated **this** frame on. Carried rather
     /// than read live so a panel fades a point by the level of the moment it is
     /// drawing, not of the moment it happens to be drawing at.
-    pub level: f32,
+    pub level:    f32,
     /// The bank's heat column for this instant, raw: normalized to its own max, no
     /// octave decision, no silence gate. The ground truth, passed through untouched.
-    pub heat:  Vec<f32>,
+    pub heat:     Vec<f32>,
+    /// What SWIPE′ *scored* that same column at, per bin — the evidence [`Self::pitch`] was
+    /// decoded from. Same grid and same length as [`Self::heat`], so a panel swaps one for
+    /// the other; `None` for a column with no energy at all.
+    ///
+    /// **It is not a second ground truth, and must not be offered as one.** `heat` is an
+    /// independent witness — the physical spectrum, which disagreeing with the line is
+    /// *information*. This curve is where the line came from, so it agrees with the line by
+    /// construction: a mirror, not a witness. It answers "why did the decoder choose that",
+    /// which `heat` cannot, and it answers nothing about whether the choice was right.
+    ///
+    /// Expect it to look *broad* and to read as a mush next to the spectrum's crisp
+    /// partials. That is SWIPE′ being honest rather than the layer being broken: the h=1
+    /// lobe alone spans 71 bins (~9 semitones at 8 bins/semitone), which is the same
+    /// low-contrast curve that made `melody::SALIENCE_BETA` necessary in the first place.
+    pub salience: Option<Vec<f32>>,
 }
 
 /// How much melody history the **engine** keeps for the panels, in seconds.
 ///
 /// Short on purpose. The panels keep their own, much longer, view history; this only
 /// has to bridge the gap between two of their reads, and two seconds is far more than
-/// any plausible UI stall at ~240 KB. Keeping the panel's whole ~10 s span here would
-/// cost 1.2 MB and buy nothing: the bank parks when no panel is asking, so there is
-/// never a backlog waiting to fill a freshly opened panel anyway.
+/// any plausible UI stall at ~240 KB per column layer. Keeping the panel's whole ~10 s
+/// span here would cost 1.2 MB a layer and buy nothing: the bank parks when no panel is
+/// asking, so there is never a backlog waiting to fill a freshly opened panel anyway.
+///
+/// Note the *per layer*: [`MelodyFrame::salience`] doubles the bill, and it is carried
+/// unconditionally rather than gated on the pitch roll's toggle. That is a deliberate
+/// trade and worth revisiting if it ever bites — a gate would mean the layer only starts
+/// existing when switched on, so the ten seconds already on screen would be blank at the
+/// moment you reach for it, which is precisely when the evidence is wanted. The obvious
+/// escape (`request_resonator`'s grace-window pattern) buys the memory back at the price
+/// of that blank, and the picture is worth more than 1.2 MB.
 pub const MELODY_HISTORY_SECONDS: f64 = 2.0;
 
 /// The melody line's recent past: a ring of [`MelodyFrame`]s trimmed by **time**.

@@ -19,8 +19,10 @@
 //! the audio time it was played (`MelodyFrame::t`).
 
 use eframe::egui::{
+    Align,
     CornerRadius,
     Frame,
+    Layout,
     Margin,
     RichText,
     Sense,
@@ -107,15 +109,42 @@ const VIEW_QUANTILE_HI: f32 = 0.90;
 /// clearly, persistently too wide.
 const VIEW_SHRINK_SLACK: f32 = 3.0;
 
+/// Which evidence layer is painted under the melody line.
+///
+/// **The two are not interchangeable views of one thing, and the default is not a taste.**
+/// They differ in what they can prove:
+///
+/// - [`Self::Spectrum`] is an *independent* witness — the physical column the bank heard.
+///   It is free to disagree with the line, and when it does, that disagreement is the
+///   evidence. It is the only layer that can convict the detector, so it is the default.
+/// - [`Self::Salience`] is the curve the line was decoded *from*. It agrees with the line
+///   by construction — a mirror, not a witness. It answers "why did the Viterbi choose
+///   this", which the spectrum cannot, and it cannot answer "was that right".
+///
+/// Lives here, in UI state, and pointedly **not** in `ResonatorSettings`: that struct is
+/// `PartialEq`-compared to decide whether the bank is rebuilt (`dsp::resonator`), so a
+/// display toggle parked in it would drop and rebuild the detector's filterbank every time
+/// you looked at the other layer. Four leaks of a display setting into the detector are on
+/// the record already (`memory/display_settings_must_not_steer_the_detector.md`); this
+/// would have been the fifth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RollLayer {
+    /// The bank's spectrum — the ground truth the line is judged against.
+    #[default]
+    Spectrum,
+    /// SWIPE′'s salience curve — the evidence the line was decoded from. A debug layer.
+    Salience,
+}
+
 /// Live pitch-roll state for the panel.
 pub struct PitchRoll {
     /// The bank frames on screen, oldest → newest, trimmed to [`VISIBLE_SECONDS`] of
     /// **played** time. Every frame the engine published while this panel was open —
     /// none dropped, none doubled, whatever the frame rate did.
     ///
-    /// The line and the heat live in the same record, so the two layers cannot fall
-    /// out of step: the heat is the ground truth the line is judged against, and it
-    /// can only do that job if it is the *same instant*.
+    /// The line and both column layers live in the same record, so they cannot fall
+    /// out of step: whichever layer is painted is what the line is judged against by
+    /// eye, and it can only do that job if it is the *same instant*.
     ///
     /// The engine's own [`MelodyHistory`], just held longer — the ring's rules
     /// (ordered, unique, self-healing when the sample clock restarts) are the same
@@ -130,6 +159,8 @@ pub struct PitchRoll {
     /// top). Auto-frames the graph on the played range without per-frame jumps.
     view_lo: f32,
     view_hi: f32,
+    /// Which layer is painted under the line — see [`RollLayer`].
+    layer:   RollLayer,
 }
 
 impl Default for PitchRoll {
@@ -141,6 +172,7 @@ impl Default for PitchRoll {
             cursor:  None,
             view_lo: 53.0,
             view_hi: 79.0,
+            layer:   RollLayer::default(),
         }
     }
 }
@@ -266,8 +298,19 @@ impl PitchRoll {
                             level: frame.level,
                         }
                     }),
+                    // Both layers are normalized to their own column's max upstream, so
+                    // both need the same silence gate for the same reason — see
+                    // [`HEAT_LEVEL_GATE`]. A quiet salience column is room noise scored
+                    // and stretched to full scale, which paints the rests just as
+                    // convincingly as a quiet spectrum does.
                     heat:  if frame.level >= HEAT_LEVEL_GATE {
-                        frame.heat.as_slice()
+                        match self.layer {
+                            RollLayer::Spectrum => frame.heat.as_slice(),
+                            // `None` = a column with no energy to score at all, which is
+                            // the same picture as a gated one: a gap. Nothing is lost by
+                            // folding them together — neither has evidence in it.
+                            RollLayer::Salience => frame.salience.as_deref().unwrap_or(&[]),
+                        }
                     } else {
                         &[]
                     },
@@ -311,13 +354,27 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Pitch Roll").size(20.0).color(color::TEXT_HEADING));
-                    ui.label(
-                        RichText::new("Rows are notes; your pitch scrolls in from the right")
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Pitch Roll").size(20.0).color(color::TEXT_HEADING));
+                        // The hint names what is *under* the line, because the two layers
+                        // carry different authority and the picture cannot say so itself:
+                        // one may convict the line, the other cannot (see `RollLayer`).
+                        ui.label(
+                            RichText::new(match self.pitch_roll.layer {
+                                RollLayer::Spectrum => "Rows are notes; your pitch scrolls in from the right",
+                                RollLayer::Salience => {
+                                    "Under the line: what SWIPE′ scored — evidence, not ground truth"
+                                }
+                            })
                             .color(color::TEXT_HINT)
                             .size(12.0),
-                    );
+                        );
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.selectable_value(&mut self.pitch_roll.layer, RollLayer::Salience, "SWIPE′");
+                        ui.selectable_value(&mut self.pitch_roll.layer, RollLayer::Spectrum, "spectrum");
+                    });
                 });
 
                 ui.add_space(10.0);
@@ -375,9 +432,9 @@ mod tests {
             Self { seq: 0, t: 0.0 }
         }
 
-        /// The next frame, one cadence later. Heat is left empty: it rides the same
-        /// record by construction now, so there is nothing here for a test to check
-        /// that the type system does not already.
+        /// The next frame, one cadence later. The column layers are left empty: they ride
+        /// the same record by construction now, so there is nothing here for a test to
+        /// check that the type system does not already.
         fn frame(&mut self, pitch: Option<f32>, level: f32) -> MelodyFrame {
             self.t += BANK_CADENCE_S;
             self.seq += 1;
@@ -387,6 +444,7 @@ mod tests {
                 pitch,
                 level,
                 heat: Vec::new(),
+                salience: None,
             }
         }
     }
@@ -395,6 +453,73 @@ mod tests {
     fn line(bank: &mut Bank, roll: &mut PitchRoll, pitch: Option<f32>, level: f32) {
         let frame = bank.frame(pitch, level);
         roll.update(vec![frame]);
+    }
+
+    /// The toggle swaps the layer, and both layers obey the same silence gate.
+    ///
+    /// Worth a test despite looking like a `match`: the two layers are the *same length on
+    /// the same grid* by design, so swapping them is invisible to the type system and a
+    /// crossed wire would paint a plausible field of the wrong quantity — the failure would
+    /// read as "SWIPE′ looks a lot like the spectrum", which is a conclusion, not a bug
+    /// report. The gate has to be repeated per layer for the same reason it exists at all:
+    /// both are normalized to their own column's max, so both turn room noise into a
+    /// full-scale wash across the rests.
+    #[test]
+    fn the_toggle_swaps_the_layer_and_both_obey_the_gate() {
+        let loud = |salience| {
+            vec![MelodyFrame {
+                seq: 1,
+                t: 0.0,
+                pitch: Some(69.0),
+                level: 0.5, // over HEAT_LEVEL_GATE
+                heat: vec![1.0, 0.0],
+                salience,
+            }]
+        };
+
+        let mut roll = PitchRoll::default();
+        roll.update(loud(Some(vec![0.0, 1.0])));
+        assert_eq!(
+            roll.columns(0.0)[0].heat,
+            [1.0, 0.0],
+            "default layer is the spectrum"
+        );
+
+        roll.layer = RollLayer::Salience;
+        assert_eq!(
+            roll.columns(0.0)[0].heat,
+            [0.0, 1.0],
+            "the toggle must paint the salience, not the spectrum wearing its name"
+        );
+
+        // No energy to score → the same picture as a gated column: a gap.
+        let mut unscored = PitchRoll {
+            layer: RollLayer::Salience,
+            ..PitchRoll::default()
+        };
+        unscored.update(loud(None));
+        assert!(
+            unscored.columns(0.0)[0].heat.is_empty(),
+            "an unscored column is a gap"
+        );
+
+        // Below the gate the layer is blanked whichever one is selected.
+        let mut quiet = PitchRoll {
+            layer: RollLayer::Salience,
+            ..PitchRoll::default()
+        };
+        quiet.update(vec![MelodyFrame {
+            seq:      1,
+            t:        0.0,
+            pitch:    None,
+            level:    HEAT_LEVEL_GATE * 0.5,
+            heat:     vec![1.0, 0.0],
+            salience: Some(vec![0.0, 1.0]),
+        }]);
+        assert!(
+            quiet.columns(0.0)[0].heat.is_empty(),
+            "a silent salience column is room noise stretched to full scale — gate it too"
+        );
     }
 
     /// REGRESSION, and the reason this whole path exists: **the history is paced by
@@ -476,11 +601,12 @@ mod tests {
         // The engine reset: same monotonic `seq` (a panel's cursor survives a device
         // switch), but the sample clock starts over.
         roll.update(vec![MelodyFrame {
-            seq:   bank.seq + 1,
-            t:     0.0,
-            pitch: Some(60.0),
-            level: 0.5,
-            heat:  Vec::new(),
+            seq:      bank.seq + 1,
+            t:        0.0,
+            pitch:    Some(60.0),
+            level:    0.5,
+            heat:     Vec::new(),
+            salience: None,
         }]);
         assert_eq!(
             roll.frames.len(),
