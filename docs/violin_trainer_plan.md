@@ -15,13 +15,82 @@ progress / not started) and note the commit when a phase ships.
 
 ---
 
-## ▶ Start here — handoff (2026-07-14, third session of the day)
+## ▶ Start here — handoff (2026-07-15)
+
+### The one-line state
+
+**The phantom octave is dead, measured on the user's own violin — and for the first time
+in this project's history a DSP phase shipped *verified*, not "built, not live-verified".**
+Next task: **[`memory/kickstart_viterbi_over_salience.md`](../memory/kickstart_viterbi_over_salience.md)**.
+
+### What this session established
+
+`ff353d5` → `35db82e`. Full detail in Phase 1.11; the design is
+[`swipe_salience_design.md`](swipe_salience_design.md); the corpus and its protocol are
+[`testdata/README.md`](../testdata/README.md).
+
+The live report was *"на струне G — много перескакиваний на фантомную октаву просто от bow
+strokes"*. Two independent root causes, both named by the literature, both now fixed:
+
+1. **The scorer was Camacho's panel C.** `resonator_fundamental` was a reward-only harmonic
+   comb — it could add credit but never subtract — and the SWIPE thesis enumerates exactly
+   that function and exactly its failure (Fig. 3-13: positive lobes only → *"peaks at sub
+   **and supra**harmonics"*). The phantom octave *was* that supraharmonic peak. It is not
+   fixable by tuning: nothing in a reward-only comb can punish 2·f0, because every harmonic
+   of 2·f0 is also a harmonic of f0. What punishes it is the **negative valleys** — and
+   SWIPE was designed on our exact signal, its worked example being a spectrum with *"a
+   missing fundamental and a salient second harmonic"*, f0 at 190 Hz and h2 at 380. The
+   violin open G is 196/392.
+2. **The anchor was an echo of the bank on every bow stroke.** `OnsetDetector` fires on
+   each stroke *by design*, and `pyin::process` on an onset frame dropped the trellis and
+   weighted the bank at 2.0 against YIN's `p = 1.000` — so pYIN output the *bank's* pitch,
+   the "octave anchor" agreed with the phantom, and every repair layer above it was fed the
+   error it existed to catch. The docs called that fusion *"inert"*, *"harmless"*,
+   *"provably contributes nothing"* — measured for `BANK_WEIGHT` with the trellis intact,
+   then restated as a property of a case where the trellis is dropped. Removed in `9faa799`.
+
+**Measured on real audio, both scorers on the same column of the same bank frame:**
+
+| take | OLD comb | SWIPE′ (at `35db82e`) |
+|---|---|---|
+| `g_open_slow_strokes` | G3 33.7% · **phantom 57.2%** | G3 **76.0%** · **phantom 0.0%** |
+| `g_open_fast_strokes` | G3 **1.4%** · phantom 43.3% | G3 **83.1%** · phantom 0.3% |
+| `g_open_real_octave` | G3 7.8% · G4 47.3% | G3 42% · **G4 14%** ← the control |
+| `g_string_trill` | 90.6% scattered | **85.1%** in first position |
+| `a_string_trill` | 100% scattered | **77.6%** in first position |
+
+On slow strokes the shipped scorer called the phantom **more often than the truth**; on
+fast strokes it was right in **1.4%** of frames. That is not "sometimes slips" — it was
+broken, confidently (`strength = 1.000` on the wrong answer).
+
+### What is NOT done, and must not be claimed
+
+- **Octave errors survive at 5.7–8.7% on the trills.** The live report is confirmed against
+  the *current* scorer, not just the old one. They are **near-ties, not confident errors** —
+  measured: the truth scores 0.3833, the junk 0.4006, a **4–6% margin**. Noise decides.
+  That is precisely the *"не статистически"* the user objected to, and only temporal
+  continuity fixes it → the kickstart.
+- **The whole octave repair layer is now redundant, and still in place.** `LEAP_CONFIRM_FRAMES`
+  alone is **64 ms of the octave's 120 ms**, guarding against a bank slip that no longer
+  happens (0/612). Not removed because the evidence is **two strings**. Retiring it on that
+  basis is this plan's own recurring mistake. **Record D and E first.**
+- **`note_detection.md` says nothing about SWIPE′.** Its §3/§4 still describe the old
+  arrangement. It is the canon; it is now stale. Update it when the Viterbi lands.
+- Phases **1.8 / 1.9 / 1.10** remain unverified — see the table below. The violin takes
+  exercise the octave decision, nothing else.
+
+### The rule this session earned
+
+**A display setting must never steer the detector** — three cases found in a row: the
+silence gate sharing the UI meter's smoothing (1.9), `gamma` (a *waterfall-contrast
+slider*) deciding the octave (1.11), and the waterfall's C0..C8 extent choosing which notes
+were candidates (`35db82e`). Look for the fourth.
+[`memory/display_settings_must_not_steer_the_detector.md`](../memory/display_settings_must_not_steer_the_detector.md).
 
 ### Where it stands
 
-**The instrument has not been played since `1a8c6e1`.** Three phases have landed on top
-of it. Read [`note_detection.md`](note_detection.md) before touching any of them — it is
-the whole mechanism in one place, and the checklist below assumes it.
+**Read [`note_detection.md`](note_detection.md) before touching any of this** — with the
+caveat above that it predates SWIPE′.
 
 | commit | what | live-verified? |
 |---|---|---|
@@ -30,7 +99,8 @@ the whole mechanism in one place, and the checklist below assumes it.
 | `a063606` | systematisation doc; panel range clamps dropped | ❌ **no** |
 | `925a2a0`, `d4d668b` | UI design tokens (chrome colour only — no DSP) | ✅ render only |
 | *(this session)* | **1.9** — segmentation off the UI clock; silence gate into the engine | ❌ **no** |
-| *(this session)* | **1.12** — YIN's floor to C1; the bank fusion removed from pYIN | ❌ **no** — DSP |
+| `9faa799` | **1.12** — YIN's floor to C1; the bank fusion removed from pYIN | ❌ **no** — DSP |
+| `ff353d5`…`35db82e` | **1.11** — SWIPE′ salience; the phantom octave | ✅ **YES — measured on the user's violin**, `testdata/` |
 
 **That table is the most important thing on this page.** The user's "работает неплохо"
 was given *after `1a8c6e1` and before everything below it*. All of it is
@@ -119,6 +189,19 @@ In rough order of risk:
    `VIEW_SHRINK_SLACK`.
 
 ### Next work, in order
+
+**→ 0. [`kickstart-viterbi-over-salience`](../memory/kickstart_viterbi_over_salience.md) —
+the Viterbi on the fast channel.** Requested by the user, and the design already pointed at
+it: SWIPE′ emits the whole salience curve every 16 ms, which is exactly an online Viterbi's
+input. The remaining octave errors are 4–6% near-ties, which no threshold can fix and
+continuity can. **The HMM already exists and is on the wrong channel** — `pyin`'s trellis
+runs on the 128 ms window where the octave never broke, while the fast channel that draws
+the staff has no probabilistic model at all. Generalise that trellis; do not write a second.
+Landing it should retire `LEAP_CONFIRM_FRAMES`, `snap_to_anchor_octave`, `OctaveGate` and
+the melody's dependency on the slow anchor — **after** D and E are recorded, not before.
+
+**→ 0b. Record the D and E strings** (`testdata/README.md` has the exact procedure). Cheap,
+and it is the gate on removing the repair layer.
 
 1. **Answer the ghost question with the instrument** (see above), then fix or drop it.
    It is the only thing here that is *known* to write wrong notes.
