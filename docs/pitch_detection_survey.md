@@ -62,14 +62,68 @@ The wins come from marrying them.
   Cuts the *group delay* of the analysis, i.e. attacks latency at the window level
   (a lever for the YIN path). <https://arxiv.org/pdf/1606.09047>
 
-### Data-driven (accurate, heavy)
-- **CREPE** — Kim, Salamon et al., 2018. CNN on the raw waveform; beats pYIN on
-  accuracy, authors cite <10 ms. **But** needs a trained model + inference — a poor
-  fit for pure Rust / egui / wasm right now. Park for later.
-  <https://www.semanticscholar.org/paper/Crepe:-A-Convolutional-Representation-for-Pitch-Kim-Salamon/86aeec4d48d949190b3a0c2bf32c101fc23f13a3>
-- Benchmarks / comparisons: [pitch-benchmark (lars76)](https://github.com/lars76/pitch-benchmark),
-  [Comparing PDAs vs data-driven (arXiv 2206.14357)](https://arxiv.org/pdf/2206.14357),
-  [RT F0 via spectrogram+CNN (arXiv 2504.06165)](https://arxiv.org/pdf/2504.06165).
+### Data-driven — surveyed properly 2026-07-15
+
+> The one-line summary: **the trend is not bigger, it is smaller** — 22M params (CREPE,
+> 2018) → 28.9k (PESTO, 2023) → **647** (SWIPE-tiny, 2025) — and the smallest of them
+> wins by *not* learning a frontend from scratch. Which is the same bet `dsp::swipe`
+> already made.
+
+**There are no transformers here.** For monophonic f0 they did not win: the SOTA is small
+CNNs. Transformers own the *neighbouring* task — polyphonic transcription
+([hFT-Transformer](https://arxiv.org/abs/2307.04305), Sony AI, SOTA on MAESTRO;
+[MT3](https://github.com/magenta/mt3), Magenta) — which is offline, heavy, and about
+turning a piano into MIDI, not about "what note is sounding now". Not our problem.
+
+| Model | Params | Frontend | Licence | Verdict here |
+|---|---|---|---|---|
+| [CREPE](https://arxiv.org/abs/1802.06182) 2018 | 22M (tiny 487k) | raw waveform, 64 ms | MIT | **superseded** — SwiftF0 beats it by 12+ points |
+| [PESTO](https://arxiv.org/abs/2508.01488) ISMIR'23 / TISMIR'25 | 28.9k | CQT | LGPL-3.0 | self-supervised SOTA; ONNX export; but see SWIPE below |
+| [RMVPE](https://arxiv.org/abs/2306.15412) 2023 | heavy | mel | — | vocals *inside polyphony* — not our case |
+| [SwiftF0](https://arxiv.org/abs/2508.18440) 2025 | 96k | STFT 1024@16k | **MIT** | `model.onnx` = **398 KB**; demo already runs on wasm+ONNX; 46.9–2093.75 Hz (violin E7 is outside) |
+| [FCPE](https://arxiv.org/html/2509.15140v1) 2025 | — | mel | — | fastest: 2.6× PESTO, 77× CREPE; 96.79 % RPA on MIR-1K |
+| [Basic Pitch](https://github.com/spotify/basic-pitch) | ~17k | CQT + harmonic stacking | Apache | polyphonic — a different question (chords) |
+
+**The one that matters:
+[Improving Neural Pitch Estimation with SWIPE Kernels](https://arxiv.org/abs/2507.11233)**
+(Marttila & Reiss, ISMIR 2025). They replace the neural frontend with **SWIPE kernel
+scores** — i.e. with the thing `dsp::swipe` already computes — and find:
+
+1. **SWIPE-tiny: 647 parameters** beats PESTO's 28.9k (96.6 % vs 94.6 % RPA, MIR-1K).
+   The architecture is a *single* Toeplitz layer: "a convolutional layer with a single
+   filter of size 647" plus softmax normalisation. **One convolution over the salience
+   curve** — in Rust that is a loop, `[f32; 647]` = 2.6 KB in the binary, and **no ONNX,
+   no tract, no new dependency**.
+2. **Plain SWIPE outperforms every self-supervised neural pitch estimator published**
+   (their §5.2, emphasis theirs). Our chosen path was already the right one.
+3. **Their Table 1** — the most useful table in the paper, and the reason
+   [`pitch_benchmark.md`](pitch_benchmark.md) now exists: SWIPE is reported at 86.6 % in
+   the literature and measures **96.2 %** in a careful implementation. Ten points between
+   implementations of one algorithm.
+
+**But read the noise columns before reaching for it.** On clean audio the Toeplitz layer
+buys **+0.4 points** over plain SWIPE (96.6 vs 96.2). Its actual purchase is robustness:
+at −10 dB SNR it is 88.5 % vs SWIPE's 75.2 %, +13 points. A quiet room is the regime where
+the network is worth almost nothing.
+
+Two further practicalities, both measured rather than guessed:
+
+- **Code and weights are advertised but gone.** The paper's footnote points at
+  `github.com/dsuedholt/neural-pitch-swipe`; the account does not exist (404) and the
+  repo is not among the author's 32 public ones. Training it is on us.
+- **Grids do not match.** They use 3 bins/semitone over 27.5–8055 Hz (295 candidate bins),
+  sampling the spectrum at 1024 mel-spaced frequencies. We run **8 bins/semitone**
+  (`SPIRAL_BINS_PER_SEMITONE`, 12.5 cents — 2.7× finer) over MIDI 24–108, off the
+  resonator bank rather than an FFT. Weights would not transfer even if they existed; the
+  647-tap kernel is tied to its input resolution.
+- **It would not make us faster.** Their Table 4: 93 ms window → 96.2 % RPA, but 46 ms →
+  85.0 %. So it is still a *slow-plane* estimator — a replacement for pYIN as the octave
+  anchor (128 → ~93 ms), never for the bank. Pleasant bonus: window size is an
+  inference-time knob, **no retraining**.
+
+Benchmarks / comparisons: [pitch-benchmark (lars76)](https://github.com/lars76/pitch-benchmark),
+[Comparing PDAs vs data-driven (arXiv 2206.14357)](https://arxiv.org/pdf/2206.14357),
+[RT F0 via spectrogram+CNN (arXiv 2504.06165)](https://arxiv.org/pdf/2504.06165).
 
 ### Onset / latency framing
 - **Onset detection** — catch the *start* of a note from the energy burst

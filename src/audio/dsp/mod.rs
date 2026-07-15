@@ -10,6 +10,11 @@ pub(crate) mod melody;
 pub(crate) mod octave_gate;
 pub(crate) mod onset;
 pub(crate) mod pitch;
+/// RPA of the shipped scorer against a corpus with a perfect f0 annotation — the
+/// baseline any detector change is argued against. Test-only, and needs the git-ignored
+/// `datasets/` corpus (`docs/pitch_benchmark.md`); nothing ships from here.
+#[cfg(test)]
+mod pitch_bench;
 pub(crate) mod pyin;
 pub(crate) mod resonator;
 pub(crate) mod segmenter;

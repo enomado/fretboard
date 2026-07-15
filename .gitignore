@@ -1,2 +1,5 @@
 /target
 /dist
+# f0-annotated corpora for the pitch benchmark (`bin/pitch_bench`). Gigabytes of
+# third-party audio: fetched on demand, never committed. See docs/pitch_benchmark.md.
+/datasets
