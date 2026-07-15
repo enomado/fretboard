@@ -1,5 +1,6 @@
 pub(super) mod imp {
     use std::io::Read;
+    use std::path::PathBuf;
     use std::process::{
         Child,
         Command as ProcessCommand,
@@ -53,6 +54,7 @@ pub(super) mod imp {
         DroneMode,
         DroneState,
         MelodyFrame,
+        RecorderStatus,
         ResonatorReading,
         Timbre,
         TunerReading,
@@ -60,6 +62,7 @@ pub(super) mod imp {
     use crate::core_types::pitch::PNote;
 
     mod devices;
+    mod recorder;
 
     use devices::{
         cpal_device_display_name,
@@ -67,6 +70,12 @@ pub(super) mod imp {
         low_latency_monitor_ring_len,
         preferred_low_latency_buffer,
         select_cpal_capture,
+    };
+    use recorder::{
+        RecorderHandle,
+        RecorderTap,
+        recorder_ring,
+        start_recorder_worker,
     };
 
     // The analysis (FFT/YIN/resonator) and the pipelines that drive it live in
@@ -152,6 +161,10 @@ pub(super) mod imp {
         drone:               Arc<Mutex<DroneState>>,
         // true, пока дрон-стрим поднят. Ставит/снимает audio-тред.
         drone_playing:       Arc<AtomicBool>,
+        // Состояние записи дублей. Живёт НАД capture: смена устройства
+        // пересоздаёт весь capture, и писатель нового подхватывает то же
+        // намерение вместо того, чтобы потерять его.
+        recorder:            RecorderHandle,
         command_tx:          Option<Sender<Command>>,
         audio_thread:        Option<JoinHandle<()>>,
     }
@@ -185,6 +198,7 @@ pub(super) mod imp {
             let resonator_wanted = Arc::new(Mutex::new(Instant::now()));
             let drone = Arc::new(Mutex::new(DroneState::default()));
             let drone_playing = Arc::new(AtomicBool::new(false));
+            let recorder = RecorderHandle::new();
 
             let (command_tx, command_rx) = mpsc::channel::<Command>();
 
@@ -204,6 +218,7 @@ pub(super) mod imp {
                     resonator_wanted:    resonator_wanted.clone(),
                     drone:               drone.clone(),
                     drone_playing:       drone_playing.clone(),
+                    recorder:            recorder.clone(),
                 };
                 move || {
                     audio_thread_main(command_rx, ctx);
@@ -223,6 +238,7 @@ pub(super) mod imp {
                 resonator_wanted,
                 drone,
                 drone_playing,
+                recorder,
                 command_tx: Some(command_tx),
                 audio_thread: Some(audio_thread),
             }
@@ -397,6 +413,21 @@ pub(super) mod imp {
                 *until = Instant::now() + RESONATOR_PARK_GRACE;
             }
         }
+
+        /// Начать писать дубль в `path`. Идемпотентно по пути: повторный вызов с
+        /// тем же путём ничего не делает, с другим — закрывает текущий и открывает
+        /// новый. См. `recorder` — дубль пишется ДО `input_gain`.
+        pub fn start_take(&self, path: PathBuf) {
+            self.recorder.start(path);
+        }
+
+        pub fn stop_take(&self) {
+            self.recorder.stop();
+        }
+
+        pub fn recorder_status(&self) -> RecorderStatus {
+            self.recorder.status()
+        }
     }
 
     impl Drop for AudioEngine {
@@ -491,6 +522,7 @@ pub(super) mod imp {
         resonator_wanted:    Arc<Mutex<Instant>>,
         drone:               Arc<Mutex<DroneState>>,
         drone_playing:       Arc<AtomicBool>,
+        recorder:            RecorderHandle,
     }
 
     impl AudioContext {
@@ -607,39 +639,19 @@ pub(super) mod imp {
             let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
             let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
             let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
+            let (recorder_prod, recorder_cons) = recorder_ring(sample_rate);
+            let fanout = InputFanout {
+                analysis:  analysis_prod,
+                resonator: resonator_prod,
+                monitor:   monitor_prod,
+                recorder:  self.recorder.tap(recorder_prod),
+            };
 
             // Входной stream: callback тупо пушит в кольца, без блокировок и паник.
             let input_stream = match sample_format {
-                cpal::SampleFormat::F32 => {
-                    build_input::<f32>(
-                        &device,
-                        &stream_config,
-                        channels,
-                        analysis_prod,
-                        resonator_prod,
-                        monitor_prod,
-                    )?
-                }
-                cpal::SampleFormat::I16 => {
-                    build_input::<i16>(
-                        &device,
-                        &stream_config,
-                        channels,
-                        analysis_prod,
-                        resonator_prod,
-                        monitor_prod,
-                    )?
-                }
-                cpal::SampleFormat::U16 => {
-                    build_input::<u16>(
-                        &device,
-                        &stream_config,
-                        channels,
-                        analysis_prod,
-                        resonator_prod,
-                        monitor_prod,
-                    )?
-                }
+                cpal::SampleFormat::F32 => build_input::<f32>(&device, &stream_config, channels, fanout)?,
+                cpal::SampleFormat::I16 => build_input::<i16>(&device, &stream_config, channels, fanout)?,
+                cpal::SampleFormat::U16 => build_input::<u16>(&device, &stream_config, channels, fanout)?,
                 other => return Err(format!("Unsupported sample format: {other:?}")),
             };
             input_stream
@@ -649,6 +661,7 @@ pub(super) mod imp {
             let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
             let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
             let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
+            let recorder = start_recorder_worker(sample_rate, recorder_cons, self.recorder.clone());
             self.finish_capture_start(sample_rate, output_rate, &selected_id);
 
             Ok(ActiveCapture {
@@ -656,6 +669,7 @@ pub(super) mod imp {
                 output_stream,
                 analysis,
                 resonator,
+                recorder,
                 selected_id,
             })
         }
@@ -667,19 +681,20 @@ pub(super) mod imp {
             let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
             let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
             let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
+            let (recorder_prod, recorder_cons) = recorder_ring(sample_rate);
+            let fanout = InputFanout {
+                analysis:  analysis_prod,
+                resonator: resonator_prod,
+                monitor:   monitor_prod,
+                recorder:  self.recorder.tap(recorder_prod),
+            };
 
-            let input = ActiveInput::Pulse(build_pulse_input(
-                id,
-                sample_rate,
-                analysis_prod,
-                resonator_prod,
-                monitor_prod,
-                self.shared.clone(),
-            )?);
+            let input = ActiveInput::Pulse(build_pulse_input(id, sample_rate, fanout, self.shared.clone())?);
 
             let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
             let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
             let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
+            let recorder = start_recorder_worker(sample_rate, recorder_cons, self.recorder.clone());
             self.finish_capture_start(sample_rate, output_rate, &selected_id);
 
             Ok(ActiveCapture {
@@ -687,6 +702,7 @@ pub(super) mod imp {
                 output_stream,
                 analysis,
                 resonator,
+                recorder,
                 selected_id,
             })
         }
@@ -783,6 +799,9 @@ pub(super) mod imp {
         output_stream: Option<cpal::Stream>,
         analysis:      AnalysisWorker,
         resonator:     AnalysisWorker,
+        /// Писатель дублей. `AnalysisWorker` здесь не про анализ — это просто
+        /// «поток со стоп-флагом», и рекордеру нужен ровно он (см. тип).
+        recorder:      AnalysisWorker,
         selected_id:   String,
     }
 
@@ -806,6 +825,9 @@ pub(super) mod imp {
             // в кольцо, воркер додренит остатки и выйдет.
             self.analysis.stop();
             self.resonator.stop();
+            // Рекордер последним: он закрывает WAV (дописывает длины в RIFF-хедер)
+            // и обязан успеть это сделать до того, как мы вернём управление.
+            self.recorder.stop();
         }
     }
 
@@ -924,13 +946,49 @@ pub(super) mod imp {
         HeapRb::<f32>::new((sample_rate as usize) / 2).split()
     }
 
+    // ------------------------------------------------------------------
+    // InputFanout: куда расходится каждый захваченный сэмпл.
+    //
+    // Один тип на все пути захвата (cpal и Pulse). Раньше три строки try_push
+    // повторялись в каждом колбэке; теперь правило живёт в одном месте — и нового
+    // потребителя нельзя подключить к одному пути, забыв про другой.
+    // ------------------------------------------------------------------
+    struct InputFanout {
+        analysis:  SampleProducer,
+        resonator: SampleProducer,
+        monitor:   Option<SampleProducer>,
+        recorder:  RecorderTap,
+    }
+
+    impl InputFanout {
+        /// Реалтайм: вызывается из аудио-колбэка на каждый сэмпл. Не блокирует и
+        /// не аллоцирует.
+        ///
+        /// **Сэмпл здесь сырой.** `input_gain` применяется позже и в другом месте
+        /// — в воркерах, которые дренят эти кольца (`audio::core`). Поэтому дубль
+        /// рекордера физически не может увидеть ползунок: умножения ещё не было.
+        /// Это свойство конструкции, а не договорённость; не переносить обработку
+        /// сюда и не переносить отвод ниже по потоку.
+        fn push(&mut self, sample: f32) {
+            // try_push: если анализ отстал и кольцо забито, теряем сэмпл — не
+            // блокируем аудио-callback. Для анализа потеря безобидна: кадр устарел,
+            // следующий приедет через миллисекунды.
+            let _ = self.analysis.try_push(sample);
+            let _ = self.resonator.try_push(sample);
+            if let Some(monitor) = self.monitor.as_mut() {
+                let _ = monitor.try_push(sample);
+            }
+            // А здесь потеря НЕ безобидна: это дыра в улике. Считается — см.
+            // `RecorderTap::push`.
+            self.recorder.push(sample);
+        }
+    }
+
     fn build_input<T>(
         device: &cpal::Device,
         config: &cpal::StreamConfig,
         channels: usize,
-        mut an_prod: SampleProducer,
-        mut res_prod: SampleProducer,
-        mut mon_prod: Option<SampleProducer>,
+        mut fanout: InputFanout,
     ) -> Result<cpal::Stream, String>
     where
         T: Sample + cpal::SizedSample,
@@ -944,14 +1002,7 @@ pub(super) mod imp {
                     // Нет unwrap/panic — при пустом фрейме просто пропускаем.
                     for frame in data.chunks(channels) {
                         if let Some(raw) = frame.first() {
-                            let sample = f32::from_sample(*raw);
-                            // try_push: если анализ отстал и кольцо забито,
-                            // теряем сэмпл — не блокируем аудио-callback.
-                            let _ = an_prod.try_push(sample);
-                            let _ = res_prod.try_push(sample);
-                            if let Some(p) = mon_prod.as_mut() {
-                                let _ = p.try_push(sample);
-                            }
+                            fanout.push(f32::from_sample(*raw));
                         }
                     }
                 },
@@ -964,9 +1015,7 @@ pub(super) mod imp {
     fn build_pulse_input(
         input_id: &str,
         sample_rate: u32,
-        mut an_prod: SampleProducer,
-        mut res_prod: SampleProducer,
-        mut mon_prod: Option<SampleProducer>,
+        mut fanout: InputFanout,
         shared: Arc<Mutex<SharedState>>,
     ) -> Result<PulseInputCapture, String> {
         let pulse_device = input_id.strip_prefix(PULSE_INPUT_ID_PREFIX).unwrap_or(input_id);
@@ -1021,12 +1070,7 @@ pub(super) mod imp {
 
                         if let Some(lo) = carry.take() {
                             if let Some(&hi) = buf.first() {
-                                let sample = pulse_i16_to_f32([lo, hi]);
-                                let _ = an_prod.try_push(sample);
-                                let _ = res_prod.try_push(sample);
-                                if let Some(p) = mon_prod.as_mut() {
-                                    let _ = p.try_push(sample);
-                                }
+                                fanout.push(pulse_i16_to_f32([lo, hi]));
                                 idx = 1;
                             } else {
                                 carry = Some(lo);
@@ -1035,12 +1079,7 @@ pub(super) mod imp {
                         }
 
                         while idx + 1 < n {
-                            let sample = pulse_i16_to_f32([buf[idx], buf[idx + 1]]);
-                            let _ = an_prod.try_push(sample);
-                            let _ = res_prod.try_push(sample);
-                            if let Some(p) = mon_prod.as_mut() {
-                                let _ = p.try_push(sample);
-                            }
+                            fanout.push(pulse_i16_to_f32([buf[idx], buf[idx + 1]]));
                             idx += 2;
                         }
 

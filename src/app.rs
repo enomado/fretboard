@@ -262,6 +262,10 @@ pub struct App {
     /// влияет ни на что, но персистится вместе с остальными настройками. См.
     /// `draw_mobile_panel_selector` / мобильный `render`.
     mobile_panel: WorkspaceTab,
+    /// Имя следующего дубля (без расширения) — см. `take_path`. Не персистится:
+    /// каждый дубль называется по тому, что в нём сыграно, и переживать сессию
+    /// прошлому имени незачем.
+    take_name: String,
 }
 
 struct HoveredNote {
@@ -311,6 +315,7 @@ impl App {
             pitch_roll: pitch_roll_panel::PitchRoll::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
             mobile_panel: WorkspaceTab::ResonatorSnail,
+            take_name: String::new(),
         };
 
         // Restore last session's preferences over the defaults built above.

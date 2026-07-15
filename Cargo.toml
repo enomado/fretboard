@@ -45,10 +45,6 @@ eframe.workspace = true
 [dev-dependencies]
 # Direct handle on the same RON used by eframe storage, for the persistence round-trip test.
 ron = "*"
-# Reads the real violin recordings in `testdata/` so the octave decision can be
-# measured on a real bowed G string rather than argued from a synthetic column
-# (`dsp::swipe`'s real-audio probe). Test-only: the app never loads a file.
-hound = "3"
 # Renders widgets offscreen through the real egui/epaint/wgpu stack, so the pill's
 # text centring can be asserted on actual pixels instead of on font metrics.
 egui_kittest = { version = "0.35", features = ["wgpu"] }
@@ -57,6 +53,16 @@ image = "0.25"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "*"
 ringbuf = "*"
+# WAV, both directions, and both ends are about the same corpus:
+#   - `audio::native::imp::recorder` WRITES takes straight off the capture ring,
+#     which is what makes a take *be* the signal the detector saw rather than a
+#     recording that resembles it;
+#   - `dsp::swipe`'s real-audio probes READ them back to measure the octave
+#     decision on a real bowed G string instead of a synthetic column.
+# The app writes audio files but still never *loads* one: recording is an output
+# path. Replay into the engine would be a new input path — a decision nobody has
+# taken (see `memory/kickstart_recording_and_annotation.md`).
+hound = "3"
 
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
 eframe = { workspace = true, features = ["accesskit", "wayland", "wgpu", "x11"] }

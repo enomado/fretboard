@@ -14,27 +14,64 @@ cargo test --lib real_violin_g_probe -- --ignored --nocapture
 `#[ignore]`d because it is slow (it drives the real bank over ~90 s of audio), not because
 it is optional.
 
-## How they were recorded
+## How to record a new take
 
-Do this again the same way, or the takes stop being comparable.
+**Record it from inside the app.** Controls panel → the **Take** row: type a name, press
+Record, play, press Stop. The take lands here, in `testdata/`.
+
+This is the way now, and not for convenience. Everything below used to be a protocol held
+together by hand, and every item on it was a way to accidentally stop the take from being
+the signal the detector sees. In-app recording makes most of the list a property of the
+construction instead:
+
+- **The tap is before the gain.** It sits in the input callback on the raw device sample;
+  `input_gain` is applied later and elsewhere (`audio::core`). The recorder *cannot* see
+  the slider, so "don't touch the gain" is no longer a rule you can break — turn it while
+  recording if you like, the file will not know.
+- **It is the same source the detector is listening to**, because it is the same stream,
+  fanned out one branch earlier. Not a second capture that resembles it.
+- **Dropped samples are counted, and a take with any is disqualified.** The audio callback
+  cannot block, so if the writer ever fell behind, the take would come out with a hole in
+  it — and a hole is silent: the WAV opens, plays, and sounds fine. The recorder counts,
+  shows the count live while recording, and refuses the take at the end. See
+  `audio::native::imp::recorder`.
+
+What is still on you, because no amount of construction can fix it:
 
 - **Instrument/room**: the user's violin, their room, their playing.
-- **Mic**: FIFINE K669 (USB condenser), hardware gain **untouched between takes** — the
-  measurement is a spectral *balance*, and moving the gain smears it.
-- **Path**: `parecord` straight off the PulseAudio source the app itself captures from, so
-  the recording is the signal the detector sees.
+- **Mic**: FIFINE K669 (USB condenser), hardware gain **untouched between takes** — this
+  is the *hardware* knob on the mic, not the app's slider. The measurement is a spectral
+  *balance*, and moving it smears it.
+- **No processing in the OS**: no normalisation, EQ, noise suppression, reverb, and above
+  all **no AGC** — an auto-gain stage flattens the harmonic balance, which is the only
+  quantity being measured. (Phone recorders do this by default. This box has no echo-cancel
+  or noise-suppression module loaded; checked with `pactl list short modules`.)
+- **Say what you played.** A take whose truth is guessed will be used to prove whatever the
+  guess was — see the `g_string_trill` box below, where that nearly happened.
 
-  ```fish
-  parecord --device=alsa_input.usb-3142_FIFINE_K669_Microphone-00.mono-fallback \
-           --file-format=wav --rate=44100 --channels=1 --format=s16le <name>.wav
-  ```
+### Format: mono s16le, at whatever rate the device gives
 
-- **Format**: WAV / 44100 / mono / s16le. **Never a lossy codec** — it discards quiet
-  components first, i.e. exactly the weak 196 Hz fundamental this corpus is about.
-- **No processing**: no normalisation, EQ, noise suppression, reverb, and above all **no
-  AGC** — an auto-gain stage flattens the harmonic balance, which is the only quantity
-  being measured. (Phone recorders do this by default. This box has no echo-cancel or
-  noise-suppression module loaded; checked with `pactl list short modules`.)
+Not a fixed 44100. **The canon is the device's rate**, because the canon is really "what
+the detector saw", and the detector hears the device. Resampling a take to a nominal number
+would be processing, and processing is banned here for the same reason AGC is: it alters
+the quantity being measured.
+
+⚠ **The five takes below are 44100; the app's PulseAudio capture runs at 48000**
+(`PULSE_CAPTURE_RATE`). They were recorded by hand with `parecord --rate=44100` before the
+recorder existed, so the original corpus is *not quite* the signal the live detector sees.
+The gap is small and has not been shown to matter, but it is real, it is unmeasured, and
+new takes will be 48 kHz. Do not silently mix the two in a metric without saying so.
+
+The by-hand recipe, kept for other boxes and for reference — note it is the same `parec`
+invocation the app itself runs, plus a WAV header:
+
+```fish
+parecord --device=alsa_input.usb-3142_FIFINE_K669_Microphone-00.mono-fallback \
+         --file-format=wav --rate=48000 --channels=1 --format=s16le <name>.wav
+```
+
+**Never a lossy codec** — it discards quiet components first, i.e. exactly the weak 196 Hz
+fundamental this corpus is about.
 
 Verified clean on arrival, before any conclusion was drawn from them: no clipping, and
 mean 12–20 dB below peak, i.e. dynamics intact rather than compressed.

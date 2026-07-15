@@ -18,6 +18,7 @@ use std::cell::{
     Cell,
     RefCell,
 };
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use wasm_bindgen::closure::Closure;
@@ -42,6 +43,7 @@ use crate::audio::types::{
     DroneState,
     MelodyFrame,
     MelodyHistory,
+    RecorderStatus,
     ResonatorReading,
     TunerReading,
 };
@@ -319,6 +321,26 @@ impl AudioEngine {
             self.inner.last_resonator_post.set(now);
             post_to(&self.inner, &ToWorker::ResonatorWanted(true));
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Take recorder — absent here, and saying so is the point.
+    //
+    // A take exists to be evidence: the corpus in `testdata/` is what the pitch
+    // detector is measured against. This engine could not produce one even in
+    // principle — there is no filesystem to put a WAV on. So the status is
+    // `Unsupported` rather than `Idle`, which keeps the UI's Record button dead
+    // instead of letting it appear to work and record nowhere.
+    // ------------------------------------------------------------------
+
+    pub fn start_take(&self, _path: PathBuf) {
+    }
+
+    pub fn stop_take(&self) {
+    }
+
+    pub fn recorder_status(&self) -> RecorderStatus {
+        RecorderStatus::Unsupported
     }
 }
 

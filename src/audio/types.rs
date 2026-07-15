@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
@@ -254,6 +255,64 @@ pub enum AudioStatus {
     Idle,
     Listening,
     Error(String),
+}
+
+/// What the take recorder is doing right now. The UI reads this every frame; the
+/// writer thread (`audio::native::imp::recorder`) is the only thing that sets it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecorderStatus {
+    /// This build has no recorder. The browser engine captures through Web Audio
+    /// and has no filesystem to put a take on, so the control is dead rather than
+    /// quietly doing nothing — a Record button that silently records nowhere is
+    /// worse than one that says it cannot.
+    Unsupported,
+    Idle,
+    /// A take is open. `dropped` is live on purpose: if the writer starts losing
+    /// samples you want to know while you can still stop and redo the take, not
+    /// after you have played the whole thing (see [`TakeReport::dropped`]).
+    Recording {
+        path:    PathBuf,
+        seconds: f32,
+        dropped: u64,
+    },
+    /// The take that just finished. Held until the next one opens, so the UI has
+    /// something to report after the button goes back to idle.
+    Finished(TakeReport),
+    Failed(String),
+}
+
+/// The outcome of a finished take.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TakeReport {
+    pub path:        PathBuf,
+    /// The rate the device actually gave us — *not* a fixed 44100. Writing what
+    /// the device sent is what keeps the take equal to the signal the detector
+    /// saw; resampling it to match the older takes would be processing, and the
+    /// protocol in `testdata/README.md` forbids processing for exactly the reason
+    /// it forbids AGC — it alters the quantity being measured.
+    pub sample_rate: u32,
+    pub samples:     u64,
+    /// Samples the input callback captured but could not hand to the recorder,
+    /// because the writer had fallen behind and the ring was full.
+    ///
+    /// **Non-zero disqualifies the take.** The audio callback must never block,
+    /// so a full ring costs a sample rather than a stall — which means a take can
+    /// come out with a hole in it while looking and sounding perfectly normal.
+    /// Counting is the whole defence: it turns a silent corruption into a fact
+    /// you can act on. A take with a hole is not the signal the detector saw, and
+    /// therefore is not evidence.
+    pub dropped:     u64,
+}
+
+impl TakeReport {
+    pub fn seconds(&self) -> f32 {
+        self.samples as f32 / self.sample_rate as f32
+    }
+
+    /// Whether this take can be used as ground truth. See [`Self::dropped`].
+    pub fn is_evidence(&self) -> bool {
+        self.dropped == 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

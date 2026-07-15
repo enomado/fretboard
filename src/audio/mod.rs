@@ -36,9 +36,11 @@ pub use types::{
     MelodyFrame,
     MelodyHistory,
     NoteLine,
+    RecorderStatus,
     ResonatorReading,
     ResonatorSettings,
     StaffNote,
+    TakeReport,
     Timbre,
     TunerReading,
 };

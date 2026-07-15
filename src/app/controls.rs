@@ -1,3 +1,8 @@
+use std::path::{
+    Path,
+    PathBuf,
+};
+
 use eframe::egui::{
     self,
     CornerRadius,
@@ -28,6 +33,7 @@ use super::{
 use crate::audio::{
     AnalysisSettings,
     AudioInputKind,
+    RecorderStatus,
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
@@ -180,6 +186,8 @@ impl App {
 
                 ui.add_space(10.0);
                 self.draw_input_level(ui, input_level, selected_input_kind);
+                ui.add_space(10.0);
+                self.draw_take_recorder(ui);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let monitor_button = SegmentedButton::new(
@@ -354,6 +362,65 @@ impl App {
                         }
                     });
             });
+    }
+
+    /// Запись дубля: имя, кнопка, приговор по последнему дублю.
+    ///
+    /// Стоит сразу под ползунком гейна не случайно. Ползунок — ровно то, чего
+    /// дубль НЕ видит: отвод рекордера сидит на сыром сэмпле в аудио-колбэке, а
+    /// гейн применяется позже и в другом месте (`audio::native::imp::recorder`).
+    /// Соседство проговаривает это: крутить гейн во время записи можно, на файл
+    /// это не влияет.
+    fn draw_take_recorder(&mut self, ui: &mut Ui) {
+        let status = self.audio.recorder_status();
+
+        // Браузерная сборка писать некуда — и говорит об этом, вместо того чтобы
+        // показать кнопку, которая делает вид, что записала.
+        if status == RecorderStatus::Unsupported {
+            ui.label(
+                RichText::new(
+                    "Take recording needs the desktop build — the browser engine has no filesystem",
+                )
+                .color(color::TEXT_HINT)
+                .size(12.0),
+            );
+            return;
+        }
+
+        let recording = matches!(status, RecorderStatus::Recording { .. });
+
+        ui.horizontal(|ui| {
+            ui.add(RowCaption::new("Take"));
+
+            // Посреди дубля имя менять нечему: писатель уже держит файл открытым,
+            // и переименование не переоткрывает его, а начинает НОВЫЙ дубль.
+            ui.add_enabled(
+                !recording,
+                egui::TextEdit::singleline(&mut self.take_name)
+                    .desired_width(240.0)
+                    .hint_text("g_flageolet_f5"),
+            );
+
+            let (label, fill, stroke) = if recording {
+                ("Stop", color::STOP_FILL, color::STOP_STROKE)
+            } else {
+                ("Record", color::PLAY_FILL, color::PLAY_STROKE)
+            };
+            // Без имени писать некуда — но только для старта: начатый дубль
+            // остановить можно всегда.
+            let armed = recording || !self.take_name.trim().is_empty();
+            let button = SegmentedButton::colored(label, fill, stroke).min_width(88.0);
+            if ui.add_enabled(armed, button).clicked() {
+                if recording {
+                    self.audio.stop_take();
+                } else {
+                    self.audio.start_take(take_path(&self.take_name));
+                }
+            }
+        });
+
+        ui.add_space(6.0);
+        draw_take_status(ui, &status);
     }
 
     pub(super) fn draw_fretboard_controls(&mut self, ui: &mut Ui) {
@@ -858,6 +925,108 @@ impl App {
                 }
             });
     }
+}
+
+/// Куда ложится дубль.
+///
+/// `testdata/` в дереве ИСХОДНИКОВ — туда же, где живёт корпус, в который дубль
+/// и вступает, и который коммитится вместе с кодом. Отсюда `CARGO_MANIFEST_DIR`,
+/// а не рабочая директория: дубль не должен зависеть от того, откуда запустили
+/// приложение. Запись дублей — занятие разработческое, так что путь времени
+/// сборки здесь честнее рантаймового; на телефоне его нет, запись там честно
+/// упадёт с ошибкой пути, а не запишет дубль в никуда.
+fn take_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join(take_file_name(name))
+}
+
+/// Имя из поля ввода → имя файла.
+///
+/// Всё, кроме ASCII-букв/цифр/`_`/`-`, схлопывается в `_`. Две причины: имена
+/// корпуса живут в командных строках и путях (`g_open_slow_strokes.wav`), и так
+/// `/` или `..`, набранные в поле, не уводят запись за пределы `testdata/`.
+fn take_file_name(name: &str) -> String {
+    let slug: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{slug}.wav")
+}
+
+/// Приговор по дублю.
+///
+/// Главное здесь — `dropped`. Дубль с дырой выглядит нормально, звучит нормально
+/// и открывается любым плеером; единственное, что отличает его от улики, — это
+/// число. Поэтому оно на экране, а не в логе, и поэтому оно видно ещё во время
+/// записи: узнать, что дубль испорчен, надо пока его не поздно переиграть.
+fn draw_take_status(ui: &mut Ui, status: &RecorderStatus) {
+    let (text, tint) = match status {
+        // Отфильтрован вызывающим (`draw_take_recorder`).
+        RecorderStatus::Unsupported => return,
+        RecorderStatus::Idle => {
+            (
+                "Takes land in testdata/ at the device's own rate, tapped before the gain".to_owned(),
+                color::TEXT_HINT,
+            )
+        }
+        RecorderStatus::Recording {
+            path,
+            seconds,
+            dropped,
+        } => {
+            if *dropped > 0 {
+                (
+                    format!("● {seconds:.1} s — {dropped} samples dropped, this take is not evidence"),
+                    color::STATUS_ERROR,
+                )
+            } else {
+                (
+                    format!("● {seconds:.1} s → {}", take_label(path)),
+                    color::STATUS_LISTENING,
+                )
+            }
+        }
+        RecorderStatus::Finished(report) => {
+            if report.is_evidence() {
+                (
+                    format!(
+                        "Saved {} — {:.1} s at {} Hz",
+                        take_label(&report.path),
+                        report.seconds(),
+                        report.sample_rate
+                    ),
+                    color::STATUS_LISTENING,
+                )
+            } else {
+                (
+                    format!(
+                        "{} has a hole: {} samples dropped. Not evidence — record it again",
+                        take_label(&report.path),
+                        report.dropped
+                    ),
+                    color::STATUS_ERROR,
+                )
+            }
+        }
+        RecorderStatus::Failed(message) => (message.clone(), color::STATUS_ERROR),
+    };
+
+    ui.label(RichText::new(text).color(tint).size(12.0));
+}
+
+/// Дубль на экране — это имя файла: путь до `testdata/` одинаков у всех и только
+/// съедает строку. `unwrap` держится [`take_path`], которая всегда строит путь с
+/// именем файла на конце.
+fn take_label(path: &Path) -> String {
+    path.file_name().unwrap().to_string_lossy().into_owned()
 }
 
 // Plain-English help for the resonator config tab, one entry per knob, in the
