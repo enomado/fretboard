@@ -125,6 +125,73 @@ Benchmarks / comparisons: [pitch-benchmark (lars76)](https://github.com/lars76/p
 [Comparing PDAs vs data-driven (arXiv 2206.14357)](https://arxiv.org/pdf/2206.14357),
 [RT F0 via spectrogram+CNN (arXiv 2504.06165)](https://arxiv.org/pdf/2504.06165).
 
+### Data-driven, second pass — causal/real-time angle (2026-07-15)
+
+Second sweep, this time asking the question the first pass didn't: **does any network
+beat the bank's 8–29 ms?** Answer: **no, and none can** — every estimator surveyed needs
+~4–8 periods of signal in its analysis window, so latency is set by physics, not by the
+model class. What the networks buy is noise robustness on the *slow* plane, which the
+first pass already established. The rest of the sweep, model by model:
+
+- **[penn / FCNF0++](https://github.com/interactiveaudiolab/penn)** (Morrison et al. 2023,
+  [arXiv 2301.12258](https://arxiv.org/pdf/2301.12258)) — CREPE modernised: 1440 bins
+  (5 cents), 10 ms hop, entropy-based periodicity. The training-recipe paper (its `++`
+  practices are what CREPE++/DeepF0++ mean elsewhere). On the lars76 benchmark it scores
+  **84.8 %** — below Praat (84.7 % but faster) and well below SwiftF0. Window still
+  ~128 ms of 8 kHz audio. Superseded; skip.
+- **[HarmoF0](https://arxiv.org/pdf/2205.01019)** (2022) — log-scale dilated convolutions,
+  per-frame. Nice trick (dilation = harmonic spacing), but non-causal, heavier than PESTO,
+  and PESTO/SwiftF0 pass it. Skip.
+- **[SPICE](https://github.com/lars76/pitch-benchmark)** (Google 2019, self-supervised) —
+  benchmarked by lars76, lands mid-pack, superseded by PESTO on every axis. Skip.
+- **[TAPE](https://github.com/MTG/tape)** ([ICASSP 2023](https://ieeexplore.ieee.org/document/10096762/),
+  MTG/AudioLabs) — **violin-specific**, timbre-aware: estimates *the violin's* pitch inside
+  a violin–piano duet without source separation (two conv streams + a transformer, E3–E8,
+  480 bins). Solves a problem we don't have (accompaniment cross-talk), with hardware we
+  don't want to spend. Bookmark for a hypothetical "play along with accompaniment" mode;
+  irrelevant for solo latency.
+- **[PESTO's real-time numbers](https://transactions.ismir.net/articles/10.5334/tismir.251)**
+  (TISMIR 2025), now with specifics: max kernel = 8192 samples @ 48 kHz = **171 ms window,
+  ~85 ms inherent lag**; streamable cached-convolution VQT; <10 ms compute. So "real-time"
+  means *throughput*, not group delay — slow-plane only, and our pYIN at 128 ms already
+  sits in the same band with a better octave anchor story.
+- **[lars76/pitch-benchmark](https://github.com/lars76/pitch-benchmark)** leaderboard
+  (13 algorithms, 8 datasets): SwiftF0 **90.2 %**, RMVPE 87.2 % (best on vocals), CREPE
+  85.3 %, PENN 84.8 %, Praat 84.7 % (fastest classical, 2.8 ms/s audio). Confirms the
+  first pass: SwiftF0 is the only off-the-shelf net worth anything here — and its use for
+  us would be as an **independent oracle for `pitch_bench`** (398 KB MIT ONNX, runs
+  anywhere), a non-circular cross-check of our RPA harness, not a runtime component.
+
+**The find of the sweep —
+[RT-SWIPE](https://www.audiolabs-erlangen.de/content/05_fau/professor/00_mueller/03_publications/2025_MeierSSMB_RealTimeSWIPE_CMMR_ePrint.pdf)**
+(Meier, Strahl, Schwär, Müller, Balke — CMMR 2025, AudioLabs Erlangen). SWIPE made causal
+by **right-aligning** the per-candidate analysis windows against the newest sample
+(instead of centring them, which costs a constant N_max/2 delay). Delay becomes
+pitch-dependent: δ = N_i/2 = **4 periods of the pitch** — 400 Hz → ~10 ms, 200 Hz →
+~20 ms, 100 Hz → ~40 ms, 50 Hz → ~80 ms. Under strict frame-aligned RPA it "loses"
+(0.931 vs offline SWIPE's 0.960 on ChoraleBricks), but with a **time-tolerant RPA**
+(accept estimates arriving within τ; at τ = 46.4 ms) it matches the offline baseline —
+i.e. the errors were *delay*, not *scoring*. Three consequences for us:
+
+1. **Independent validation of `pitch_bench`'s lag sweep.** Their time-tolerant RPA is
+   the same diagnosis our lag sweep made (half our "errors" were timing) — published,
+   citable, same numbers band (their τ ≈ 23–46 ms vs our peak at 24 ms).
+2. **The bank already beats RT-SWIPE's delay curve.** Their causal SWIPE pays 4 periods;
+   the reassigned bank publishes at 8–29 ms across the whole range — at 100 Hz that is
+   29 ms vs their 40 ms, and the gap widens as pitch drops. Our fast plane is not just
+   competitive with the 2025 causal-classical frontier, it is ahead of it.
+3. Same group also published **[dYIN / dSWIPE](https://doi.org/10.1109/TASLPRO.2025.3581119)**
+   (IEEE TASLPRO 2025) — *differentiable* variants with trainable spectral templates,
+   explicitly aimed at per-instrument kernels. If we ever train anything, the menu is now
+   two entries: SWIPE-tiny's 647-tap Toeplitz layer (noise robustness) or dSWIPE-style
+   violin-tuned kernels (cross-talk robustness). Both keep the SWIPE frontend we have.
+
+Verdict of the second pass: **the "совсем идеальное" does not exist** — the 2025/26
+literature converged on exactly our architecture (causal SWIPE-family scorer + a
+delay-aware metric), and where it differs, we are ahead (IIR bank vs windowed FFT for the
+fast plane). The only outstanding neural item remains the one from the first pass:
+SWIPE-tiny, if and when noise becomes a measured problem.
+
 ### Onset / latency framing
 - **Onset detection** — catch the *start* of a note from the energy burst
   immediately, before the pitch stabilises; use it to trigger the note earlier.
