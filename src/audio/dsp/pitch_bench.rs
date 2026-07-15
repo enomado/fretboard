@@ -62,7 +62,20 @@ const CENTS_PER_OCTAVE: f32 = 1200.0;
 
 /// The bank's publish cadence — the rate `MelodyTracker` is contractually driven at, so
 /// scoring at any other hop would measure a detector the app does not run.
+///
+/// Also, by coincidence, `lars76/pitch-benchmark`'s frame rate for every dataset
+/// (256 samples at 16 kHz). That is what lets an external trajectory dumped by
+/// `tools/swiftf0_oracle.py` be compared to the bank frame-for-frame — see
+/// `external_rpa_on_corpus`.
 const BANK_HOP_SECONDS: f32 = 0.016;
+
+/// The band `lars76/pitch-benchmark` scores MDB-stem-synth in — `PitchDatasetMDBStemSynth`
+/// declares `fmin = 65, fmax = 2093`, overriding its own 46.875–2093.75 Hz default.
+///
+/// Not SwiftF0's range, and not a number to re-derive from the model's spec: it is the
+/// reference's arbitrary choice for this corpus, and reproducing their number requires
+/// reproducing their band. Applied to the **annotation**, not to the estimate.
+const REFERENCE_MDB_MASK_HZ: (f32, f32) = (65.0, 2093.0);
 
 /// Per-track verdict tally. Counts, not rates: rates are derived at print time so a
 /// per-track and a corpus-wide figure come from the same arithmetic.
@@ -121,8 +134,72 @@ impl Tally {
         }
     }
 
+    /// RPA as mir_eval defines it, and as every number in the literature's tables means
+    /// it: correct frames over **every** voiced frame of the annotation. A frame the
+    /// detector went silent on is a miss, not an absentee.
     fn rpa(&self) -> f32 {
         100.0 * self.correct as f32 / self.voiced.max(1) as f32
+    }
+
+    /// RPA as `lars76/pitch-benchmark` computes it — **a different metric with the same
+    /// name**, and the only one their published tables can be compared against.
+    ///
+    /// Their `run_single_evaluation` builds the denominator as `pred_voicing &
+    /// true_voicing`, so a voiced frame the detector answered with silence is dropped
+    /// from the denominator instead of counted wrong. That is accuracy *conditional on
+    /// the detector having spoken*; their harmonic mean puts the missing penalty back via
+    /// a separate voicing-recall term, so the composite is honest even though this
+    /// component, read alone, flatters.
+    ///
+    /// Derived rather than tallied: `voiced - silent_miss` **is** their denominator, since
+    /// `silent_miss` counts exactly the frames where truth is voiced and the estimate is
+    /// absent. No second scoring path, so the two conventions can never disagree about
+    /// anything except the division.
+    fn rpa_conditional(&self) -> f32 {
+        100.0 * self.correct as f32 / (self.voiced - self.silent_miss).max(1) as f32
+    }
+}
+
+/// The band an annotation is scored in.
+///
+/// # Why truth is rewritten rather than dropped
+///
+/// `lars76/pitch-benchmark` handles a corpus whose annotation strays outside the band an
+/// algorithm claims by keeping the pitch and zeroing its *periodicity*
+/// (`PitchDataset._validate_pitch`, with their default `clip_pitch=False`) — i.e. the
+/// frame stops being voiced but keeps participating, and a detector that crowns a pitch
+/// there is still charged a false positive. Dropping the frame outright would be a third
+/// convention, matching neither them nor us.
+///
+/// So this maps out-of-band truth onto `None`, which is already how this module spells
+/// "unvoiced", and `score_frame` needs no new branch to honour it.
+struct PitchMask {
+    lo_midi: f32,
+    hi_midi: f32,
+}
+
+impl PitchMask {
+    /// Everything is in band — what the bank's own benchmark has always done implicitly.
+    fn unbounded() -> Self {
+        PitchMask {
+            lo_midi: f32::NEG_INFINITY,
+            hi_midi: f32::INFINITY,
+        }
+    }
+
+    fn from_hz(lo_hz: f32, hi_hz: f32) -> Self {
+        assert!(lo_hz < hi_hz, "mask {lo_hz}..{hi_hz} Hz is empty");
+        PitchMask {
+            lo_midi: hz_to_midi(lo_hz),
+            hi_midi: hz_to_midi(hi_hz),
+        }
+    }
+
+    /// Out-of-band truth becomes unvoiced truth. Applied to the **annotation** only: the
+    /// estimate is left exactly as its estimator emitted it, because clamping an estimate
+    /// into the band would score a pitch nobody predicted.
+    fn admit(&self, truth: Option<f32>) -> Option<f32> {
+        truth.filter(|midi| *midi >= self.lo_midi && *midi <= self.hi_midi)
     }
 }
 
@@ -218,7 +295,7 @@ fn load_annotation(path: &Path) -> Annotation {
 ///   literature, whose FFT-based estimators centre a symmetric window and are therefore
 ///   delay-compensated by construction. Comparing our IIR at lag 0 to their centred FFT
 ///   flatters *them*.
-fn bench_track(audio: &Path, annotation: &Annotation, lags_seconds: &[f32]) -> Vec<Tally> {
+fn bench_track(audio: &Path, annotation: &Annotation, mask: &PitchMask, lags_seconds: &[f32]) -> Vec<Tally> {
     let mut reader = hound::WavReader::open(audio).unwrap();
     let sample_rate = reader.spec().sample_rate as f32;
     let samples: Vec<f32> = reader
@@ -241,7 +318,55 @@ fn bench_track(audio: &Path, annotation: &Annotation, lags_seconds: &[f32]) -> V
         let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
 
         for (tally, lag) in tallies.iter_mut().zip(lags_seconds) {
-            score_frame(tally, annotation.at(seconds - lag), snapshot.fundamental);
+            score_frame(
+                tally,
+                mask.admit(annotation.at(seconds - lag)),
+                snapshot.fundamental,
+            );
+        }
+    }
+    tallies
+}
+
+/// Score a trajectory this pipeline did not produce — a CSV from some other estimator —
+/// through the **same** `score_frame`, the same lag sweep, and the same `Tally` the bank's
+/// own frames go through.
+///
+/// # Why the harness needs this at all
+///
+/// Every number this module has ever printed was produced by code that has never been
+/// checked against anything outside this repository. `testdata/`'s violin takes and
+/// MDB-stem-synth both ask "is the detector right"; neither asks "is the *scorer* right",
+/// and a benchmark that errs in its own favour is worse than no benchmark. Feed it a
+/// trajectory whose verdict is already known from a reference implementation, and the
+/// scorer is the only unknown left in the equation.
+///
+/// `tools/swiftf0_oracle.py` produces the trajectory (SwiftF0, driven by
+/// `lars76/pitch-benchmark` at a pinned commit) and records that harness's verdict on it
+/// in `run.json`. See `external_rpa_on_corpus` for what agreement is required.
+///
+/// # Why the estimate's own timestamps are the grid
+///
+/// The external file *is* the frame grid: its rows are scored where they sit, not
+/// resampled onto the bank's hop. Resampling an estimate invents pitches its estimator
+/// never emitted — and at a 50-cent tolerance an invented pitch is not a rounding
+/// difference, it is a different answer. That the two grids coincide anyway
+/// (`BANK_HOP_SECONDS` == their 256/16000 s) is luck worth keeping, not a licence to
+/// interpolate.
+fn bench_external(
+    estimates: &Annotation,
+    annotation: &Annotation,
+    mask: &PitchMask,
+    lags_seconds: &[f32],
+) -> Vec<Tally> {
+    let mut tallies = vec![Tally::default(); lags_seconds.len()];
+    for (index, seconds) in estimates.times.iter().enumerate() {
+        // Strength is what the bank reports alongside a pitch and what `score_frame`
+        // ignores (`_strength`); an external CSV carries no such thing, so 1.0 is a
+        // placeholder for a field with no reader — not a confidence we are asserting.
+        let estimate = estimates.midi[index].map(|midi| (midi, 1.0));
+        for (tally, lag) in tallies.iter_mut().zip(lags_seconds) {
+            score_frame(tally, mask.admit(annotation.at(seconds - lag)), estimate);
         }
     }
     tallies
@@ -321,48 +446,72 @@ fn tracks() -> Vec<(String, PathBuf, PathBuf)> {
     found
 }
 
-/// **The baseline.** RPA of the shipped SWIPE′ over the corpus.
+/// The tracks a run covers, after `PITCH_BENCH_FILTER` (substring of the track id, e.g.
+/// `violin`) and `PITCH_BENCH_LIMIT` (max tracks).
 ///
-/// Scoped by `PITCH_BENCH_FILTER` (substring of the track id, e.g. `violin`) and
-/// `PITCH_BENCH_LIMIT` (max tracks). Both exist because the full corpus is 15.5 hours
-/// through a per-sample IIR bank — hours of CPU, which is a fine overnight run and a
-/// terrible edit-test loop. Default: every track, because the default should be the
-/// honest number.
-#[test]
-#[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
-fn swipe_rpa_on_corpus() {
+/// Both exist because the full corpus is 15.5 hours through a per-sample IIR bank — hours
+/// of CPU, which is a fine overnight run and a terrible edit-test loop. Default: every
+/// track, because the default should be the honest number.
+fn selected_tracks() -> Vec<(String, PathBuf, PathBuf)> {
     let filter = std::env::var("PITCH_BENCH_FILTER").unwrap_or_default();
     let limit: usize = std::env::var("PITCH_BENCH_LIMIT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(usize::MAX);
-    // The lag sweep, in milliseconds. `0` must stay first and stay present: it is the
-    // pipeline's real number, and the one the summary leads with. The rest bracket the
-    // bank's measured 8–29 ms group delay so the plateau is visible rather than assumed.
-    let lags_ms: Vec<f32> = std::env::var("PITCH_BENCH_LAGS_MS")
-        .map(|v| v.split(',').map(|p| p.trim().parse().unwrap()).collect())
-        .unwrap_or_else(|_| vec![0.0, 8.0, 16.0, 24.0, 32.0]);
-    let lags_seconds: Vec<f32> = lags_ms.iter().map(|ms| ms / 1000.0).collect();
-
     let selected: Vec<_> = tracks()
         .into_iter()
         .filter(|(id, _, _)| filter.is_empty() || id.to_lowercase().contains(&filter.to_lowercase()))
         .take(limit)
         .collect();
     assert!(!selected.is_empty(), "no tracks matched filter {filter:?}");
-
-    println!(
-        "\n=== SWIPE′ RPA · MDB-stem-synth · {} tracks ===",
-        selected.len()
-    );
     if !filter.is_empty() {
         println!("    filter: {filter:?}");
     }
+    selected
+}
+
+/// The lag sweep in milliseconds, from `PITCH_BENCH_LAGS_MS` or `default`.
+///
+/// `0` must stay first and stay present in any default: it is the pipeline's real number
+/// and the one `report` leads with.
+fn lags_ms_from_env(default: &[f32]) -> Vec<f32> {
+    std::env::var("PITCH_BENCH_LAGS_MS")
+        .map(|v| v.split(',').map(|p| p.trim().parse().unwrap()).collect())
+        .unwrap_or_else(|_| default.to_vec())
+}
+
+/// The scoring band, from `PITCH_BENCH_MASK_HZ` (`"65,2093"`) or `default`.
+fn mask_from_env(default: PitchMask) -> PitchMask {
+    match std::env::var("PITCH_BENCH_MASK_HZ") {
+        Err(_) => default,
+        Ok(spec) => {
+            let (lo, hi) = spec.split_once(',').unwrap();
+            PitchMask::from_hz(lo.trim().parse().unwrap(), hi.trim().parse().unwrap())
+        }
+    }
+}
+
+/// **The baseline.** RPA of the shipped SWIPE′ over the corpus.
+#[test]
+#[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
+fn swipe_rpa_on_corpus() {
+    // The default brackets the bank's measured 8–29 ms group delay so the plateau is
+    // visible rather than assumed.
+    let lags_ms = lags_ms_from_env(&[0.0, 8.0, 16.0, 24.0, 32.0]);
+    let lags_seconds: Vec<f32> = lags_ms.iter().map(|ms| ms / 1000.0).collect();
+    // Unbounded by default: this measures the detector the app ships, and the app does not
+    // stop hearing at 2093 Hz. A band is opt-in, for when a run has to be made comparable
+    // to something that has one.
+    let mask = mask_from_env(PitchMask::unbounded());
+
+    println!("\n=== SWIPE′ RPA · MDB-stem-synth ===");
+    let selected = selected_tracks();
+    println!("    {} tracks", selected.len());
     let mut per_lag = vec![Tally::default(); lags_seconds.len()];
 
     for (id, wav, csv) in &selected {
         let annotation = load_annotation(csv);
-        let tallies = bench_track(wav, &annotation, &lags_seconds);
+        let tallies = bench_track(wav, &annotation, &mask, &lags_seconds);
         for (corpus, tally) in per_lag.iter_mut().zip(&tallies) {
             corpus.merge(tally);
         }
@@ -372,13 +521,220 @@ fn swipe_rpa_on_corpus() {
         println!("  {:<48} RPA {}", id, sweep.join(" "));
     }
 
+    report("the pipeline as the player hears it", &lags_ms, &per_lag);
+    println!(
+        "\n  Reading it: lag 0 is the pipeline (what the player gets). A lag near the\n  \
+         bank's 8–29 ms group delay is the *scorer*, and is what the literature's\n  \
+         symmetric-window FFT estimators are already compensated for by construction."
+    );
+    println!(
+        "\n  for scale — Marttila & Reiss 2025, Table 1/3 (MDB-stem-synth):\n    \
+         SWIPE (their impl, mel) 96.1%   SWIPE-tiny 96.5%   PESTO 94.6%   pYIN 91.6%"
+    );
+}
+
+/// **The check on the checker.** Score SwiftF0's trajectory with our scorer and require
+/// our arithmetic to reproduce the reference harness's verdict on the same trajectory.
+///
+/// # What this proves, and what it does not
+///
+/// Not "is SwiftF0 good" — that is their business and already published. This asks the
+/// one question `swipe_rpa_on_corpus` structurally cannot ask about itself: **is our
+/// scoring code right?** Both harnesses see identical inputs (the same annotation, the
+/// same trajectory, the same band), so any disagreement in the verdict is a disagreement
+/// about arithmetic, alignment, or the voicing convention — and one of the two is wrong.
+///
+/// The comparison is against `rpa_conditional`, not `rpa`: theirs is the conditional
+/// metric, and holding our own definition up against their number would be comparing two
+/// different quantities and calling the difference a bug.
+///
+/// # Why the gate scores against *their* annotation
+///
+/// The reference does not score against the corpus's annotation — it scores against its
+/// own resampling of it, and that resampling drifts. `PitchDataset.process_sample` maps
+/// annotation index `i` onto frame `i·(L−1)/(N−1)` (`align_corners=True`), so for a 171 s
+/// track frame `j` reads the truth from `0.0160013·j` seconds while the harness labels it
+/// `0.016·j`. The error accumulates to roughly 14 ms — most of a frame — by the end of a
+/// long track, and leaves ~5.8 % of voiced frames with a truth more than 50 cents from the
+/// corpus's own.
+///
+/// Scored against the corpus annotation, this test found our figure 3.12 points *above*
+/// theirs — not because either scorer is wrong, but because the two were being asked about
+/// different truths. So the gate holds the annotation fixed at theirs (`truth/`, dumped by
+/// the same script that produced the trajectory) and lets the scorers be the only variable.
+/// The corpus-annotation number is reported too, and it is the more accurate of the two —
+/// but it cannot arbitrate arithmetic, which is this test's only job.
+///
+/// # Prerequisite
+///
+/// ```text
+/// uv run tools/swiftf0_oracle.py                    # writes datasets/oracle_swiftf0/
+/// cargo test --lib external_rpa_on_corpus -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs datasets/oracle_swiftf0 — run tools/swiftf0_oracle.py first"]
+fn external_rpa_on_corpus() {
+    let oracle_dir = std::env::var("PITCH_BENCH_EXTERNAL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasets/oracle_swiftf0"));
+    let manifest_path = oracle_dir.join("run.json");
+    assert!(
+        manifest_path.is_file(),
+        "no oracle at {} — run `uv run tools/swiftf0_oracle.py` first",
+        manifest_path.display()
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+
+    // Their band, read from the run that produced these CSVs rather than assumed. If the
+    // oracle was generated under a different mask than we score under, the two numbers
+    // describe different frame populations and comparing them is meaningless — so this is
+    // an assert, not a default.
+    let mask_hz = (
+        manifest["mask_hz"][0].as_f64().unwrap() as f32,
+        manifest["mask_hz"][1].as_f64().unwrap() as f32,
+    );
+    assert_eq!(
+        mask_hz, REFERENCE_MDB_MASK_HZ,
+        "oracle was produced under a band this test does not know how to compare in"
+    );
+    let mask = mask_from_env(PitchMask::from_hz(mask_hz.0, mask_hz.1));
+
+    // Lag 0 is the comparison point: their harness has no lag concept — it scores frame k
+    // against the annotation resampled onto frame k — so lag 0 is the only setting that
+    // asks them and us the same question. The rest of the sweep is diagnosis: SwiftF0
+    // centres its window and is delay-compensated by construction, so a peak *away* from
+    // 0 would mean the two grids are offset, not that the model is late.
+    let lags_ms = lags_ms_from_env(&[0.0, -16.0, -8.0, 8.0, 16.0]);
+    let lags_seconds: Vec<f32> = lags_ms.iter().map(|ms| ms / 1000.0).collect();
+
+    println!("\n=== SwiftF0 (external trajectory) · MDB-stem-synth ===");
+    println!(
+        "    oracle : {} @ threshold {}",
+        manifest["reference_commit"].as_str().unwrap(),
+        manifest["optimal_threshold"]
+    );
+    println!("    audio  : {}", manifest["audio"].as_str().unwrap());
+    println!("    mask   : {}-{} Hz (theirs)", mask_hz.0, mask_hz.1);
+
+    let truth_dir = oracle_dir.join(manifest["truth_subdir"].as_str().unwrap());
+    assert!(
+        truth_dir.is_dir(),
+        "oracle at {} predates the truth dump — re-run tools/swiftf0_oracle.py",
+        oracle_dir.display()
+    );
+
+    let selected = selected_tracks();
+    let mut per_lag = vec![Tally::default(); lags_seconds.len()];
+    // The gate's tally: their trajectory against their annotation, at lag 0 only. Lag has
+    // no meaning here — both sit on the same grid by construction, so `Annotation::at`
+    // lands on the exact frame and interpolates nothing.
+    let mut gate_tally = Tally::default();
+    let mut covered = 0usize;
+
+    for (id, _wav, csv) in &selected {
+        let estimates_path = oracle_dir.join(format!("{id}.csv"));
+        // A missing CSV is not a failure: the reference skips tracks its annotation calls
+        // silent throughout, so those legitimately have no trajectory.
+        if !estimates_path.is_file() {
+            continue;
+        }
+        covered += 1;
+        // The oracle CSV and the corpus annotation are the same format — `time,frequency`
+        // with 0 Hz for unvoiced — which is exactly why `tools/swiftf0_oracle.py` writes
+        // that format and these lines need no second parser.
+        let estimates = load_annotation(&estimates_path);
+
+        // Pass 1 — the gate: their truth, so the scorers are the only difference left.
+        // Unbounded mask, because their `_validate_pitch` already zeroed the periodicity
+        // of out-of-band frames before this file was written; masking again would be
+        // masking twice.
+        let their_truth = load_annotation(&truth_dir.join(format!("{id}.csv")));
+        let gate_pass = bench_external(&estimates, &their_truth, &PitchMask::unbounded(), &[0.0]);
+        gate_tally.merge(&gate_pass[0]);
+
+        // Pass 2 — the report: the corpus's own annotation, which is the accurate one.
+        let annotation = load_annotation(csv);
+        let tallies = bench_external(&estimates, &annotation, &mask, &lags_seconds);
+        for (corpus, tally) in per_lag.iter_mut().zip(&tallies) {
+            corpus.merge(tally);
+        }
+        let sweep: Vec<String> = tallies.iter().map(|t| format!("{:>5.1}", t.rpa())).collect();
+        println!("  {:<48} RPA {}", id, sweep.join(" "));
+    }
+    assert!(covered > 0, "no oracle CSV matched any selected track");
+
+    report(
+        "SwiftF0, scored by our harness on the corpus annotation",
+        &lags_ms,
+        &per_lag,
+    );
+
+    let their_tracks = manifest["tracks"].as_array().unwrap().len();
+    let their_rpa = 100.0 * manifest["reference_metrics"]["pitch"]["rpa"].as_f64().unwrap() as f32;
+    let gated = gate_tally.rpa_conditional();
+    println!("\n=== gate — does our scorer agree with the reference? ===");
+    println!("  (both sides scoring the same trajectory against the same annotation)");
+    println!("  reference harness  : {their_rpa:.2}%   (their code)");
+    println!("  our harness        : {gated:.2}%   (our code)");
+    println!("  delta              : {:+.2} points", gated - their_rpa);
+    println!(
+        "\n  for contrast, our harness on the *corpus* annotation: {:.2}%\n  \
+         ({:+.2} points, which is what their annotation's ~14 ms end-of-track drift costs\n  \
+         them — not a scorer disagreement)",
+        per_lag[0].rpa_conditional(),
+        per_lag[0].rpa_conditional() - their_rpa
+    );
+
+    // Their aggregate is one number over every track concatenated, so a filtered or
+    // truncated run scores a different population and cannot be held to it — say so rather
+    // than comparing anyway.
+    if covered != their_tracks {
+        println!(
+            "\n  SUBSET RUN ({covered} of {their_tracks} tracks) — gate skipped. The reference\n  \
+             figure is an aggregate over every track; rerun without PITCH_BENCH_FILTER/LIMIT\n  \
+             to hold our number to it."
+        );
+        return;
+    }
+    // Tight on purpose. With the annotation, the trajectory, the grid and the band all
+    // held identical, there is no modelled reason for *any* daylight between the two
+    // scorers: the remaining freedom is float accumulation order over ~1.5 M frames. A
+    // drift past this is a real disagreement about the metric and is worth stopping for.
+    let tolerance = 0.05;
+    assert!(
+        (gated - their_rpa).abs() <= tolerance,
+        "our scorer and the reference disagree by {:+.2} points on the SAME trajectory \
+         against the SAME annotation (ours {gated:.2}% vs theirs {their_rpa:.2}%). One of \
+         the two is wrong, and until it is found every number this module prints is \
+         unattributable.",
+        gated - their_rpa
+    );
+    println!("\n  AGREED within {tolerance} points — our RPA arithmetic reproduces the reference's.");
+}
+
+/// Print a corpus verdict and its lag sweep.
+///
+/// Shared by the bank's benchmark and the external-trajectory one so the two can never
+/// drift into reporting slightly different arithmetic under the same column headings —
+/// which would defeat the entire point of running an external trajectory through this
+/// harness.
+fn report(headline: &str, lags_ms: &[f32], per_lag: &[Tally]) {
     // The corpus lines are reported at lag 0 — the pipeline's real number. The sweep
     // below it is what says how much of the gap is timing rather than scoring.
     let corpus = per_lag[0].clone();
     let pct = |n: u32, d: u32| 100.0 * n as f32 / d.max(1) as f32;
-    println!("\n=== corpus · lag 0 — the pipeline as the player hears it ===");
+    println!("\n=== corpus · lag 0 — {headline} ===");
     println!("  voiced frames      : {}", corpus.voiced);
     println!("  RPA                : {:.2}%   <- the number", corpus.rpa());
+    // Printed on every run, next to our own number, so that the one figure the reference
+    // publishes is never silently compared against the one we mean. They are different
+    // metrics; keeping them adjacent is what stops the confusion from recurring.
+    println!(
+        "  RPA, their denom.  : {:.2}%   <- lars76/pitch-benchmark's convention (pred ∧ \
+         true), NOT mir_eval's",
+        corpus.rpa_conditional()
+    );
     println!(
         "  octave errors      : {:>5.2}%  ({} frames)",
         pct(corpus.octave, corpus.voiced),
@@ -431,7 +787,7 @@ fn swipe_rpa_on_corpus() {
     // answering about a moment that has passed.
     println!("\n=== lag sweep — timing vs scoring ===");
     println!("  lag(ms)    RPA     octave%   other%   ±1 semitone (share of misses)");
-    for (lag_ms, tally) in lags_ms.iter().zip(&per_lag) {
+    for (lag_ms, tally) in lags_ms.iter().zip(per_lag) {
         let adjacent: u32 = tally.error_intervals.get(&1).copied().unwrap_or(0)
             + tally.error_intervals.get(&-1).copied().unwrap_or(0);
         let missed: u32 = tally.error_intervals.values().sum();
@@ -444,13 +800,4 @@ fn swipe_rpa_on_corpus() {
             pct(adjacent, missed)
         );
     }
-    println!(
-        "\n  Reading it: lag 0 is the pipeline (what the player gets). A lag near the\n  \
-         bank's 8–29 ms group delay is the *scorer*, and is what the literature's\n  \
-         symmetric-window FFT estimators are already compensated for by construction."
-    );
-    println!(
-        "\n  for scale — Marttila & Reiss 2025, Table 1/3 (MDB-stem-synth):\n    \
-         SWIPE (their impl, mel) 96.1%   SWIPE-tiny 96.5%   PESTO 94.6%   pYIN 91.6%"
-    );
 }

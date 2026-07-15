@@ -121,6 +121,97 @@ Neither is the "real" one; quoting only the flattering one would be the lie.
   RPA (voiced-only), reported because hearing notes in silence is a different defect from
   mis-hearing them.
 
+## The external oracle — the check on the checker
+
+Everything above is our code measuring our detector. Until 2026-07-15 no number this
+harness printed had ever been compared to anything outside this repository, which is a
+problem no amount of internal care fixes: a benchmark that is wrong *in its own favour*
+is worse than no benchmark.
+
+So we run a reference implementation, feed its trajectory through our scorer, and require
+the two harnesses to agree.
+
+```sh
+uv run tools/swiftf0_oracle.py       # ~10 min, writes datasets/oracle_swiftf0/
+cargo test --release --lib external_rpa_on_corpus -- --ignored --nocapture
+```
+
+`tools/swiftf0_oracle.py` drives **SwiftF0** (MIT, 398 KB ONNX, ranked #1 in
+[`lars76/pitch-benchmark`](https://github.com/lars76/pitch-benchmark)) through *that
+repository's own harness*, pinned at commit `87982db2` and cloned on demand into the
+git-ignored `datasets/reference/`. Their dataset loader, their algorithm wrapper, their
+metric — imported, never reimplemented, because the entire point is to be checked by code
+we did not write.
+
+**Result: our scorer reproduces theirs exactly — 91.98 % vs 91.98 %, a delta of +0.00
+points over 1.26 M frames.** Our RPA arithmetic is not the weak link in any number here.
+
+Getting to that comparison meant establishing four things about their numbers first, each
+of which independently breaks the naive "does our RPA match their published RPA?" check:
+
+1. **Their `rpa` is not RPA.** `run_single_evaluation` builds the denominator as
+   `pred_voicing & true_voicing`: a voiced frame the detector answered with *silence* is
+   dropped from the denominator rather than counted wrong. That is accuracy conditional on
+   the detector having spoken. mir_eval — and `Tally::rpa` — divide by every voiced frame.
+   Their composite is still honest; it re-applies the penalty through a separate
+   voicing-recall term. But the component, read alone, flatters. `Tally::rpa_conditional`
+   exists solely to speak their dialect, and the summary prints both side by side.
+2. **Their published 92.0 % for MDB-stem-synth is not RPA either** — it is a harmonic mean
+   of six metrics (RPA, cents accuracy, voicing precision/recall, octave accuracy, gross
+   error accuracy). Per-dataset RPA is never published; the only RPA they report (0.905)
+   is aggregated across all eight datasets. That 90.2 % ≈ 0.905 coincidence is a trap.
+3. **Their published numbers are measured on noise-augmented audio.** `pitch_benchmark.py`
+   unconditionally wraps the corpus in `CHiMeNoiseDataset` — CHiME-Home plus Gaussian
+   noise, SNR 10–30 dB, random voice gain ±6 dB. There is no clean path through their
+   runner. Our oracle script skips the wrapper (its single deliberate deviation), so our
+   93.96 % harmonic mean on clean audio sits about two points above their noisy 92.0 %,
+   in the direction and of the size one would expect.
+4. **Their threshold is oracle-tuned per dataset** — swept 0…1 in steps of 0.1, best
+   kept. A ceiling, not a production setting. (0.9 wins on clean MDB, consistent with the
+   0.887 baked into their wrapper.)
+
+### The reference's annotation drifts — and it costs them 4.27 points
+
+The gate scores against **their** resampled annotation (`datasets/oracle_swiftf0/truth/`),
+not the corpus's. That is not a detail; it is what makes the comparison decidable.
+
+`PitchDataset.process_sample` resamples the 2.9 ms annotation onto the frame grid with
+`F.interpolate(mode="linear", align_corners=True)`. `align_corners` maps annotation index
+`i` onto frame `i·(L−1)/(N−1)`, so on a 171-second track frame `j` reads its truth from
+`0.0160013·j` seconds while the harness labels that frame `0.016·j`. The error is tiny per
+frame and accumulates linearly: **~14 ms by the end of a long track, most of a whole
+frame.** On 5.79 % of voiced frames their truth ends up more than 50 cents from the
+corpus's own (worst case 946 cents), and every one of the worst frames sits in the tail of
+its track.
+
+Scored against the corpus annotation, SwiftF0 gets **96.25 %** by their own metric; against
+their drifted annotation, **91.98 %**. The 4.27-point gap is not a scorer disagreement —
+it is the reference marking a correct answer wrong because it is asking about the wrong
+moment. (The first cut of this gate scored against the corpus annotation and reported our
+number 3.12 points "above" theirs, which is how the drift was found. The hypothesis that
+linear interpolation was blending the 0 Hz unvoiced markers into real pitches was tested
+and rejected: only 18 of 389 corrupted frames sit on a voiced/unvoiced boundary.)
+
+So the harness holds the annotation fixed at theirs and lets the scorers be the only
+variable. Our own numbers keep using the corpus annotation, which is the accurate one.
+
+### What the oracle says about SwiftF0 itself
+
+Incidentally — not the point of the exercise, but the map for [the RT-SWIPE
+track](pitch_detection_survey.md):
+
+| | RPA (mir_eval convention, corpus annotation) |
+|---|---|
+| SwiftF0, lag 0 | 87.87 % |
+| SwiftF0, lag +8 ms | **89.54 %** |
+
+The sweep peaking at +8 ms — half a hop — rather than 0 is worth a look before SwiftF0 is
+used to arbitrate anything about timing.
+
+The gap between that and its 96.25 % under their conditional metric is one number:
+**SwiftF0 declines 8.70 % of voiced frames outright**. Under mir_eval those are misses;
+under theirs they vanish from the denominator. Same trajectory, nine points of headline.
+
 ## What it deliberately does not do
 
 - **No annotation interpolation.** Nearest neighbour only. The corpus grid (2.9 ms) is
