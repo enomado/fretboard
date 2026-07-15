@@ -508,6 +508,7 @@ impl MelodyTracker {
 mod beta_sweep {
     use super::*;
     use crate::audio::dsp::resonator::ResonatorAnalyzer;
+    use crate::audio::dsp::rtswipe::RtSwipe;
     use crate::core_types::note::AccidentalStyle;
 
     /// The candidate exchange rates. Spans three orders of magnitude because the honest
@@ -578,6 +579,82 @@ mod beta_sweep {
         verdicts
     }
 
+    /// The same take through the **other frontend** — RT-SWIPE's per-frame argmax.
+    ///
+    /// A twin of [`argmax_take`] on purpose, down to the one-second skip: RT-SWIPE starts on a
+    /// zeroed history exactly as the bank starts discharged, so the opening frames are junk
+    /// for the same reason and must be dropped by the same rule, or the comparison measures
+    /// warm-up instead of scoring.
+    fn rtswipe_take(name: &str) -> Vec<Option<f32>> {
+        let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let sample_rate = reader.spec().sample_rate as f32;
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
+
+        let mut rtswipe = RtSwipe::new(sample_rate, 440.0);
+        let hop = (sample_rate * 0.016) as usize;
+        let mut verdicts = Vec::new();
+        let mut fed = 0usize;
+        while fed + hop <= samples.len() {
+            rtswipe.process_samples(&samples[fed..fed + hop]);
+            fed += hop;
+            if fed as f32 / sample_rate >= 1.0 {
+                verdicts.push(
+                    rtswipe
+                        .frame()
+                        .and_then(|frame| frame.argmax())
+                        .map(|(midi, _)| midi),
+                );
+            }
+        }
+        verdicts
+    }
+
+    /// **R2's other half.** The corpus says which frontend *scores* better; this asks whether
+    /// the FFT frontend keeps the one property the scorer was rebuilt for — the violin's
+    /// phantom octave, on the string whose fundamental the instrument barely radiates.
+    ///
+    /// A corpus of resynthesized stems cannot answer this: MDB-stem-synth has no bowed open G
+    /// with a crushed fundamental, and RPA at 50 cents would score an octave slip as just
+    /// another miss among many. These five takes are the real instrument
+    /// (`violin-recordings-are-the-ground-truth`), and `g_open_real_octave` is the control
+    /// that convicts a frontend which "fixes" octaves by shoving everything down: the G4 there
+    /// is *played*, and must remain.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn rtswipe_holds_the_octave_on_the_violin_takes() {
+        println!("\n=== two frontends · same takes · same kernel · per-frame argmax ===");
+        println!("(no Viterbi on either side — this is the raw evidence each frontend offers)");
+        for (name, lo, hi, must_remain) in TAKES {
+            let band = lo..=hi;
+            println!("\n--- {name}  (truth: MIDI {lo}..={hi}) ---");
+            let report = |label: &str, verdicts: &[Option<f32>]| {
+                let (inside, octave) = tally(verdicts, band.clone());
+                print!("  {label:<18}: in {inside:>5.1}%   octave-off {octave:>5.1}%");
+                for (note_label, midi) in must_remain {
+                    print!("   {note_label} {:>5.1}%", on_note(verdicts, *midi));
+                }
+                println!();
+            };
+            let bank = argmax_take(name);
+            let fft = rtswipe_take(name);
+            report("bank argmax", &bank);
+            println!("      says: {}", top_notes(&bank));
+            report("RT-SWIPE argmax", &fft);
+            println!("      says: {}", top_notes(&fft));
+        }
+        println!(
+            "\nNOTE: on `g_open_real_octave` the player bowed G3 AND the octave (G#4, a \
+             semitone\n  sharp — the take, not an error), so both are inside the band: read \
+             its two\n  right-hand columns, not its `in` figure. G4 there is unresolvable — \
+             the phantom\n  octave of G3 and a flat reading of the bowed G#4 are the same \
+             bin. On the strokes\n  the band is 55..=55, so `octave-off` there IS the phantom."
+        );
+    }
+
     /// Percentage of frames landing inside `band` (inclusive, MIDI), and the percentage that
     /// are an octave of something in it.
     fn tally(verdicts: &[Option<f32>], band: std::ops::RangeInclusive<i32>) -> (f32, f32) {
@@ -603,15 +680,65 @@ mod beta_sweep {
     /// take: notes that must **remain**. An in-band tally cannot convict anything there,
     /// because G3 is itself in the band — a decoder frozen on G3 for the whole take scores
     /// "100% in band" while having missed the entire point. Only "how many frames are on the
-    /// G4 the player actually bowed" can tell tracking from paralysis, and the sweep's low-β
-    /// rows are exactly that failure caught in the act.
+    /// octave the player actually bowed" can tell tracking from paralysis, and the sweep's
+    /// low-β rows are exactly that failure caught in the act.
+    ///
+    /// ⚠ **Corrected 2026-07-16 — the octave take's truth was G♯4, not G4.** This table said
+    /// `55..=67` / `G4`, and `testdata/README.md` says otherwise in as many words: *"the
+    /// played octave came out about a semitone sharp (reported as G♯4, ~415 Hz rather than
+    /// 392). That is the take, not a detector error — confirmed by the player"*. So the band
+    /// **excluded the note the player actually bowed**, `tally` filed it under *octave-off*,
+    /// and the `must_remain` column watched a note nobody played. Both frontends read G♯4 as
+    /// the take's second-most-common note (bank 30 %, RT-SWIPE 35 %), which is the take
+    /// agreeing with its README rather than with this table.
+    ///
+    /// This is the very mistake the README exists to prevent — *"a take whose truth is
+    /// guessed will be used to prove whatever the guess was"* — and it had been guessed here.
+    /// ⚠ It moves `salience_beta_sweep`'s numbers for this take (they were read against the
+    /// wrong truth); the ranking of β is unlikely to change, but the figures are not the ones
+    /// previously written down.
+    ///
+    /// G4 (67) stays genuinely ambiguous on this take and no tally can resolve it: it is both
+    /// the phantom octave of the open G *and* a semitone-flat reading of the bowed G♯4.
     const TAKES: [(&str, i32, i32, &[(&str, i32)]); 5] = [
         ("g_open_slow_strokes", 55, 55, &[]),
         ("g_open_fast_strokes", 55, 55, &[]),
-        ("g_open_real_octave", 55, 67, &[("G3", 55), ("G4", 67)]),
+        ("g_open_real_octave", 55, 68, &[("G3", 55), ("G#4", 68)]),
         ("g_string_trill", 55, 62, &[]),
         ("a_string_trill", 69, 76, &[]),
     ];
+
+    /// What a frontend actually says, most common first — the take's content by name rather
+    /// than filed into buckets someone chose in advance.
+    ///
+    /// This exists because of the mistake `testdata/README.md` records: `g_string_trill` was
+    /// once written up as the detector "spreading a fourth above the open G", when the player
+    /// had simply been playing first position and the probe's G3/G4 buckets were filing real
+    /// notes under "other". A histogram cannot make that error — it names what is there and
+    /// lets the reader compare it to what the player says they played.
+    fn top_notes(verdicts: &[Option<f32>]) -> String {
+        let total = verdicts.len().max(1) as f32;
+        let mut histogram: std::collections::BTreeMap<i32, u32> = Default::default();
+        for midi in verdicts.iter().flatten() {
+            *histogram.entry(midi.round() as i32).or_default() += 1;
+        }
+        let mut ranked: Vec<(i32, u32)> = histogram.into_iter().collect();
+        ranked.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        ranked
+            .iter()
+            .take(6)
+            .map(|(midi, count)| {
+                format!(
+                    "{}{} {:.0}%",
+                    names[(midi.rem_euclid(12)) as usize],
+                    midi / 12 - 1,
+                    100.0 * *count as f32 / total
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" · ")
+    }
 
     /// Percentage of frames sitting on exactly `midi`.
     fn on_note(verdicts: &[Option<f32>], midi: i32) -> f32 {
@@ -729,9 +856,10 @@ mod beta_sweep {
             }
         }
         println!(
-            "\nNOTE: `g_open_real_octave` counts the played G4 as INSIDE (band 55..=67) — a \
-             decoder that 'fixes' octaves by shoving everything down reads 100% there AND on \
-             the strokes. The strokes' band is 55..=55, so the contrast is what convicts."
+            "\nNOTE: `g_open_real_octave` counts the played octave (G#4) as INSIDE (band \
+             55..=68) — a\n  decoder that 'fixes' octaves by shoving everything down reads \
+             100% there AND on the\n  strokes. The strokes' band is 55..=55, so the contrast \
+             is what convicts."
         );
     }
 }

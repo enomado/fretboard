@@ -48,7 +48,16 @@ use std::path::{
 };
 
 use crate::audio::dsp::resonator::ResonatorAnalyzer;
+use crate::audio::dsp::rtswipe::RtSwipe;
 use crate::core_types::note::AccidentalStyle;
+
+/// A4, for every frequency↔MIDI conversion in this module.
+///
+/// Shared rather than spelled out per call site because it has to match in three places at
+/// once — [`hz_to_midi`] (which reads the annotation), the bank's default grid
+/// (`resonator`'s `reference_hz`) and [`RtSwipe::new`]'s. A frontend put on a grid the
+/// annotation is not on would lose cents to arithmetic and blame the detector.
+const CONCERT_PITCH_HZ: f32 = 440.0;
 
 /// mir_eval's raw-pitch-accuracy threshold, and the one behind every number in the
 /// paper's tables: a voiced frame is correct when the estimate lands within 50 cents of
@@ -268,7 +277,7 @@ impl Annotation {
 
 /// Hz → fractional MIDI. The corpus speaks Hz; the bank speaks MIDI.
 fn hz_to_midi(hz: f32) -> f32 {
-    69.0 + 12.0 * (hz / 440.0).log2()
+    69.0 + 12.0 * (hz / CONCERT_PITCH_HZ).log2()
 }
 
 /// Parse a `time,frequency` CSV. Frequency 0.0 means unvoiced.
@@ -344,6 +353,58 @@ fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> V
                 tally,
                 scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
                 snapshot.fundamental,
+            );
+        }
+    }
+    tallies
+}
+
+/// Drive **RT-SWIPE** over a track — [`bench_track`]'s twin for the other frontend.
+///
+/// Deliberately the same shape as `bench_track`, line for line: same hop, same timestamp
+/// convention, same `score_frame`, same sweep. The only difference is which frontend builds
+/// the [`SalienceFrame`], which is exactly the variable this comparison is about — the
+/// kernel, the decode and the scoring are shared code (`dsp::rtswipe` is a frontend to
+/// `dsp::swipe`, not a second detector).
+///
+/// # ⚠ A global lag handicaps this frontend, and the handicap is not a defect
+///
+/// The sweep shifts the annotation by **one** lag for a whole track, which suits the bank:
+/// its group delay is 8–29 ms across the range, so one number is nearly right everywhere.
+/// RT-SWIPE's delay is 4 periods **of the pitch** — 1.6 ms at E7, 20.7 at G3, 130 at C1
+/// (`rtswipe::tests::what_does_the_ladder_cost_in_delay`) — an 80-fold spread, and no single
+/// lag fits it. Expect a *flatter, lower* sweep than the bank's for that reason alone.
+///
+/// So the sweep is the apples-to-apples comparison (each frontend at its own best lag, as
+/// the kickstart's gate asks) and simultaneously an under-count of what this frontend could
+/// deliver: RT-SWIPE knows its own delay analytically per candidate
+/// ([`RtSwipe::delay_seconds`]), so a real integration would place each estimate in time
+/// itself. Scoring *that* needs a per-frame lag, which `Scoring` cannot express — the
+/// follow-up if and only if the sweep says the frontend is worth it.
+fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
+    let mut reader = hound::WavReader::open(audio).unwrap();
+    let sample_rate = reader.spec().sample_rate as f32;
+    let samples: Vec<f32> = reader
+        .samples::<i16>()
+        .map(|s| s.unwrap() as f32 / 32768.0)
+        .collect();
+
+    let mut rtswipe = RtSwipe::new(sample_rate, CONCERT_PITCH_HZ);
+    let hop = (sample_rate * BANK_HOP_SECONDS) as usize;
+    let mut tallies = vec![Tally::default(); scorings.len()];
+
+    let mut fed = 0usize;
+    while fed + hop <= samples.len() {
+        rtswipe.process_samples(&samples[fed..fed + hop]);
+        fed += hop;
+        let seconds = fed as f32 / sample_rate;
+        let estimate = rtswipe.frame().and_then(|frame| frame.argmax());
+
+        for (tally, scoring) in tallies.iter_mut().zip(scorings) {
+            score_frame(
+                tally,
+                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
+                estimate,
             );
         }
     }
@@ -605,6 +666,75 @@ fn swipe_rpa_on_corpus() {
     println!(
         "\n  for scale — Marttila & Reiss 2025, Table 1/3 (MDB-stem-synth):\n    \
          SWIPE (their impl, mel) 96.1%   SWIPE-tiny 96.5%   PESTO 94.6%   pYIN 91.6%"
+    );
+}
+
+/// **Track R's number.** RPA of the FFT frontend over the corpus, against the bank's.
+///
+/// Same corpus, same harness, same scorer, same sweep as [`swipe_rpa_on_corpus`] — the
+/// frontend is the only variable, which is the whole design of `dsp::rtswipe`. Read the two
+/// runs side by side; the baseline is printed below so a reading of this log needs nothing
+/// else open.
+///
+/// Prints rather than asserts, as every corpus run in this module does: a threshold baked in
+/// here would be a number nobody re-measures, and the bank's own figures move whenever the
+/// bank does. The *gate* is a judgement made against these numbers (the kickstart's R2), not
+/// an `assert` — and its second half, the phantom octave on `testdata/`, lives where the
+/// violin takes are.
+///
+/// ⚠ Before reading the gap to Marttila & Reiss's 96.1 %: **their metric has not been read**
+/// (`published-numbers-need-their-metric-read`). Track O showed on a live example that a
+/// published "RPA" was a different quantity by 9 points. The bank baseline below is the
+/// comparison that is definitely apples-to-apples; the literature line is scale, not a gate.
+#[test]
+#[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
+fn rtswipe_rpa_on_corpus() {
+    // The bank's sweep, unchanged, so the two logs' columns line up literally.
+    let lags_ms = lags_ms_from_env(&[0.0, 8.0, 16.0, 24.0, 32.0]);
+    let bands = bands_from_env();
+    let grid = scorings(&bands, &lags_ms);
+
+    println!("\n=== RT-SWIPE (FFT frontend) RPA · MDB-stem-synth ===");
+    let selected = selected_tracks();
+    println!(
+        "    {} tracks × {} bands × {} lags",
+        selected.len(),
+        bands.len(),
+        lags_ms.len()
+    );
+    let mut per_scoring = vec![Tally::default(); grid.len()];
+
+    for (id, wav, csv) in &selected {
+        let annotation = load_annotation(csv);
+        let tallies = bench_rtswipe(wav, &annotation, &grid);
+        for (corpus, tally) in per_scoring.iter_mut().zip(&tallies) {
+            corpus.merge(tally);
+        }
+        let sweep: Vec<String> = tallies[..lags_ms.len()]
+            .iter()
+            .map(|t| format!("{:>5.1}", t.rpa()))
+            .collect();
+        println!("  {:<48} RPA {}", id, sweep.join(" "));
+    }
+
+    for (index, (label, _)) in bands.iter().enumerate() {
+        let band = &per_scoring[index * lags_ms.len()..(index + 1) * lags_ms.len()];
+        report(label, &lags_ms, band);
+    }
+    println!(
+        "\n  The baseline this is here to beat — the bank over the same 230 tracks,\n  \
+         `swipe_rpa_on_corpus`, 2026-07-15 (datasets/bench_runs/):\n    \
+         full band     : 82.99% @ lag 0   90.18% @ lag 16 (its peak)\n    \
+         65-2093 Hz    : 83.93% @ lag 0   91.02% @ lag 16 (its peak)\n  \
+         and SwiftF0, scored by this same harness in the reference's band:\n    \
+         65-2093 Hz    : 87.87% @ lag 0   89.54% @ lag +8 (its peak)"
+    );
+    println!(
+        "\n  ⚠ A single lag handicaps this frontend: its delay is 4 periods OF THE PITCH\n  \
+         (1.6 ms at E7, 20.7 at G3, 130 at C1), so no one lag fits a whole track. A flat,\n  \
+         low sweep is that, not necessarily a worse scorer — see `bench_rtswipe`.\n  \
+         ⚠ Marttila & Reiss's 96.1% is NOT known to be this metric. Read their paper\n  \
+         before treating the gap as real — track O found exactly that trap costing 9 points."
     );
 }
 
