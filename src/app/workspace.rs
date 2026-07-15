@@ -134,6 +134,7 @@ impl App {
     pub(super) fn draw_workspace_tab(&mut self, ui: &mut Ui, tab: WorkspaceTab) {
         match tab {
             WorkspaceTab::Controls => self.draw_controls(ui),
+            WorkspaceTab::TakeRecorder => self.draw_take_recorder_card(ui),
             WorkspaceTab::FretboardControls => self.draw_fretboard_controls(ui),
             WorkspaceTab::InputScope => self.draw_input_scope_card(ui),
             WorkspaceTab::ConfigGeneral => self.draw_general_config_card(ui),

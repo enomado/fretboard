@@ -10,6 +10,7 @@ mod pitch_roll_panel;
 mod resonator_panel;
 mod scale_finder;
 mod staff_panel;
+mod take_panel;
 mod workspace;
 
 use std::ops::Range;
@@ -34,6 +35,7 @@ use crate::audio::{
     AudioInputKind,
     AudioInputOption,
     AudioStatus,
+    TakeReport,
 };
 use crate::core_types::note::{
     ANote,
@@ -179,6 +181,7 @@ impl LiveChartKind {
 #[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum WorkspaceTab {
     Controls,
+    TakeRecorder,
     FretboardControls,
     InputScope,
     ConfigGeneral,
@@ -198,8 +201,9 @@ enum WorkspaceTab {
 impl WorkspaceTab {
     /// Полный реестр панелей — источник для меню «Panels» (открыть/закрыть)
     /// и для дефолтной раскладки. Порядок = порядок в меню.
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::Controls,
+        Self::TakeRecorder,
         Self::FretboardControls,
         Self::InputScope,
         Self::ConfigGeneral,
@@ -219,6 +223,7 @@ impl WorkspaceTab {
     fn label(self) -> &'static str {
         match self {
             Self::Controls => "Controls",
+            Self::TakeRecorder => "Take Recorder",
             Self::FretboardControls => "Fretboard Controls",
             Self::InputScope => "Input Scope",
             Self::ConfigGeneral => "Config General",
@@ -266,6 +271,10 @@ pub struct App {
     /// каждый дубль называется по тому, что в нём сыграно, и переживать сессию
     /// прошлому имени незачем.
     take_name: String,
+    /// Дубли, записанные с запуска приложения, в порядке записи. Собирается
+    /// `harvest_finished_take` покадрово; не персистится и НЕ читается с диска —
+    /// это то, что записала эта сессия, а не опись `testdata/`.
+    takes: Vec<TakeReport>,
 }
 
 struct HoveredNote {
@@ -316,6 +325,7 @@ impl App {
             workspace_tree: Some(workspace::default_workspace_tree()),
             mobile_panel: WorkspaceTab::ResonatorSnail,
             take_name: String::new(),
+            takes: Vec::new(),
         };
 
         // Restore last session's preferences over the defaults built above.
@@ -608,6 +618,12 @@ pub fn rangef_to_range(range: Rangef) -> Range<f32> {
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut AppFrame) {
+        // Дубли собираем ЗДЕСЬ, а не в панели: панель может быть закрыта или
+        // просто не выбрана, а egui_tiles невидимые вкладки не рисует. Запись
+        // живёт в аудио-треде и на UI не смотрит — список не должен зависеть от
+        // того, куда смотрит юзер. См. `take_panel::harvest_finished_take`.
+        self.harvest_finished_take();
+
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         subsecond::call(|| self.render(ui));
 
