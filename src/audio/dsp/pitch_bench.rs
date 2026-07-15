@@ -173,6 +173,7 @@ impl Tally {
 ///
 /// So this maps out-of-band truth onto `None`, which is already how this module spells
 /// "unvoiced", and `score_frame` needs no new branch to honour it.
+#[derive(Clone)]
 struct PitchMask {
     lo_midi: f32,
     hi_midi: f32,
@@ -201,6 +202,27 @@ impl PitchMask {
     fn admit(&self, truth: Option<f32>) -> Option<f32> {
         truth.filter(|midi| *midi >= self.lo_midi && *midi <= self.hi_midi)
     }
+}
+
+/// One way of scoring a frame: which band the annotation is read in, and how far into the
+/// past to read it.
+///
+/// # Why these are one axis and not two loops
+///
+/// Driving the bank is ~99 % of this benchmark's cost — a per-sample IIR over ~670
+/// resonators, ~3.5 hours for the corpus — while consulting the annotation is a binary
+/// search. So every extra (band, lag) combination is free, and re-running the bank to ask
+/// a second question about the same audio would cost another 3.5 hours to learn something
+/// already sitting in the frame that was just computed.
+///
+/// The bands matter as much as the lags on this corpus: the reference's 65 Hz floor cuts
+/// **11.7 %** of MDB's voiced frames (its 2093 Hz ceiling cuts none — nothing here is that
+/// high). Full-band is the honest number for a detector that hears down to MIDI 24; the
+/// reference's band is the only one comparable to SwiftF0. Neither answers the other's
+/// question, so the sweep reports both.
+struct Scoring {
+    mask:        PitchMask,
+    lag_seconds: f32,
 }
 
 /// The annotation, resampled to nothing — kept exactly as the corpus wrote it.
@@ -295,7 +317,7 @@ fn load_annotation(path: &Path) -> Annotation {
 ///   literature, whose FFT-based estimators centre a symmetric window and are therefore
 ///   delay-compensated by construction. Comparing our IIR at lag 0 to their centred FFT
 ///   flatters *them*.
-fn bench_track(audio: &Path, annotation: &Annotation, mask: &PitchMask, lags_seconds: &[f32]) -> Vec<Tally> {
+fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
     let mut reader = hound::WavReader::open(audio).unwrap();
     let sample_rate = reader.spec().sample_rate as f32;
     let samples: Vec<f32> = reader
@@ -305,7 +327,7 @@ fn bench_track(audio: &Path, annotation: &Annotation, mask: &PitchMask, lags_sec
 
     let mut analyzer = ResonatorAnalyzer::new(sample_rate);
     let hop = (sample_rate * BANK_HOP_SECONDS) as usize;
-    let mut tallies = vec![Tally::default(); lags_seconds.len()];
+    let mut tallies = vec![Tally::default(); scorings.len()];
 
     let mut fed = 0usize;
     while fed + hop <= samples.len() {
@@ -317,10 +339,10 @@ fn bench_track(audio: &Path, annotation: &Annotation, mask: &PitchMask, lags_sec
         let seconds = fed as f32 / sample_rate;
         let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
 
-        for (tally, lag) in tallies.iter_mut().zip(lags_seconds) {
+        for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
                 tally,
-                mask.admit(annotation.at(seconds - lag)),
+                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
                 snapshot.fundamental,
             );
         }
@@ -353,20 +375,19 @@ fn bench_track(audio: &Path, annotation: &Annotation, mask: &PitchMask, lags_sec
 /// difference, it is a different answer. That the two grids coincide anyway
 /// (`BANK_HOP_SECONDS` == their 256/16000 s) is luck worth keeping, not a licence to
 /// interpolate.
-fn bench_external(
-    estimates: &Annotation,
-    annotation: &Annotation,
-    mask: &PitchMask,
-    lags_seconds: &[f32],
-) -> Vec<Tally> {
-    let mut tallies = vec![Tally::default(); lags_seconds.len()];
+fn bench_external(estimates: &Annotation, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
+    let mut tallies = vec![Tally::default(); scorings.len()];
     for (index, seconds) in estimates.times.iter().enumerate() {
         // Strength is what the bank reports alongside a pitch and what `score_frame`
         // ignores (`_strength`); an external CSV carries no such thing, so 1.0 is a
         // placeholder for a field with no reader — not a confidence we are asserting.
         let estimate = estimates.midi[index].map(|midi| (midi, 1.0));
-        for (tally, lag) in tallies.iter_mut().zip(lags_seconds) {
-            score_frame(tally, mask.admit(annotation.at(seconds - lag)), estimate);
+        for (tally, scoring) in tallies.iter_mut().zip(scorings) {
+            score_frame(
+                tally,
+                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
+                estimate,
+            );
         }
     }
     tallies
@@ -480,15 +501,60 @@ fn lags_ms_from_env(default: &[f32]) -> Vec<f32> {
         .unwrap_or_else(|_| default.to_vec())
 }
 
-/// The scoring band, from `PITCH_BENCH_MASK_HZ` (`"65,2093"`) or `default`.
-fn mask_from_env(default: PitchMask) -> PitchMask {
+/// The bands a run scores in, from `PITCH_BENCH_MASK_HZ` (`"65,2093"`) or, by default,
+/// **both** of the two that mean something on this corpus.
+///
+/// Reporting two is not indecision. On MDB the reference's 65 Hz floor removes 11.7 % of
+/// all voiced frames (its 2093 Hz ceiling removes none — nothing in the corpus is that
+/// high), so the two bands are different questions with materially different answers:
+///
+/// - **full band** — the detector as it ships, which hears down to MIDI 24 (~33 Hz). The
+///   honest headline, and the only one that describes what the app does.
+/// - **the reference's band** — the only one comparable to SwiftF0, whose numbers exist
+///   solely inside it. Quoting our full-band figure against theirs would be scoring an
+///   eighth of the corpus that they never attempted.
+///
+/// Both come out of one pass, because the bank is the cost and the annotation lookup is
+/// not — see `Scoring`.
+fn bands_from_env() -> Vec<(String, PitchMask)> {
     match std::env::var("PITCH_BENCH_MASK_HZ") {
-        Err(_) => default,
         Ok(spec) => {
             let (lo, hi) = spec.split_once(',').unwrap();
-            PitchMask::from_hz(lo.trim().parse().unwrap(), hi.trim().parse().unwrap())
+            let (lo, hi) = (lo.trim().parse().unwrap(), hi.trim().parse().unwrap());
+            vec![(format!("{lo}-{hi} Hz"), PitchMask::from_hz(lo, hi))]
+        }
+        Err(_) => {
+            vec![
+                (
+                    "full band — the detector as it ships".to_string(),
+                    PitchMask::unbounded(),
+                ),
+                (
+                    format!(
+                        "{}-{} Hz — the reference's MDB band, comparable to SwiftF0",
+                        REFERENCE_MDB_MASK_HZ.0, REFERENCE_MDB_MASK_HZ.1
+                    ),
+                    PitchMask::from_hz(REFERENCE_MDB_MASK_HZ.0, REFERENCE_MDB_MASK_HZ.1),
+                ),
+            ]
         }
     }
+}
+
+/// Every (band, lag) pair, in the order `report` expects to slice them: all lags of the
+/// first band, then all lags of the second.
+fn scorings(bands: &[(String, PitchMask)], lags_ms: &[f32]) -> Vec<Scoring> {
+    bands
+        .iter()
+        .flat_map(|(_label, mask)| {
+            lags_ms.iter().map(move |ms| {
+                Scoring {
+                    mask:        mask.clone(),
+                    lag_seconds: ms / 1000.0,
+                }
+            })
+        })
+        .collect()
 }
 
 /// **The baseline.** RPA of the shipped SWIPE′ over the corpus.
@@ -498,30 +564,39 @@ fn swipe_rpa_on_corpus() {
     // The default brackets the bank's measured 8–29 ms group delay so the plateau is
     // visible rather than assumed.
     let lags_ms = lags_ms_from_env(&[0.0, 8.0, 16.0, 24.0, 32.0]);
-    let lags_seconds: Vec<f32> = lags_ms.iter().map(|ms| ms / 1000.0).collect();
-    // Unbounded by default: this measures the detector the app ships, and the app does not
-    // stop hearing at 2093 Hz. A band is opt-in, for when a run has to be made comparable
-    // to something that has one.
-    let mask = mask_from_env(PitchMask::unbounded());
+    let bands = bands_from_env();
+    let grid = scorings(&bands, &lags_ms);
 
     println!("\n=== SWIPE′ RPA · MDB-stem-synth ===");
     let selected = selected_tracks();
-    println!("    {} tracks", selected.len());
-    let mut per_lag = vec![Tally::default(); lags_seconds.len()];
+    println!(
+        "    {} tracks × {} bands × {} lags",
+        selected.len(),
+        bands.len(),
+        lags_ms.len()
+    );
+    let mut per_scoring = vec![Tally::default(); grid.len()];
 
     for (id, wav, csv) in &selected {
         let annotation = load_annotation(csv);
-        let tallies = bench_track(wav, &annotation, &mask, &lags_seconds);
-        for (corpus, tally) in per_lag.iter_mut().zip(&tallies) {
+        let tallies = bench_track(wav, &annotation, &grid);
+        for (corpus, tally) in per_scoring.iter_mut().zip(&tallies) {
             corpus.merge(tally);
         }
-        // Per track, report the sweep as bare RPAs — the shape (does it climb? where does
-        // it flatten?) is the per-track story; the breakdown belongs to the corpus.
-        let sweep: Vec<String> = tallies.iter().map(|t| format!("{:>5.1}", t.rpa())).collect();
+        // Per track, report the first band's sweep as bare RPAs — the shape (does it
+        // climb? where does it flatten?) is the per-track story; the breakdown, and the
+        // other bands, belong to the corpus summary.
+        let sweep: Vec<String> = tallies[..lags_ms.len()]
+            .iter()
+            .map(|t| format!("{:>5.1}", t.rpa()))
+            .collect();
         println!("  {:<48} RPA {}", id, sweep.join(" "));
     }
 
-    report("the pipeline as the player hears it", &lags_ms, &per_lag);
+    for (index, (label, _)) in bands.iter().enumerate() {
+        let band = &per_scoring[index * lags_ms.len()..(index + 1) * lags_ms.len()];
+        report(label, &lags_ms, band);
+    }
     println!(
         "\n  Reading it: lag 0 is the pipeline (what the player gets). A lag near the\n  \
          bank's 8–29 ms group delay is the *scorer*, and is what the literature's\n  \
@@ -598,7 +673,16 @@ fn external_rpa_on_corpus() {
         mask_hz, REFERENCE_MDB_MASK_HZ,
         "oracle was produced under a band this test does not know how to compare in"
     );
-    let mask = mask_from_env(PitchMask::from_hz(mask_hz.0, mask_hz.1));
+    // The oracle's band is a property of the oracle, not of this run — it is whatever
+    // their dataset class declared when the CSVs were written, so there is nothing here
+    // for an environment variable to decide.
+    let band = (
+        format!(
+            "SwiftF0 in {}-{} Hz, on the corpus annotation",
+            mask_hz.0, mask_hz.1
+        ),
+        PitchMask::from_hz(mask_hz.0, mask_hz.1),
+    );
 
     // Lag 0 is the comparison point: their harness has no lag concept — it scores frame k
     // against the annotation resampled onto frame k — so lag 0 is the only setting that
@@ -606,7 +690,15 @@ fn external_rpa_on_corpus() {
     // centres its window and is delay-compensated by construction, so a peak *away* from
     // 0 would mean the two grids are offset, not that the model is late.
     let lags_ms = lags_ms_from_env(&[0.0, -16.0, -8.0, 8.0, 16.0]);
-    let lags_seconds: Vec<f32> = lags_ms.iter().map(|ms| ms / 1000.0).collect();
+    let report_grid = scorings(std::slice::from_ref(&band), &lags_ms);
+    // The gate's single scoring: their annotation, no band (their `_validate_pitch` already
+    // zeroed the periodicity of out-of-band frames before `truth/` was written, so masking
+    // again would mask twice), and no lag — both files sit on the same grid by
+    // construction, so `Annotation::at` lands on the exact frame and interpolates nothing.
+    let gate_grid = [Scoring {
+        mask:        PitchMask::unbounded(),
+        lag_seconds: 0.0,
+    }];
 
     println!("\n=== SwiftF0 (external trajectory) · MDB-stem-synth ===");
     println!(
@@ -625,10 +717,7 @@ fn external_rpa_on_corpus() {
     );
 
     let selected = selected_tracks();
-    let mut per_lag = vec![Tally::default(); lags_seconds.len()];
-    // The gate's tally: their trajectory against their annotation, at lag 0 only. Lag has
-    // no meaning here — both sit on the same grid by construction, so `Annotation::at`
-    // lands on the exact frame and interpolates nothing.
+    let mut per_lag = vec![Tally::default(); report_grid.len()];
     let mut gate_tally = Tally::default();
     let mut covered = 0usize;
 
@@ -646,16 +735,12 @@ fn external_rpa_on_corpus() {
         let estimates = load_annotation(&estimates_path);
 
         // Pass 1 — the gate: their truth, so the scorers are the only difference left.
-        // Unbounded mask, because their `_validate_pitch` already zeroed the periodicity
-        // of out-of-band frames before this file was written; masking again would be
-        // masking twice.
         let their_truth = load_annotation(&truth_dir.join(format!("{id}.csv")));
-        let gate_pass = bench_external(&estimates, &their_truth, &PitchMask::unbounded(), &[0.0]);
-        gate_tally.merge(&gate_pass[0]);
+        gate_tally.merge(&bench_external(&estimates, &their_truth, &gate_grid)[0]);
 
         // Pass 2 — the report: the corpus's own annotation, which is the accurate one.
         let annotation = load_annotation(csv);
-        let tallies = bench_external(&estimates, &annotation, &mask, &lags_seconds);
+        let tallies = bench_external(&estimates, &annotation, &report_grid);
         for (corpus, tally) in per_lag.iter_mut().zip(&tallies) {
             corpus.merge(tally);
         }
