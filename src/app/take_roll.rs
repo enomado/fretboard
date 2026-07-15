@@ -12,6 +12,13 @@
 //! `pitch_roll_panel::columns_of`). Only two policies differ, and both differ for the
 //! same reason — **a take is evidence, and the live roll is a mirror to play into.**
 //!
+//! ## Both axes move, and the wheel is not ours
+//!
+//! Drag pans time and pitch; **ctrl+wheel / pinch** zooms them, about the cursor;
+//! double-click fits the take back into view. The plain wheel belongs to the pane's
+//! `ScrollArea` — this panel is taller than most panes, so it has to be scrollable, and
+//! the roll is most of what the wheel would land on. See [`LoadedTake::interact`].
+//!
 //! ## The framing is min/max, where the live roll's is quantiles — deliberately
 //!
 //! The live view frames on the 10th..90th percentile so that one octave slip cannot pin
@@ -46,6 +53,7 @@ use eframe::egui::{
     RichText,
     Sense,
     Ui,
+    Vec2,
     vec2,
 };
 
@@ -84,9 +92,18 @@ const TAKE_RETENTION_S: f64 = f64::INFINITY;
 /// you are reading one frame's rounding, not the take.
 const MIN_WINDOW_S: f32 = 0.05;
 
-/// Zoom per pixel of wheel scroll, as an exponent — so a notch multiplies the span
-/// rather than adding to it, and zooming out undoes zooming in exactly.
-const ZOOM_PER_SCROLL_PX: f32 = 0.0015;
+/// The narrowest the pitch window may be zoomed, in semitones.
+///
+/// Two rows. Past that the grid the pitch is read *against* is gone — a row is the
+/// unit of the answer here ("did it play G3 or G2"), so a window narrower than a
+/// couple of them is zoomed past the question.
+///
+/// Deliberately **not** [`MIN_SPAN`], which is the floor for *auto* framing and is a
+/// whole 14 semitones: that one keeps a take of one held note from filling the plot
+/// with a single fat row, which is a statement about a picture nobody asked for. This
+/// one bounds a window the user is aiming by hand, and they are allowed to aim it at
+/// two rows.
+const MIN_PITCH_SPAN: f32 = 2.0;
 
 /// Time kept either side of the window when culling columns to what is on screen.
 ///
@@ -117,6 +134,42 @@ pub struct TakeRoll {
     layer:  RollLayer,
 }
 
+/// The resonator bank's pitch range, in fractional MIDI — the bounds of where evidence
+/// can exist at all.
+///
+/// Its own type rather than a `Range<f32>` so it cannot be mixed up with the *window*
+/// (also a pair of MIDI numbers, and the thing it bounds), and because it is `Copy`:
+/// it is read once per frame from the settings and threaded through the interaction as
+/// a fact about the detector, not as a value anything here may edit.
+#[derive(Clone, Copy)]
+struct BankRange {
+    lo: f32,
+    hi: f32,
+}
+
+impl BankRange {
+    fn span(self) -> f32 {
+        self.hi - self.lo
+    }
+}
+
+/// Who decides the pitch window.
+///
+/// The auto framing is **load-bearing, not a convenience**: it is min/max over the
+/// whole take (see the module docs), and that is the only reason the open-G sub-octave
+/// was ever seen — the live roll's quantile framing puts the slip *below the window*
+/// (`memory/open_g_sub_octave_bursts.md`). So a hand-aimed pitch window must not become
+/// the default by accident: you get it by asking, and a double-click gives it back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PitchFraming {
+    /// Framed on the take's whole played range, re-framed as the line arrives.
+    Auto,
+    /// The user framed it by hand. [`LoadedTake::reframe`] must not steal it back —
+    /// the take streams in over its whole length, so an auto-frame that ignored this
+    /// would yank the window out from under a user who aimed it while the take played.
+    Manual,
+}
+
 /// A take, and the window onto it.
 struct LoadedTake {
     /// Which take this is — the identity the harvest compares against to notice that a
@@ -140,8 +193,14 @@ struct LoadedTake {
     window:  Range<f32>,
     /// Fractional-MIDI window at the plot's bottom/top edges, framed on the take's full
     /// played range (see the module docs on why full, not quantiles).
+    ///
+    /// Always the *effective* window, whoever framed it — the renderer asks one
+    /// question ("what is at the edges") and must get one answer. Who chose it is
+    /// [`Self::framing`], and that is a separate question.
     view_lo: f32,
     view_hi: f32,
+    /// See [`PitchFraming`].
+    framing: PitchFraming,
 }
 
 impl LoadedTake {
@@ -159,6 +218,7 @@ impl LoadedTake {
             // live roll makes, and just as short-lived: the first frame reframes it.
             view_lo: 53.0,
             view_hi: 79.0,
+            framing: PitchFraming::Auto,
         }
     }
 
@@ -184,7 +244,13 @@ impl LoadedTake {
     /// Framed on the whole take rather than the visible slice so that the rows stay put
     /// while you scroll: two moments of the take are only comparable by eye if they are
     /// measured against the same grid.
+    ///
+    /// A hand-framed window is left alone — see [`PitchFraming::Manual`].
     fn reframe(&mut self) {
+        if self.framing == PitchFraming::Manual {
+            return;
+        }
+
         let mut lo = f32::INFINITY;
         let mut hi = f32::NEG_INFINITY;
         for frame in self.frames.iter() {
@@ -250,9 +316,64 @@ impl LoadedTake {
         )
     }
 
-    /// Show the take whole.
+    /// Show the take whole, on both axes: the entire time span, and the pitch range
+    /// framed on the take's own data again.
+    ///
+    /// Both, because "fit" answers one question — *show me what I recorded* — and an
+    /// escape hatch that only undid half of a lost window would leave the user hunting
+    /// for the other half by hand.
     fn fit(&mut self) {
         self.window = 0.0..self.seconds.max(MIN_WINDOW_S);
+        self.framing = PitchFraming::Auto;
+        self.reframe();
+    }
+
+    /// Visible pitch span in semitones — what one pixel of height is worth.
+    fn pitch_span(&self) -> f32 {
+        self.view_hi - self.view_lo
+    }
+
+    /// Slide the pitch window by `delta_midi` semitones. Hand-aiming it, so the auto
+    /// framing stands down (see [`PitchFraming`]).
+    fn pan_pitch(&mut self, delta_midi: f32, bank: BankRange) {
+        self.framing = PitchFraming::Manual;
+        self.view_lo += delta_midi;
+        self.view_hi += delta_midi;
+        self.clamp_pitch(bank);
+    }
+
+    /// Multiply the pitch span by `factor`, keeping `anchor_midi` where it is on screen.
+    /// Anchored for the same reason the time zoom is: you zoom to look *at* something.
+    fn zoom_pitch_about(&mut self, factor: f32, anchor_midi: f32, bank: BankRange) {
+        self.framing = PitchFraming::Manual;
+        let fraction = (anchor_midi - self.view_lo) / self.pitch_span();
+        let span = self.pitch_span() * factor;
+        self.view_lo = anchor_midi - span * fraction;
+        self.view_hi = self.view_lo + span;
+        self.clamp_pitch(bank);
+    }
+
+    /// Keep the hand-aimed pitch window inside the bank's range and wider than
+    /// [`MIN_PITCH_SPAN`].
+    ///
+    /// Bounded by the **bank**, and by the same argument that bounds time to the take
+    /// (see [`Self::clamp`]): outside the bank's range there is not quiet evidence,
+    /// there is no evidence — the bank has no filters there, so it publishes nothing,
+    /// and rows of guaranteed-empty grid would read as "nothing sounded here" when the
+    /// truth is "nothing could have been heard here".
+    ///
+    /// Only the manual path clamps. The auto framing is computed *from* pitches the
+    /// bank published, so it is inside the range by construction — and running it
+    /// through this would let a clamp silently overrule the framing that is the whole
+    /// reason this panel exists.
+    fn clamp_pitch(&mut self, bank: BankRange) {
+        let whole = bank.span().max(MIN_PITCH_SPAN);
+        let span = self.pitch_span().clamp(MIN_PITCH_SPAN, whole);
+        // Slide, don't squash — same rule as the time axis: hitting an edge must not
+        // silently rescale the zoom the user chose.
+        let lo = self.view_lo.clamp(bank.lo, (bank.hi - span).max(bank.lo));
+        self.view_lo = lo;
+        self.view_hi = lo + span;
     }
 
     /// Slide the window by `delta_s` take-seconds.
@@ -290,40 +411,75 @@ impl LoadedTake {
         self.window = start..(start + span);
     }
 
-    /// Scroll and zoom.
-    fn interact(&mut self, ui: &Ui, resp: &Response, plot: Rect) {
+    /// Pan and zoom, on both axes.
+    ///
+    /// ## The wheel is the pane's, and the roll does not touch it
+    ///
+    /// This panel lives inside the workspace pane's `ScrollArea` (`app::workspace`), and
+    /// it is tall — controls, corpus listing, then a 320 px roll — so the pane genuinely
+    /// has to scroll, and the roll covers most of the surface the wheel would land on.
+    ///
+    /// It used to *take* `smooth_scroll_delta.y` on hover and zoom with it, which left
+    /// the pane a zero and made the panel unscrollable over its own main body: the roll
+    /// was at once the reason to scroll and the thing preventing it. Now the wheel is
+    /// simply not ours — plain wheel scrolls the pane, and the roll zooms on
+    /// **ctrl+wheel / pinch**, which is what egui_plot does and therefore what the
+    /// gesture already means to anyone who has used a plot.
+    ///
+    /// Nothing is taken from anyone, and that is structural rather than polite: egui
+    /// routes a wheel with the zoom modifier into `zoom_delta_2d` and leaves
+    /// `smooth_scroll_delta` at **zero** (`egui::InputState::begin_pass`). The two
+    /// gestures cannot both fire, so there is nothing left to arbitrate.
+    ///
+    /// `bank` is the resonator's pitch range — the bounds of where evidence can exist at
+    /// all (see [`Self::clamp_pitch`]).
+    fn interact(&mut self, ui: &Ui, resp: &Response, plot: Rect, bank: BankRange) {
         // Double-click = "show me the whole thing" — the way back from any window,
-        // without hunting for a button.
+        // without hunting for a button, and the way back to auto pitch framing.
         if resp.double_clicked() {
             self.fit();
             return;
         }
 
         let px_per_second = plot.width() / self.span_s();
+        let px_per_semitone = plot.height() / self.pitch_span();
         if resp.dragged() {
+            let drag = resp.drag_delta();
             // Drag moves the *take*, not the window: pull right and the take goes right,
-            // which means the window walks left, into the past.
-            self.pan(-resp.drag_delta().x / px_per_second);
+            // which means the window walks left, into the past. Same on the pitch axis,
+            // with the sign the other way because screen y grows downward while pitch
+            // grows upward — drag the take down and you are looking higher.
+            self.pan(-drag.x / px_per_second);
+            if drag.y != 0.0 {
+                self.pan_pitch(drag.y / px_per_semitone, bank);
+            }
         }
 
+        // Zoom about the cursor, which has to be inside the plot for "about the cursor"
+        // to mean anything.
         let Some(pos) = resp.hover_pos() else {
             return;
         };
-        // The wheel zooms. Take the delta rather than read it: this panel lives inside a
-        // `ScrollArea`, which reads the same delta *after* us and would otherwise scroll
-        // the whole pane out from under the roll while the roll zoomed — both, at once,
-        // for one gesture. Zeroing y leaves the horizontal wheel to the pane.
-        let scroll_y = ui.input_mut(|input| {
-            let delta_y = input.smooth_scroll_delta.y;
-            input.smooth_scroll_delta.y = 0.0;
-            delta_y
-        });
-        if scroll_y == 0.0 {
-            return;
+        // `zoom_delta_2d` rather than a wheel delta of our own: it already carries both
+        // the ctrl+wheel case (both axes together) and a real pinch's independent axes,
+        // and it is a *factor*, so a notch multiplies the span and zooming out undoes
+        // zooming in exactly. Holding egui's horizontal/vertical scroll modifier splits
+        // it to one axis — time alone or pitch alone — inherited rather than invented.
+        let zoom = ui.input(|input| input.zoom_delta_2d());
+        if zoom == Vec2::splat(1.0) {
+            return; // no zoom gesture this frame — and the wheel, if any, is the pane's
         }
-        let anchor_s = self.window.start + (pos.x - plot.left()) / px_per_second;
-        // Wheel up (positive) → zoom in → span shrinks, hence the sign.
-        self.zoom_about((-scroll_y * ZOOM_PER_SCROLL_PX).exp(), anchor_s);
+        if zoom.x != 1.0 {
+            let anchor_s = self.window.start + (pos.x - plot.left()) / px_per_second;
+            // Spread (zoom > 1) = zoom in = the span shrinks, hence the reciprocal.
+            self.zoom_about(zoom.x.recip(), anchor_s);
+        }
+        if zoom.y != 1.0 {
+            // Screen y grows downward; pitch grows upward — so the anchor is measured
+            // from the plot's *bottom*.
+            let anchor_midi = self.view_lo + (plot.bottom() - pos.y) / px_per_semitone;
+            self.zoom_pitch_about(zoom.y.recip(), anchor_midi, bank);
+        }
     }
 }
 
@@ -389,6 +545,12 @@ impl App {
         let style = settings.accidental;
         let res_min_midi = settings.resonator.min_midi.as_u8() as i32;
         let res_max_midi = settings.resonator.max_midi.as_u8() as i32;
+        // Where evidence can exist: outside the bank's filters nothing is ever
+        // published, so the hand-aimed pitch window stops here. See `BankRange`.
+        let bank = BankRange {
+            lo: res_min_midi as f32,
+            hi: res_max_midi as f32,
+        };
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("Take Roll").color(color::TEXT_CAPTION).strong());
@@ -422,7 +584,7 @@ impl App {
         // The plot is inset from `rect` by the label gutters, and the pointer has to be
         // read against the plot, not the widget — see `pianoroll::plot_rect`.
         let plot = pianoroll::plot_rect(rect);
-        loaded.interact(ui, &resp, plot);
+        loaded.interact(ui, &resp, plot, bank);
 
         let painter = ui.painter_at(rect);
         pianoroll::draw_pitch_roll(
@@ -440,11 +602,21 @@ impl App {
         ui.add_space(6.0);
         ui.label(
             RichText::new(format!(
-                "{} · {:.2}–{:.2} s of {:.1} · drag to pan, wheel to zoom, double-click to fit",
+                "{} · {:.2}–{:.2} s of {:.1} · {:.0}–{:.0} midi{} · drag to pan, ctrl+wheel to \
+                 zoom, double-click to fit",
                 loaded.path.file_name().unwrap().to_string_lossy(),
                 loaded.window.start,
                 loaded.window.end,
                 loaded.seconds,
+                loaded.view_lo,
+                loaded.view_hi,
+                // Say when the pitch rows are the user's own window rather than the
+                // take's range: the min/max auto framing is what makes a slip visible
+                // at all, so "you are not looking at it right now" is worth a word.
+                match loaded.framing {
+                    PitchFraming::Auto => "",
+                    PitchFraming::Manual => " (manual)",
+                },
             ))
             .color(color::TEXT_HINT)
             .monospace()
@@ -458,6 +630,15 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use eframe::egui::{
+        self,
+        Event,
+        Modifiers,
+        MouseWheelUnit,
+        Pos2,
+        TouchPhase,
+    };
+    use egui_kittest::Harness;
     use web_time::Instant;
 
     use super::*;
@@ -465,6 +646,9 @@ mod tests {
 
     /// A take: `seconds` long, replayed at the bank's cadence.
     const CADENCE_S: f64 = 0.016;
+
+    /// The bank's default range (G2ish..C7ish) — the pitch clamp's bounds.
+    const BANK: BankRange = BankRange { lo: 43.0, hi: 96.0 };
 
     fn take(seconds: f32) -> LoadedTake {
         LoadedTake::new(PathBuf::from("/testdata/g_string_trill.wav"), seconds)
@@ -487,6 +671,281 @@ mod tests {
             })
             .collect();
         loaded.update(frames);
+    }
+
+    /// The panel's *wiring*, driven through real egui: a pane-sized `ScrollArea::both`
+    /// with content taller than it, the roll allocated inside exactly as
+    /// [`App::draw_take_roll`] does it.
+    ///
+    /// 🔑 **This exists because every other test in this file structurally cannot fail
+    /// on the two bugs the user found in a minute.** They all call `pan`/`zoom_about`/
+    /// `clamp` directly — window arithmetic, which was correct throughout. The bugs were
+    /// in `interact` (which delta is taken from whom) and in the layout (a tall panel
+    /// inside a `ScrollArea`), and neither is reachable from a test that never builds a
+    /// `Ui` or sends an event. Eight tests, four of them proven against live bugs, and
+    /// the panel was still unusable (`memory/interaction-needs-kittest-not-state-tests.md`).
+    struct Rig {
+        take:     LoadedTake,
+        /// Where the pane has scrolled to — the thing the roll used to eat.
+        offset_y: f32,
+        /// The roll's plot rect, recorded from inside the layout so the test aims the
+        /// pointer at where the roll actually *is* rather than at where arithmetic
+        /// says it should be. Getting that wrong is how a test hovers over nothing and
+        /// then reports that nothing happened.
+        plot:     Rect,
+    }
+
+    /// Stand-in for the controls + corpus listing above the roll. Its only job is to be
+    /// tall: it is what pushes the panel past the pane's height and therefore what makes
+    /// the pane need to scroll at all — which is the entire premise of the regression.
+    const HEADER_H: f32 = 260.0;
+    const PANE_W: f32 = 700.0;
+    const PANE_H: f32 = 420.0;
+
+    fn rig(take: LoadedTake) -> Harness<'static, Rig> {
+        Harness::builder()
+            .with_size(egui::Vec2::new(PANE_W, PANE_H))
+            .build_ui_state(
+                |ui, rig: &mut Rig| {
+                    // The workspace pane, as `app::workspace::pane_ui` builds it.
+                    let out = egui::ScrollArea::both()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.allocate_exact_size(vec2(PANE_W, HEADER_H), Sense::hover());
+                            let (rect, resp) = ui.allocate_exact_size(
+                                vec2(PANE_W - 20.0, PLOT_HEIGHT),
+                                Sense::click_and_drag(),
+                            );
+                            rig.plot = pianoroll::plot_rect(rect);
+                            rig.take.interact(ui, &resp, rig.plot, BANK);
+                        });
+                    rig.offset_y = out.state.offset.y;
+                },
+                Rig {
+                    take,
+                    offset_y: 0.0,
+                    plot: Rect::ZERO,
+                },
+            )
+    }
+
+    /// A point on the roll that is **actually on screen**.
+    ///
+    /// The roll's rect runs past the bottom of the pane — with the controls above it the
+    /// panel is ~680 px inside a 420 px pane, so the lower half of the roll is below the
+    /// fold. That is not a quirk of the rig, it *is* the situation the regression is
+    /// about: the panel has to be scrolled to see the rest of the roll, and the wheel
+    /// lands on the part you can see. Aiming at `plot.center()` aims off-screen, where
+    /// nothing is hovered and every assertion trivially "passes" the wrong way.
+    fn on_screen(plot: Rect) -> Pos2 {
+        egui::pos2(plot.center().x, plot.top() + 40.0)
+    }
+
+    /// One wheel notch over a position, with or without the zoom modifier.
+    fn wheel(harness: &Harness<'_, Rig>, at: Pos2, delta_y: f32, modifiers: Modifiers) {
+        harness.hover_at(at);
+        harness.event_modifiers(
+            Event::MouseWheel {
+                unit: MouseWheelUnit::Point,
+                delta: egui::Vec2::new(0.0, delta_y),
+                phase: TouchPhase::Move,
+                modifiers,
+            },
+            modifiers,
+        );
+    }
+
+    /// REGRESSION (mine, found by the user in a minute): **the plain wheel belongs to the
+    /// pane.**
+    ///
+    /// The roll used to take `smooth_scroll_delta.y` on hover and zoom with it, leaving
+    /// the `ScrollArea` a zero. The panel is ~680 px of controls + listing + roll inside a
+    /// pane that is rarely that tall, so it has to scroll — and the roll covers most of
+    /// the surface the wheel lands on. The roll was at once the reason to scroll and the
+    /// thing that made it impossible: *«рекордер - не скролится по вертикали-горизонтали»*.
+    ///
+    /// Both halves are asserted, because "the pane scrolls" alone would still pass if the
+    /// roll *also* zoomed — which is the two-things-at-once behaviour that made the
+    /// original taking look necessary.
+    #[test]
+    fn the_plain_wheel_scrolls_the_pane_and_the_roll_keeps_its_hands_off() {
+        let mut harness = rig(take(10.0));
+        harness.run_steps(3); // settle the layout, so `plot` is real
+        let plot = harness.state().plot;
+        let window_before = harness.state().take.window.clone();
+        assert_eq!(harness.state().offset_y, 0.0, "the pane starts unscrolled");
+
+        wheel(&harness, on_screen(plot), -50.0, Modifiers::NONE);
+        harness.run_steps(6); // egui smooths the wheel over several frames
+
+        assert!(
+            harness.state().offset_y > 0.0,
+            "the pane did not scroll ({} px) — the roll ate the wheel again",
+            harness.state().offset_y
+        );
+        assert_eq!(
+            harness.state().take.window,
+            window_before,
+            "the plain wheel must not zoom the roll: it is the pane's gesture"
+        );
+    }
+
+    /// The other half: **ctrl+wheel zooms the roll, and the pane holds still.**
+    ///
+    /// Nothing has to be taken for this to work, and that is the point. egui routes a
+    /// wheel carrying the zoom modifier into `zoom_delta_2d` and leaves
+    /// `smooth_scroll_delta` at zero, so the two gestures cannot both fire — the
+    /// arbitration the old code was doing by hand does not exist to be got wrong. This
+    /// test is what pins that contract: it is inherited from egui, so nothing in this
+    /// repository would otherwise notice it changing.
+    #[test]
+    fn ctrl_wheel_zooms_the_roll_and_the_pane_holds_still() {
+        let mut harness = rig(take(10.0));
+        harness.run_steps(3);
+        let plot = harness.state().plot;
+        let span_before = harness.state().take.span_s();
+
+        wheel(&harness, on_screen(plot), 50.0, Modifiers::COMMAND);
+        harness.run_steps(6);
+
+        let span_after = harness.state().take.span_s();
+        assert!(
+            span_after < span_before - 0.01,
+            "ctrl+wheel must zoom the roll in: span {span_before:.3} → {span_after:.3} s"
+        );
+        assert_eq!(
+            harness.state().offset_y,
+            0.0,
+            "the pane must not scroll while the roll zooms — one gesture, one effect"
+        );
+    }
+
+    /// REGRESSION: the roll has a **vertical axis at all**.
+    ///
+    /// `view_lo`/`view_hi` used to be written only by `reframe`, and `pan` read only
+    /// `drag_delta().x` — so the pitch axis could be neither scrolled nor zoomed, and
+    /// the user's «скроллить и зумить» was answered on one axis out of two. Driven
+    /// through a real drag rather than by calling `pan_pitch`, because the missing half
+    /// *was* the wiring: the arithmetic for the pitch axis did not exist to be tested.
+    #[test]
+    fn dragging_moves_the_pitch_axis_and_not_only_time() {
+        let mut harness = rig(take(10.0));
+        harness.run_steps(3);
+        let plot = harness.state().plot;
+        let (lo_before, hi_before) = {
+            let take = &harness.state().take;
+            (take.view_lo, take.view_hi)
+        };
+
+        // Drag straight down. The gesture is "grab the take and move it", the same as on
+        // the time axis — so the take follows the hand downward and the window walks
+        // *up*, revealing the higher rows that were above the top edge. (Written the
+        // other way round first, and this test is what said so.)
+        let from = on_screen(plot);
+        let to = from + egui::Vec2::new(0.0, 60.0);
+        harness.drag_at(from);
+        harness.run_steps(2);
+        harness.hover_at(to);
+        harness.run_steps(2);
+        harness.drop_at(to);
+        harness.run_steps(2);
+
+        let take = &harness.state().take;
+        assert!(
+            take.view_lo > lo_before + 0.5 && take.view_hi > hi_before + 0.5,
+            "dragging the take down must walk the pitch window up: {lo_before:.1}..\
+             {hi_before:.1} → {:.1}..{:.1}",
+            take.view_lo,
+            take.view_hi
+        );
+        assert!(
+            (take.pitch_span() - (hi_before - lo_before)).abs() < 0.01,
+            "panning must slide the window, not resize it"
+        );
+        assert!(
+            take.framing == PitchFraming::Manual,
+            "a hand-aimed window is manual — otherwise the next frame reframes it away"
+        );
+    }
+
+    /// REGRESSION, and the trap in this whole feature: a hand-aimed pitch window must
+    /// survive the take streaming in, and a double-click must give the auto framing back.
+    ///
+    /// The auto framing is min/max over the take and is **the only reason the open-G
+    /// sub-octave was ever seen** (`memory/open_g_sub_octave_bursts.md`) — so it must not
+    /// be lost for good the moment the user nudges the view; and equally it must not
+    /// silently overrule a window the user aimed while the take was still playing, which
+    /// is exactly when `reframe` is running on every batch of frames.
+    #[test]
+    fn a_hand_aimed_pitch_window_survives_reframing_and_a_double_click_undoes_it() {
+        let mut loaded = take(10.0);
+        play(&mut loaded, 100, Some(69.0)); // A4 — auto-framed around it
+
+        loaded.zoom_pitch_about(0.25, 69.0, BANK);
+        let (lo, hi) = (loaded.view_lo, loaded.view_hi);
+        assert!(hi - lo < 10.0, "the zoom took: {lo:.1}..{hi:.1}");
+
+        // The take plays on, over a wider range than the user framed: `reframe` runs on
+        // every batch and must keep its hands off.
+        play(&mut loaded, 100, Some(81.0));
+        assert_eq!(
+            (loaded.view_lo, loaded.view_hi),
+            (lo, hi),
+            "reframing stole the window the user aimed"
+        );
+
+        // Double-click = fit = the take's own framing, on both axes.
+        loaded.fit();
+        assert!(
+            loaded.framing == PitchFraming::Auto && loaded.view_lo < 69.0 && loaded.view_hi > 81.0,
+            "fit must frame the whole played range again: {:.1}..{:.1}",
+            loaded.view_lo,
+            loaded.view_hi
+        );
+    }
+
+    /// The hand-aimed window stops where evidence stops: outside the bank's range the
+    /// detector has no filters at all, so it can publish nothing, and rows of
+    /// guaranteed-empty grid would read as "nothing sounded here" when the truth is
+    /// "nothing could have been heard here". Same argument as [`the_window_stays_inside_
+    /// the_take`], one axis over.
+    #[test]
+    fn the_pitch_window_stays_inside_the_bank() {
+        let mut loaded = take(10.0);
+        loaded.pan_pitch(-100.0, BANK);
+        assert!(
+            loaded.view_lo >= BANK.lo - 1e-3,
+            "panned to {:.1}, below the bank's {:.1}",
+            loaded.view_lo,
+            BANK.lo
+        );
+        loaded.pan_pitch(500.0, BANK);
+        assert!(
+            loaded.view_hi <= BANK.hi + 1e-3,
+            "panned to {:.1}, above the bank's {:.1}",
+            loaded.view_hi,
+            BANK.hi
+        );
+
+        // Zoom in past all reason: the span stops, it does not collapse or invert.
+        for _ in 0..200 {
+            loaded.zoom_pitch_about(0.5, 70.0, BANK);
+        }
+        assert!(
+            (loaded.pitch_span() - MIN_PITCH_SPAN).abs() < 1e-3,
+            "pitch span {:.3}; it must stop at MIN_PITCH_SPAN",
+            loaded.pitch_span()
+        );
+        // And out past all reason: the bank, never more.
+        for _ in 0..200 {
+            loaded.zoom_pitch_about(2.0, 70.0, BANK);
+        }
+        assert!(
+            (loaded.pitch_span() - BANK.span()).abs() < 1e-3,
+            "zoomed out is exactly the bank: {:.1}..{:.1}",
+            loaded.view_lo,
+            loaded.view_hi
+        );
     }
 
     /// REGRESSION, and the reason this panel exists: the take is kept **whole**.
