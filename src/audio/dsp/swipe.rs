@@ -618,6 +618,57 @@ mod tests {
         );
     }
 
+    /// PROBE: does the **bank's ceiling** decide the octave?
+    ///
+    /// The kickstart records an unexplained result — on a synthetic pure A5, `s(A4)`
+    /// overtakes `s(A5)`: SWIPE′ prefers the sub-octave on its own. The hypothesis "the
+    /// kernel is truncated at the grid's ceiling" was written down and dismissed as weak,
+    /// on the grounds that *"the bank runs to MIDI 108"*.
+    ///
+    /// That ground does not hold for a user: `max_midi` is a slider, and the settings that
+    /// crashed the audio thread had it at **84**. The kernel needs `12·log₂(13.75)` ≈ **45
+    /// semitones of headroom** above a candidate to be scored whole. At a ceiling of 84 the
+    /// candidate A5 has 3 semitones of it — only its `h=1` lobe survives — while the
+    /// sub-octave A4 keeps `h=1` *and* `h=2`, and `h=2` is exactly where A5's energy sits.
+    /// So the sub-octave can explain the note and the note cannot explain itself.
+    ///
+    /// Prints rather than asserts a threshold: it exists to say whether the ceiling is a
+    /// mechanism or a red herring, and that is a number to read, not a bound to defend.
+    #[test]
+    fn does_the_bank_ceiling_feed_the_sub_octave() {
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        let min_midi = 12.0f32;
+        let kernel = SwipeKernel::new(bps);
+
+        println!("\n=== pure A5 (880 Hz + partials), scored against its own sub-octave ===");
+        println!("  kernel needs ~45 semitones of headroom above a candidate");
+        for max_midi in [84.0f32, 96.0, 108.0] {
+            let len = ((max_midi - min_midi) * bps) as usize + 1;
+            let mut column = vec![0.0f32; len];
+            for (index, amplitude) in [1.0f32, 0.8, 0.6, 0.35, 0.2].into_iter().enumerate() {
+                let hz = 880.0 * (index + 1) as f32;
+                let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+                let bin = ((midi - min_midi) * bps).round() as usize;
+                if bin < len {
+                    column[bin] += amplitude;
+                }
+            }
+            let warped = sqrt_warp(&column);
+            let bin_of = |midi: f32| ((midi - min_midi) * bps).round() as usize;
+            let a5 = kernel.salience(&warped, bin_of(81.0));
+            let a4 = kernel.salience(&warped, bin_of(69.0));
+            let headroom = max_midi - 81.0;
+            println!(
+                "  ceiling MIDI {max_midi:>5.0} ({headroom:>2.0} st above A5) : A5 {a5:.4}  A4 {a4:.4}  -> {}",
+                if a5 > a4 {
+                    "A5 (correct)"
+                } else {
+                    "A4 — THE SUB-OCTAVE WINS"
+                }
+            );
+        }
+    }
+
     /// **The golden test.** A violin open G: the body barely radiates 196 Hz, so the
     /// fundamental is a *tenth* of the 2nd harmonic. The salience must still say G3.
     ///
