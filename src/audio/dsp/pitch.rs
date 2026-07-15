@@ -37,6 +37,34 @@ pub(crate) const LOWEST_TRACKED_FREQUENCY: f32 = 30.868;
 /// with margin, and costs only a few extra lags to scan.
 pub(crate) const HIGHEST_TRACKED_FREQUENCY: f32 = 4186.0;
 
+/// **The app's tracked pitch domain, in MIDI: C1..C8.** The same span the two constants
+/// above express in Hz — this is the MIDI form, and both belong to the same decision.
+///
+/// It lives here, once, because it is a claim about *what this app detects*, and every
+/// detector has to make the same claim or they disagree about reality. `dsp::pyin`'s HMM
+/// grid is cut to it; `dsp::swipe` searches candidates in it.
+///
+/// # This is not the bank's range, and must never be taken from it
+///
+/// `dsp::resonator`'s column spans C0..C8 because that is a good range for the **spectrum
+/// waterfall** — a display. Reading the candidate range off it (which `swipe` did until
+/// this constant existed) hands the detector candidates down to **C0 = 16 Hz**, where no
+/// instrument here plays and where a low candidate's kernel lobes are wide in absolute Hz
+/// (h=1 spans ~9 semitones at 32 Hz). Room rumble falls off with frequency, which is the
+/// exact shape SWIPE's `1/√r` envelope expects of a harmonic series, so rumble scores as a
+/// sub-bass note — measured beating a real bowed G3 by 4-6% on its own recording, and seen
+/// live as the pitch roll plunging three octaves and dragging its own auto-framing down
+/// with it.
+///
+/// That was the third time a *display* setting was found steering the detector, after the
+/// silence gate sharing the UI meter's smoothing (Phase 1.9) and `gamma` reaching the
+/// octave decision (Phase 1.11). Same rule each time: the detector's domain is a property
+/// of the task, never of the picture.
+pub(crate) const TRACKED_MIN_MIDI: f32 = 24.0;
+/// See [`TRACKED_MIN_MIDI`]. C8 — clears every instrument here, violin E7 (2637 Hz)
+/// included, and matches [`HIGHEST_TRACKED_FREQUENCY`].
+pub(crate) const TRACKED_MAX_MIDI: f32 = 108.0;
+
 /// The cumulative mean normalized difference function (YIN step 3) plus the lag
 /// search bounds — the substrate probabilistic YIN ([`super::pyin`]) turns into
 /// weighted pitch candidates. `d[0] == 1`; `d[tau]` dips toward 0 near true

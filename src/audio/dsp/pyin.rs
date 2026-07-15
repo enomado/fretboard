@@ -38,6 +38,8 @@ use super::analysis_math::parabolic_tau;
 use super::pitch::LOWEST_TRACKED_FREQUENCY;
 use super::pitch::{
     Cmndf,
+    TRACKED_MAX_MIDI,
+    TRACKED_MIN_MIDI,
     cmndf,
 };
 
@@ -142,11 +144,13 @@ fn pyin_candidates(c: &Cmndf, prior: &ThresholdPrior, sample_rate: f32) -> (Vec<
 /// octave decision is exact; the reported frequency comes from the candidate, not
 /// the bin, so display cents stay sharp.
 const BINS_PER_SEMITONE: usize = 10;
-/// Tracked pitch span, C1..C8. The top must clear
+/// Tracked pitch span, C1..C8 — the app's one pitch domain, declared in
+/// [`super::pitch::TRACKED_MIN_MIDI`] and shared with `dsp::swipe` so the two detectors
+/// cannot drift apart about what this app claims to hear. The top must clear
 /// [`super::pitch::HIGHEST_TRACKED_FREQUENCY`], or a note the front end resolves
 /// correctly lands outside the HMM grid and decodes as unvoiced instead.
-const MIN_MIDI: f32 = 24.0;
-const MAX_MIDI: f32 = 108.0;
+const MIN_MIDI: f32 = TRACKED_MIN_MIDI;
+const MAX_MIDI: f32 = TRACKED_MAX_MIDI;
 /// Number of pitch states; index `N_PITCH` is the extra unvoiced state.
 const N_PITCH: usize = ((MAX_MIDI - MIN_MIDI) as usize) * BINS_PER_SEMITONE;
 /// Transition reaches ±1 octave; beyond that a move must go through unvoiced.

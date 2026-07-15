@@ -45,6 +45,10 @@
 use std::f32::consts::TAU;
 
 use super::analysis_math::parabolic_tau;
+use super::pitch::{
+    TRACKED_MAX_MIDI,
+    TRACKED_MIN_MIDI,
+};
 
 /// Harmonics the SWIPE′ kernel keeps: `{1} ∪ primes`.
 ///
@@ -294,9 +298,24 @@ pub(crate) fn pick_fundamental(
         return None;
     }
     let curve = kernel.salience_curve(&warped);
-    let (peak_bin, &peak) = curve
+    // Candidates come from the app's pitch domain (C1..C8), **not** from the column's own
+    // extent. The column reaches down to C0 = 16 Hz because that suits the spectrum
+    // waterfall, and scoring candidates there lets room rumble win: see
+    // `pitch::TRACKED_MIN_MIDI` for the mechanism and the measurement.
+    let first = (((TRACKED_MIN_MIDI - min_midi) * bins_per_semitone)
+        .ceil()
+        .max(0.0)) as usize;
+    let last = (((TRACKED_MAX_MIDI - min_midi) * bins_per_semitone)
+        .floor()
+        .max(0.0) as usize)
+        .min(curve.len().saturating_sub(1));
+    if first > last {
+        return None;
+    }
+    let (peak_bin, &peak) = curve[first..=last]
         .iter()
         .enumerate()
+        .map(|(offset, value)| (first + offset, value))
         .max_by(|(_, a), (_, b)| a.total_cmp(b))
         .unwrap();
     if peak <= 0.0 {
@@ -550,6 +569,7 @@ mod tests {
 
             let (mut old_g3, mut old_g4, mut old_other, mut old_silent) = (0u32, 0u32, 0u32, 0u32);
             let (mut new_g3, mut new_g4, mut new_other) = (0u32, 0u32, 0u32);
+            let mut new_none = 0u32;
             let mut new_verdicts: Vec<f32> = Vec::new();
 
             let mut fed = 0usize;
@@ -577,9 +597,18 @@ mod tests {
                     old_other += 1;
                 }
 
-                // The NEW scorer, straight off the production snapshot — this probe now
+                // The NEW scorer, straight off the production snapshot — this probe
                 // measures the wired engine, not a re-implementation of it.
-                let new_midi = snapshot.fundamental.unwrap().0;
+                //
+                // `None` is now reachable and meaningful: since the candidate search was
+                // confined to the app's pitch domain (`pitch::TRACKED_MIN_MIDI`), a frame
+                // where nothing in C1..C8 scores positive is a frame that looks like no
+                // harmonic series at all. The old comb, searching the whole display
+                // column down to C0, always found *something* to crown.
+                let Some((new_midi, _)) = snapshot.fundamental else {
+                    new_none += 1;
+                    continue;
+                };
                 new_verdicts.push(new_midi);
                 if near(new_midi, G3_MIDI) {
                     new_g3 += 1;
@@ -609,10 +638,11 @@ mod tests {
                 pct(old_other)
             );
             println!(
-                "  SWIPE'   : G3 {new_g3:>4} ({:>5.1}%)   G4          {new_g4:>4} ({:>5.1}%)   other {new_other:>4} ({:>5.1}%)",
+                "  SWIPE'   : G3 {new_g3:>4} ({:>5.1}%)   G4          {new_g4:>4} ({:>5.1}%)   other {new_other:>4} ({:>5.1}%)   no-pitch {new_none:>4} ({:>5.1}%)",
                 pct(new_g3),
                 pct(new_g4),
-                pct(new_other)
+                pct(new_other),
+                pct(new_none)
             );
             // First position on a violin string spans the open note up to the 4th finger,
             // i.e. the open string + 7 semitones. `g_string_trill` and `a_string_trill`
@@ -667,6 +697,103 @@ mod tests {
                 })
                 .collect();
             println!("  SWIPE' says   : {}", top.join(" · "));
+        }
+    }
+}
+
+#[cfg(test)]
+mod low_register_probe {
+    //! Why does a bowed G3 ever score C0..C2? Live report: the pitch roll plunges
+    //! three or four octaves below the played note, and the plunges drag the panel's
+    //! auto-framing down with them, so the real note is squeezed off the top.
+    use super::*;
+    use crate::audio::dsp::analysis_math::{
+        NOTE_BUCKET_MIN_MIDI,
+        SPIRAL_BINS_PER_SEMITONE,
+    };
+    use crate::audio::dsp::resonator::ResonatorAnalyzer;
+    use crate::core_types::note::AccidentalStyle;
+
+    /// Find a frame where the low junk wins, then dissect the arithmetic behind it.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn what_makes_the_sub_bass_win() {
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        let min_midi = NOTE_BUCKET_MIN_MIDI as f32;
+        let kernel = SwipeKernel::new(bps);
+
+        let path = format!("{}/testdata/g_open_slow_strokes.wav", env!("CARGO_MANIFEST_DIR"));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let sample_rate = reader.spec().sample_rate as f32;
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
+
+        let mut analyzer = ResonatorAnalyzer::new(sample_rate);
+        let hop = (sample_rate * 0.016) as usize;
+        let mut fed = 0usize;
+        let mut dissected = 0;
+
+        while fed + hop <= samples.len() && dissected < 4 {
+            analyzer.process_samples(&samples[fed..fed + hop], true);
+            fed += hop;
+            let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
+            let Some((midi, _)) = snapshot.fundamental else {
+                continue;
+            };
+            // Skip the first second: the bank starts empty and needs to charge, so the
+            // opening frames are junk for a reason that has nothing to do with scoring.
+            // (The first cut of this probe caught only those and "disproved" itself.)
+            if fed as f32 / sample_rate < 1.0 {
+                continue;
+            }
+            // Only interested in the plunges: a verdict far below the played G3.
+            if midi > 45.0 {
+                continue;
+            }
+            dissected += 1;
+
+            // Undo the display gamma to get back to the bank's own column.
+            let magnitudes: Vec<f32> = snapshot.spectrum.iter().map(|v| v.powf(1.0 / 0.72)).collect();
+            let warped = sqrt_warp(&magnitudes);
+            let curve = kernel.salience_curve(&warped);
+            let bin_of = |m: f32| ((m - min_midi) * bps).round() as usize;
+            let winner = bin_of(midi);
+            let g3 = bin_of(55.0);
+
+            println!(
+                "\n=== frame at {:.2}s — verdict MIDI {midi:.2}, truth G3 (55) ===",
+                fed as f32 / sample_rate
+            );
+            println!("  salience  winner {:.4}   G3 {:.4}", curve[winner], curve[g3]);
+            // The suspicion: `salience` divides by the norm of the kernel's positive part
+            // *that is still in range*. A candidate near the bottom of the grid has much
+            // of its kernel off the low end — including the fat h=1 lobe — so that norm
+            // shrinks, and dividing a small numerator by a small norm can inflate a
+            // candidate the data never supported.
+            let in_range = |bin: usize| -> (f32, f32) {
+                let low = kernel.first_offset.max(-(bin as isize));
+                let high = (kernel.first_offset + kernel.weights.len() as isize - 1)
+                    .min(warped.len() as isize - 1 - bin as isize);
+                let lo_i = (low - kernel.first_offset) as usize;
+                let hi_i = (high - kernel.first_offset) as usize;
+                let norm_sq = kernel.positive_sq_prefix[hi_i + 1] - kernel.positive_sq_prefix[lo_i];
+                let full = *kernel.positive_sq_prefix.last().unwrap();
+                (norm_sq, full)
+            };
+            let (win_norm, full) = in_range(winner);
+            let (g3_norm, _) = in_range(g3);
+            println!(
+                "  kernel positive mass in range:  winner {:.1}%   G3 {:.1}%",
+                100.0 * win_norm / full,
+                100.0 * g3_norm / full
+            );
+            println!(
+                "  numerator (pre-normalization):  winner {:.4}   G3 {:.4}",
+                curve[winner] * win_norm.sqrt(),
+                curve[g3] * g3_norm.sqrt()
+            );
         }
     }
 }
