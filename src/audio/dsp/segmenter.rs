@@ -270,10 +270,11 @@ mod tests {
                     next_analysis += analysis_hop;
                 }
                 if t_ms >= next_bank_publish_ms {
-                    let fast = bank.snapshot(true, AccidentalStyle::Sharps).fundamental;
-                    let melody_pitch = melody.update(fast, anchor);
-                    // `now` is the SAMPLE clock, exactly as the engine derives it.
+                    // `now` is the SAMPLE clock, exactly as the engine derives it — and now
+                    // also what the melody's Viterbi measures its frame length off.
                     let now = now_samples as f64 / sr as f64;
+                    let snapshot = bank.snapshot(true, AccidentalStyle::Sharps);
+                    let melody_pitch = melody.update(snapshot.salience.as_ref(), anchor, now);
                     let line = segmenter.update(melody_pitch.map(|(m, _)| m), NO_ONSET, now);
                     if current(&line).map(|(m, _)| m) == Some(target_midi) {
                         return t_ms - change_ms;

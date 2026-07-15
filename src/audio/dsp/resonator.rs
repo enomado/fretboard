@@ -14,8 +14,8 @@ use super::analysis_math::{
     splat_linear,
 };
 use super::swipe::{
+    SalienceFrame,
     SwipeKernel,
-    pick_fundamental,
 };
 use crate::audio::types::AnalysisSettings;
 use crate::core_types::note::AccidentalStyle;
@@ -75,7 +75,20 @@ pub(crate) struct ResonatorSnapshot {
     /// Fast played-note prior for this snapshot: `(fractional_midi, strength)` of
     /// the harmonic fundamental, or `None` when the bank is quiet. Rides to the UI
     /// on `TunerReading::fast_pitch`.
+    ///
+    /// This is the frame's **own** opinion, weighing nothing but itself. It stays that way
+    /// on purpose even though [`Self::salience`] now supports a better one: `dsp::melody`
+    /// borrows pYIN's octave to *check* the bank, and a bank reading that had already been
+    /// smoothed against its own past would be a worse witness, not a better one.
     pub(crate) fundamental: Option<(f32, f32)>,
+    /// The evidence behind [`Self::fundamental`] — the whole salience curve, for the
+    /// consumer that decodes a *path* rather than a frame. `None` for a column with no
+    /// energy at all.
+    ///
+    /// Deliberately not stored in `SharedState`: it is one frame's working material for
+    /// `dsp::melody`, not something a panel draws, and 3 KB per bank frame has no business
+    /// sitting behind the UI's mutex.
+    pub(crate) salience:    Option<SalienceFrame>,
 }
 
 #[derive(Debug)]
@@ -314,17 +327,19 @@ fn resonator_snapshot(
         // waterfall-contrast slider, `controls.rs`), and a display knob must not steer
         // the octave decision — which it did, for as long as this line came second.
         // SWIPE does its own warping (√), and it is not negotiable by the UI.
-        let fundamental = pick_fundamental(
+        let salience = SalienceFrame::score(
             &spectrum,
             settings.min_midi as f32,
             settings.bins_per_semitone as f32,
             swipe_bank,
         );
+        let fundamental = salience.as_ref().and_then(|s| s.argmax());
         normalize_bars(&mut spectrum, settings.gamma);
         return ResonatorSnapshot {
             spectrum,
             note_labels: settings.note_labels(style),
             fundamental,
+            salience,
         };
     }
 
@@ -362,17 +377,19 @@ fn resonator_snapshot(
 
     // Same rule as the rollback path above: the detector reads the bank's own column,
     // the display gets its `gamma` afterwards.
-    let fundamental = pick_fundamental(
+    let salience = SalienceFrame::score(
         &spectrum,
         settings.min_midi as f32,
         OUTPUT_BINS_PER_SEMITONE as f32,
         swipe_output,
     );
+    let fundamental = salience.as_ref().and_then(|s| s.argmax());
     normalize_bars(&mut spectrum, settings.gamma);
     ResonatorSnapshot {
         spectrum,
         note_labels: settings.note_labels(style),
         fundamental,
+        salience,
     }
 }
 

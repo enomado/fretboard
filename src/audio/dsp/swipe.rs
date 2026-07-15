@@ -262,75 +262,148 @@ fn refine_on_partials(magnitudes: &[f32], coarse_bin: f32, bins_per_semitone: f3
     best_f0_bin
 }
 
-/// The played fundamental for one bank column: `(fractional_midi, pitch_strength)`.
+/// One bank frame's pitch evidence: SWIPE′'s salience curve, and the column it was scored
+/// from.
 ///
-/// This is the engine's entry point and the replacement for
-/// `analysis_math::resonator_fundamental`. `magnitudes` must be the bank's **raw**
-/// column — *not* the display's `gamma`-warped copy (see the module docs).
+/// This exists because the curve is the natural output of the algorithm (see the module
+/// docs) and an argmax throws away everything the *next* frame's decision would want. The
+/// remaining errors on a real violin are 4–6% near-ties — the right note losing to junk by a
+/// few percent — and a scalar per frame cannot express a tie at all, let alone let
+/// continuity break it. So the whole curve rides to [`super::melody`], where the Viterbi
+/// lives.
 ///
-/// Differences from what it replaces, all of them consequences of the algorithm rather
-/// than choices:
-///
-/// - **No floor.** Nothing requires the candidate's own bin to carry energy, because on
-///   the instrument this app is for, it frequently does not.
-/// - **The refine happens on the salience curve, not on the spectrum.** The old code
-///   parabola-refined the fundamental's own spectral peak, which is meaningless when
-///   that peak is absent. SWIPE refines its own strength curve — thesis Chapter 5:
-///   *"compute a coarse pitch strength curve and then fine tune it by using parabolic
-///   interpolation"*.
-/// - **`pitch_strength` means something different, and better.** It used to be "how loud
-///   is the fundamental's bin" — which reads ~0 for a perfectly clear open G. It is now
-///   the normalized inner product: *how well does a harmonic series at this f0 explain
-///   the whole spectrum*, in 0..1. That is what a confidence should mean.
-///
-/// Returns `None` only for an empty column. Silence is **not** this function's job — the
-/// engine gates the melody on `level` upstream (`core::MELODY_LEVEL_GATE`), and a second
-/// opinion here would just be a magic number in a new place.
-pub(crate) fn pick_fundamental(
-    magnitudes: &[f32],
-    min_midi: f32,
+/// The **column** rides along with it for a reason that is easy to miss: the decoded bin is
+/// only a *coarse* f0 (it names the harmonic series), and the fine pitch is read off the
+/// series' loudest partial by [`refine_on_partials`]. When continuity overrules the
+/// per-frame argmax — which is the entire point — the fine pitch has to be re-read at the
+/// bin that *won*, and that needs the partials. Carrying a scalar would silently cost the
+/// cents on exactly the frames this phase exists to fix.
+#[derive(Clone, Debug)]
+pub(crate) struct SalienceFrame {
+    /// Pitch strength per bin of the bank's output grid.
+    curve:             Vec<f32>,
+    /// The **raw** column — `gamma`-free, as the contract above demands.
+    magnitudes:        Vec<f32>,
+    min_midi:          f32,
     bins_per_semitone: f32,
-    kernel: &SwipeKernel,
-) -> Option<(f32, f32)> {
-    let warped = sqrt_warp(magnitudes);
-    let norm = spectrum_norm(&warped);
-    if norm <= 0.0 {
-        return None;
+    /// `‖√|X|‖₂`, the per-frame constant that turns a salience into a 0..1 confidence.
+    norm:              f32,
+}
+
+impl SalienceFrame {
+    /// Score one raw column. `None` for a column with no energy at all — silence is *not*
+    /// decided here (see [`pick_fundamental`]).
+    pub(crate) fn score(
+        magnitudes: &[f32],
+        min_midi: f32,
+        bins_per_semitone: f32,
+        kernel: &SwipeKernel,
+    ) -> Option<Self> {
+        let warped = sqrt_warp(magnitudes);
+        let norm = spectrum_norm(&warped);
+        if norm <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            curve: kernel.salience_curve(&warped),
+            magnitudes: magnitudes.to_vec(),
+            min_midi,
+            bins_per_semitone,
+            norm,
+        })
     }
-    let curve = kernel.salience_curve(&warped);
-    // Candidates come from the app's pitch domain (C1..C8), **not** from the column's own
-    // extent. The column reaches down to C0 = 16 Hz because that suits the spectrum
-    // waterfall, and scoring candidates there lets room rumble win: see
-    // `pitch::TRACKED_MIN_MIDI` for the mechanism and the measurement.
-    let first = (((TRACKED_MIN_MIDI - min_midi) * bins_per_semitone)
-        .ceil()
-        .max(0.0)) as usize;
-    let last = (((TRACKED_MAX_MIDI - min_midi) * bins_per_semitone)
-        .floor()
-        .max(0.0) as usize)
-        .min(curve.len().saturating_sub(1));
-    if first > last {
-        return None;
+
+    pub(crate) fn bins_per_semitone(&self) -> f32 {
+        self.bins_per_semitone
     }
-    let (peak_bin, &peak) = curve[first..=last]
-        .iter()
-        .enumerate()
-        .map(|(offset, value)| (first + offset, value))
-        .max_by(|(_, a), (_, b)| a.total_cmp(b))
-        .unwrap();
-    if peak <= 0.0 {
-        return None;
+
+    /// Salience at a bin of *this* grid.
+    pub(crate) fn salience_at(&self, bin: usize) -> f32 {
+        self.curve[bin]
     }
-    // The salience decides the harmonic series, to within its own grid: parabola-refined
-    // and clamped to ±½ bin, because a peak that is not a clean local extremum must not
-    // fling the estimate across the grid. This is a *coarse* f0 — good enough to identify
-    // the series, nowhere near good enough for cents.
-    let coarse = parabolic_tau(&curve, peak_bin).clamp(peak_bin as f32 - 0.5, peak_bin as f32 + 0.5);
-    // The partials decide the frequency. See `refine_on_partials` for why this is a
-    // separate step and not a refinement of the line above.
-    let refined = refine_on_partials(magnitudes, coarse, bins_per_semitone);
-    let midi = min_midi + refined / bins_per_semitone;
-    Some((midi, (peak / norm).clamp(0.0, 1.0)))
+
+    /// The bin holding `midi` on this grid, rounded. Bounds are the caller's problem: this
+    /// grid spans the *waterfall's* C0..C8, and what lives outside the app's pitch domain is
+    /// a question for `pitch::TRACKED_MIN_MIDI`, not for arithmetic.
+    pub(crate) fn bin_of_midi(&self, midi: f32) -> usize {
+        ((midi - self.min_midi) * self.bins_per_semitone).round() as usize
+    }
+
+    /// The bins of the app's pitch domain (C1..C8) on this grid — the only candidates worth
+    /// scoring.
+    ///
+    /// Candidates come from the app's pitch domain, **not** from the column's own extent.
+    /// The column reaches down to C0 = 16 Hz because that suits the spectrum waterfall, and
+    /// scoring candidates there lets room rumble win: see `pitch::TRACKED_MIN_MIDI` for the
+    /// mechanism and the measurement.
+    fn tracked_bins(&self) -> Option<std::ops::RangeInclusive<usize>> {
+        let first = (((TRACKED_MIN_MIDI - self.min_midi) * self.bins_per_semitone)
+            .ceil()
+            .max(0.0)) as usize;
+        let last = (((TRACKED_MAX_MIDI - self.min_midi) * self.bins_per_semitone)
+            .floor()
+            .max(0.0) as usize)
+            .min(self.curve.len().saturating_sub(1));
+        (first <= last).then_some(first..=last)
+    }
+
+    /// The fine pitch and strength of an **already-decided** bin — by whatever decided it:
+    /// this frame's argmax, or a Viterbi weighing this frame against the ones before it.
+    ///
+    /// Splitting the decision from the resolution is what lets continuity overrule the
+    /// argmax without costing a single cent of precision.
+    pub(crate) fn resolve(&self, bin: usize) -> (f32, f32) {
+        // The salience decides the harmonic series, to within its own grid: parabola-refined
+        // and clamped to ±½ bin, because a peak that is not a clean local extremum must not
+        // fling the estimate across the grid. This is a *coarse* f0 — good enough to identify
+        // the series, nowhere near good enough for cents.
+        let coarse = parabolic_tau(&self.curve, bin).clamp(bin as f32 - 0.5, bin as f32 + 0.5);
+        // The partials decide the frequency. See `refine_on_partials` for why this is a
+        // separate step and not a refinement of the line above.
+        let refined = refine_on_partials(&self.magnitudes, coarse, self.bins_per_semitone);
+        let midi = self.min_midi + refined / self.bins_per_semitone;
+        (midi, (self.curve[bin] / self.norm).clamp(0.0, 1.0))
+    }
+
+    /// This frame's own best guess, weighing nothing but this frame — the per-frame argmax
+    /// over the pitch domain, as `(fractional_midi, pitch_strength)`.
+    ///
+    /// Kept as the bank's *raw* opinion (it rides to the UI as `TunerReading::fast_pitch`,
+    /// and `dsp::melody` needs an unsmoothed witness to cross-examine) and as the honest
+    /// baseline the Viterbi is measured against.
+    ///
+    /// This is what replaced `analysis_math::resonator_fundamental`, and the differences are
+    /// consequences of the algorithm rather than choices:
+    ///
+    /// - **No floor.** Nothing requires the candidate's own bin to carry energy, because on
+    ///   the instrument this app is for, it frequently does not.
+    /// - **The refine happens on the salience curve, not on the spectrum.** The old code
+    ///   parabola-refined the fundamental's own spectral peak, which is meaningless when
+    ///   that peak is absent. SWIPE refines its own strength curve — thesis Chapter 5:
+    ///   *"compute a coarse pitch strength curve and then fine tune it by using parabolic
+    ///   interpolation"*.
+    /// - **`pitch_strength` means something different, and better.** It used to be "how loud
+    ///   is the fundamental's bin" — which reads ~0 for a perfectly clear open G. It is now
+    ///   the normalized inner product: *how well does a harmonic series at this f0 explain
+    ///   the whole spectrum*, in 0..1. That is what a confidence should mean.
+    ///
+    /// `None` when nothing in C1..C8 scores positive, i.e. the frame looks like no harmonic
+    /// series at all. Silence is **not** decided here — the engine gates the melody on
+    /// `level` upstream (`core::MELODY_LEVEL_GATE`), and a second opinion here would just be
+    /// a magic number in a new place.
+    pub(crate) fn argmax(&self) -> Option<(f32, f32)> {
+        let (peak_bin, &peak) = self.curve[self.tracked_bins()?]
+            .iter()
+            .enumerate()
+            .map(|(offset, value)| (offset, value))
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
+            .unwrap();
+        if peak <= 0.0 {
+            return None;
+        }
+        let first = *self.tracked_bins().unwrap().start();
+        Some(self.resolve(first + peak_bin))
+    }
 }
 
 /// SWIPE's spectral warping: the **square root** of the magnitude.

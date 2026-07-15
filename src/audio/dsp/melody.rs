@@ -1,6 +1,19 @@
-//! Melody-line pitch: the resonator bank's fast fine pitch with its octave pinned
-//! by pYIN. This is the "marry the two sources" the pitch survey recommends first,
-//! and the architecture the violin plan's Phase 1.3 called the latency endgame.
+//! Melody-line pitch: SWIPE′'s salience curve decoded by continuity, with its octave still
+//! cross-checked against pYIN. This is the "marry the two sources" the pitch survey
+//! recommends first, and the architecture the violin plan's Phase 1.3 called the latency
+//! endgame.
+//!
+//! # The two stages, and which one is load-bearing
+//!
+//! 1. [`SalienceDecoder`] — the bank frame's whole salience curve, run through the shared
+//!    online Viterbi ([`super::trellis`]). This is where the played note is decided, and it
+//!    is the only stage with a model of *time*.
+//! 2. The **repair layer** — [`snap_to_anchor_octave`], [`LEAP_CONFIRM_FRAMES`] and
+//!    [`OctaveGate`]. Three mechanisms built to patch a per-frame argmax that had no such
+//!    model. Stage 1 now supplies it by construction, so these are expected to be
+//!    redundant, and the plan retires them **in one piece** — after the D and E strings are
+//!    recorded, not before. The evidence today is two strings; retiring a layer on that
+//!    would be this plan's own recurring mistake.
 //!
 //! # Why the bank leads and YIN only pins the octave
 //!
@@ -48,6 +61,203 @@
 //! anchor is still independent evidence.
 
 use super::octave_gate::OctaveGate;
+use super::pitch::{
+    TRACKED_MAX_MIDI,
+    TRACKED_MIN_MIDI,
+};
+use super::swipe::SalienceFrame;
+use super::trellis::{
+    Emissions,
+    PitchGrid,
+    PitchState,
+    PitchTrellis,
+};
+
+/// Frame length assumed for the very first frame of a phrase, when there is no predecessor
+/// to measure against (`ResonatorSettings::update_ms`'s default).
+///
+/// It is never used for anything that matters: a first frame is decided by its emissions
+/// alone — the trellis has no path to weigh it against — so the kernel this builds is
+/// discarded unread. Every subsequent frame measures its own `dt` off the audio clock.
+const NOMINAL_FRAME_DT: f32 = 0.016;
+
+/// How many nats of evidence one unit of SWIPE′ salience is worth — the exchange rate
+/// between the observation and the transition costs in [`super::trellis`].
+///
+/// **This could not be inherited from pYIN, and assuming it could is a mistake worth
+/// recording.** The trellis's rates carry over between channels because they describe how a
+/// player's pitch moves in *time*, which no detector changes. The emission scale is the
+/// opposite: pYIN's candidates are near-delta functions (a candidate measures `p = 1.000`
+/// against an emission floor of 1e-9 — a contrast of **20.7 nats**), so a leap's ~9.9 nats
+/// is pocket change to it. SWIPE′'s salience is a broad, low-contrast curve where the right
+/// note beats junk by 0.017. Feeding *that* to a kernel calibrated against deltas priced
+/// every note change out of reach: measured, the octave went 120 ms → 248 ms and a whole
+/// tone 24 ms → 120 ms. The rates were right and the exchange rate was nonsense.
+///
+/// It is bounded from both sides, and both bounds are measured rather than argued:
+///
+/// - **Too low** and real notes never arrive — the leap's 9.9 nats outlasts the latency
+///   budget (`segmenter::end_to_end_latency_probe`).
+/// - **Too high** and the 4–6% ties buy their way through in a frame or two, which is the
+///   phantom octave coming back (`swipe::real_violin_g_probe`).
+///
+/// The value is the sweep's, not a guess — see [`beta_sweep::salience_beta_sweep`], which prints
+/// both edges of the trade across the whole corpus.
+const SALIENCE_BETA: f32 = 40.0;
+
+/// SWIPE′'s salience curve, decoded into a played note by continuity rather than by argmax.
+///
+/// # What this fixes, and what it cannot
+///
+/// Phase 1.11 measured the remainder on a real violin and found it is **not** a confident
+/// error — it is a tie:
+///
+/// ```text
+/// frame 1.26s : junk 0.4006   G3 0.3833     ← 4.5% apart
+/// frame 2.09s : junk 0.2990   G3 0.2819     ← 6% apart
+/// ```
+///
+/// The right note loses to noise by 4–6%. No threshold fixes that, because there is no
+/// threshold to set: the tie is in the evidence. What breaks it is time — a lone excursion
+/// costs the trellis a leap (~9.9 nats) and buys back 4–6% of emission (~0.04 nats), so it
+/// loses by a factor of ~225 and the path holds. It would take *seconds* of sustained junk
+/// to pay that off, which is exactly the distinction wanted.
+///
+/// What it cannot do is invent a candidate the salience never proposed. This decodes the
+/// curve; it does not improve it.
+///
+/// # The trap: "an octave jump is an error"
+///
+/// It is not, and a rule saying so would be wrong on this app's own test corpus —
+/// `testdata/g_open_real_octave.wav` is the user deliberately *playing* an octave. The
+/// difference between a phantom octave and a real one was never the interval: it is whether
+/// the evidence **persists**. A real leap's old note goes quiet, so its emission collapses
+/// and the new note pays off the leap's 9.9 nats within a frame or three (measured:
+/// `trellis::leap_latency_probe`, 48 ms at this cadence). A phantom's true note never
+/// leaves, so it never pays. That is a property of the path, and it needs no rule at all.
+pub(crate) struct SalienceDecoder {
+    /// The continuity model, and `None` until a frame says which grid to build it on.
+    ///
+    /// The grid cannot be known up front: the bank publishes the reassigned path on a fixed
+    /// `OUTPUT_BINS_PER_SEMITONE` and the rollback path on the user's own resolution, so
+    /// only a frame knows. Rebuilt — not merely reset — when that grid changes under it,
+    /// because a trellis whose states meant one pitch cannot go on meaning another.
+    trellis: Option<PitchTrellis>,
+    /// Audio-clock timestamp of the last frame, for the `dt` the kernel is cut to.
+    last_t:  Option<f64>,
+    /// Salience→nats exchange rate. A field rather than a constant only so
+    /// [`beta_sweep::salience_beta_sweep`] can measure the trade it makes; production uses
+    /// [`SALIENCE_BETA`].
+    beta:    f32,
+}
+
+impl Default for SalienceDecoder {
+    fn default() -> Self {
+        Self {
+            trellis: None,
+            last_t:  None,
+            beta:    SALIENCE_BETA,
+        }
+    }
+}
+
+impl SalienceDecoder {
+    /// A decoder at a chosen exchange rate — for the sweep that sets [`SALIENCE_BETA`].
+    #[cfg(test)]
+    fn with_beta(beta: f32) -> Self {
+        Self {
+            beta,
+            ..Default::default()
+        }
+    }
+
+    /// Forget the path. Silence ends a phrase, and the next note must be judged on its own
+    /// evidence rather than against a note that has already stopped.
+    fn reset(&mut self) {
+        if let Some(trellis) = self.trellis.as_mut() {
+            trellis.reset();
+        }
+        self.last_t = None;
+    }
+
+    /// Decode one bank frame into `(fractional_midi, strength)`.
+    ///
+    /// Contract: `now_seconds` is the **audio** clock (off the sample count), and this is
+    /// driven once per bank frame. Both are load-bearing — see [`super::trellis`] for why a
+    /// frame length measured off the wall, or off a slider, would put a display knob back in
+    /// charge of the detector.
+    fn decode(&mut self, frame: &SalienceFrame, now_seconds: f64) -> Option<(f32, f32)> {
+        // The trellis decodes the app's pitch domain (C1..C8) at the frame's own resolution:
+        // resampling the curve onto some other grid would blur the very peaks the decision is
+        // made from.
+        let grid = PitchGrid::new(TRACKED_MIN_MIDI, TRACKED_MAX_MIDI, frame.bins_per_semitone());
+        let dt = self
+            .last_t
+            .map(|last| (now_seconds - last) as f32)
+            .filter(|dt| *dt > 0.0)
+            .unwrap_or(NOMINAL_FRAME_DT);
+        self.last_t = Some(now_seconds);
+
+        let stale = self
+            .trellis
+            .as_ref()
+            .is_none_or(|t| t.grid().n_pitch() != grid.n_pitch());
+        if stale {
+            self.trellis = Some(PitchTrellis::new(grid, dt));
+        }
+        let trellis = self.trellis.as_mut().unwrap();
+
+        // Curve bin ↔ trellis state. Both grids are log-linear in MIDI at the same
+        // resolution, so they differ by a constant offset — the octave the waterfall draws
+        // below the app's pitch domain. This is the one arithmetic step where a slip is a
+        // silent transposition rather than a crash, which is why `PitchState` is a newtype
+        // and why the offset is computed from the two grids rather than assumed.
+        let offset = frame.bin_of_midi(TRACKED_MIN_MIDI);
+
+        // Emissions: a Gibbs link from salience to likelihood, `exp(β·(s − s_max))`.
+        //
+        // A salience is a *score*, not a probability, so something has to convert one into
+        // the other, and the choice is not free — it sets the exchange rate between "how
+        // much better does this pitch explain the spectrum" and "how much does moving there
+        // cost". Get it wrong and the trellis is either deaf to real notes or blind to junk.
+        //
+        // Exponential, because it is the one link that uses only what SWIPE′'s scale
+        // actually means. That scale is **not** the thesis's: it is normalized against a
+        // 480-resonator C0..C8 column where Camacho used a narrow FFT band, so an absolute
+        // salience here is an invented number and only *comparisons* are assertable (design
+        // §1.4). `exp(β·s)` is shift-invariant — add a constant to the whole curve and every
+        // emission ratio is unchanged — so only differences ever reach the trellis, which is
+        // exactly that rule made structural. Subtracting `s_max` also pins the per-frame
+        // scale at 1, so a hard bow and a soft one produce the same emissions.
+        //
+        // The peak's own breadth is why the link must be *sharpening* rather than linear:
+        // SWIPE′'s h=1 lobe alone spans 71 bins at this grid, so the curve is a broad hump
+        // and its raw values put the right note only a few percent above its neighbours.
+        let mut emissions = Emissions::zeroed(trellis.grid());
+        let mut max_salience = f32::NEG_INFINITY;
+        for state in 0..trellis.grid().n_pitch() {
+            max_salience = max_salience.max(frame.salience_at(offset + state));
+        }
+        if max_salience <= 0.0 {
+            // Nothing in C1..C8 looks like a harmonic series at all.
+            return None;
+        }
+        for state in 0..trellis.grid().n_pitch() {
+            let salience = frame.salience_at(offset + state);
+            emissions.set_state(PitchState(state), ((salience - max_salience) * self.beta).exp());
+        }
+        // Voicing is the *level gate's* job, upstream (`core::MELODY_LEVEL_GATE`) — SWIPE′'s
+        // absolute scale is not a confidence and must never be thresholded as one (design
+        // §1.4). So this channel never votes itself unvoiced; the unvoiced state stays a
+        // route the trellis offers and this caller declines.
+        emissions.set_unvoiced(0.0);
+
+        let state = trellis.step(&emissions, dt)?;
+        // The decoded bin names the harmonic series; the partials say exactly where it is.
+        // Re-read at the bin that *won* — which on an overruled frame is not the argmax's.
+        Some(frame.resolve(offset + state.0))
+    }
+}
 
 /// pYIN voiced probability below which its octave opinion is not trusted. Under it
 /// the bank keeps its own octave — a guess from an unvoiced frame is worse than the
@@ -82,11 +292,29 @@ const OCTAVE_AGREE_SEMITONES: f32 = 1.5;
 ///
 /// So this threshold has to sit above the wandering timescale (1–2 frames) and below
 /// the anchor's catch-up (~128 ms). At the bank's ~16 ms publish cadence, 4 frames
-/// ≈ 64 ms lands between them with room on both sides. Cost of the compromise: an
-/// octave leap shows the old octave for ~64 ms before it is believed — a quarter of
-/// what trusting the anchor outright costs, and it decays to nothing as the anchor
-/// catches up.
-const LEAP_CONFIRM_FRAMES: u32 = 4;
+/// ≈ 64 ms landed between them with room on both sides.
+///
+/// **It was 4 until the Viterbi landed, and the reason it can now be 1 is written in the
+/// paragraph above.** The upper bound never moved; the *lower* one did. This guard is sized
+/// against the wandering timescale — but wandering is exactly what
+/// [`SalienceDecoder`] now removes by construction, since a flip-flopping octave is a lone
+/// excursion and loses to continuity by ~225×. Measured on the real violin: the bank's own
+/// octave slips are 0.0% of frames on both open-G takes (`beta_sweep::salience_beta_sweep`).
+/// A guard against a thing that no longer happens should sit at its floor.
+///
+/// The floor is 1 rather than 0 because at 0 this stops being a threshold at all: the bank
+/// would win *every* dispute on its first frame, which makes [`snap_to_anchor_octave`]
+/// return `bank_midi` unconditionally — dead code, taking [`YIN_OCTAVE_CONFIDENCE`] and this
+/// module's whole dependency on the slow anchor with it. That is three of the four pieces
+/// the plan retires **together, after the D and E strings are recorded** — on the evidence
+/// of two strings it would be this plan's own recurring mistake, a number verified in one
+/// condition restated as a property. At 1, an intermittent slip still resets the count and
+/// the snap still corrects it, so the layer stays whole and honest until that gate opens.
+///
+/// Cost: an octave leap shows the old octave for ~16 ms before it is believed, down from
+/// ~64 ms — which is what brings the end-to-end octave back under budget now that the
+/// Viterbi holds the note too (`segmenter::end_to_end_latency_probe`: 152 ms → 104 ms).
+const LEAP_CONFIRM_FRAMES: u32 = 1;
 
 /// Pin `bank_midi` to the octave of `anchor_midi`, when the two agree on the pitch
 /// class. Returns the bank's pitch unchanged when the anchor is talking about some
@@ -134,6 +362,17 @@ fn snap_to_anchor_octave(bank_midi: f32, anchor_midi: f32) -> f32 {
 /// [`update`]: MelodyTracker::update
 #[derive(Default)]
 pub(crate) struct MelodyTracker {
+    /// Layer 0: the salience curve decoded by continuity. Everything below it is the
+    /// **repair layer** — three mechanisms built to patch a per-frame argmax that had no
+    /// model of time, which is what this decoder now supplies by construction.
+    ///
+    /// The repair layer is therefore expected to be redundant, and the plan retires it in
+    /// one piece (`snap_to_anchor_octave`, [`LEAP_CONFIRM_FRAMES`], [`OctaveGate`], and this
+    /// module's whole dependency on the slow pYIN anchor). It has **not** been retired yet,
+    /// deliberately: the evidence is two strings, G and A. Removing a layer on the strength
+    /// of a number measured in one condition is the exact mistake this plan has already made
+    /// twice — the D and E takes are the gate, and they are not recorded.
+    decoder:        SalienceDecoder,
     /// Consecutive bank frames whose octave the anchor disputed. Reset by any frame
     /// the two agree on, which is what makes it read *unbroken* disagreement (a real
     /// leap) rather than *intermittent* disagreement (the bank wandering).
@@ -164,9 +403,25 @@ impl MelodyTracker {
     /// input level is the real silence gate, not the presence of a value here.
     pub(crate) fn update(
         &mut self,
-        bank: Option<(f32, f32)>,
+        frame: Option<&SalienceFrame>,
         anchor: Option<(f32, f32)>,
+        now_seconds: f64,
     ) -> Option<(f32, f32)> {
+        let Some(frame) = frame else {
+            self.decoder.reset();
+            return self.pin_and_gate(None, anchor);
+        };
+        let bank = self.decoder.decode(frame, now_seconds);
+        self.pin_and_gate(bank, anchor)
+    }
+
+    /// The **repair layer**: layers 2 and 3, on an already-decoded note.
+    ///
+    /// Split from [`Self::update`] so it can be driven with a pitch directly — which is how
+    /// every one of its regression tests below is written, and they are the record of what
+    /// these three mechanisms are *for*. When the D and E takes land and the layer is
+    /// retired, this function and those tests go together, in one piece.
+    fn pin_and_gate(&mut self, bank: Option<(f32, f32)>, anchor: Option<(f32, f32)>) -> Option<(f32, f32)> {
         let Some((bank_midi, strength)) = bank else {
             // Silence ends the phrase: the next note's octave is judged fresh rather
             // than against a dispute, or a median, left over from the previous one.
@@ -225,6 +480,251 @@ impl MelodyTracker {
     }
 }
 
+/// The sweep that sets [`SALIENCE_BETA`], on the real violin.
+///
+/// [`SALIENCE_BETA`] is a single number that trades two properties against each other, and
+/// neither of them can be reasoned out — they are both facts about a bowed string. So the
+/// sweep drives the **whole corpus** through the production decoder at each candidate rate
+/// and prints both edges at once:
+///
+/// - the phantom octave and the low-register junk, which want β *small* (continuity wins);
+/// - the note-change latency, which wants β *large* (evidence wins).
+///
+/// Built on this app's own recurring lesson: a constant verified in one condition is not a
+/// property. So the value is read off the corpus at both edges rather than argued for — see
+/// `testdata/README.md` for what each take does and does not prove.
+#[cfg(test)]
+mod beta_sweep {
+    use super::*;
+    use crate::audio::dsp::resonator::ResonatorAnalyzer;
+    use crate::core_types::note::AccidentalStyle;
+
+    /// The candidate exchange rates. Spans three orders of magnitude because the honest
+    /// prior on this number was "nobody knows" — pYIN's implied rate (its emissions are
+    /// deltas) is effectively infinite, and the linear link is β = 1.
+    const CANDIDATES: [f32; 7] = [1.0, 5.0, 10.0, 20.0, 40.0, 80.0, 200.0];
+
+    /// Decode one take at one β; returns the MIDI verdict per bank frame (`None` = no
+    /// pitch). Drives the production `SalienceDecoder` over the production snapshot, so this
+    /// measures the wired engine rather than a re-implementation of it.
+    fn decode_take(name: &str, beta: f32) -> Vec<Option<f32>> {
+        let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let sample_rate = reader.spec().sample_rate as f32;
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
+
+        let mut analyzer = ResonatorAnalyzer::new(sample_rate);
+        let mut decoder = SalienceDecoder::with_beta(beta);
+        // The bank's own ~16 ms publish cadence — the rate `MelodyTracker` is contractually
+        // driven at, and what the decoder measures its `dt` against.
+        let hop = (sample_rate * 0.016) as usize;
+        let mut verdicts = Vec::new();
+        let mut fed = 0usize;
+        while fed + hop <= samples.len() {
+            analyzer.process_samples(&samples[fed..fed + hop], true);
+            fed += hop;
+            let now = fed as f64 / sample_rate as f64;
+            // Skip the first second: the bank charges from empty, so the opening frames are
+            // junk for a reason that has nothing to do with this decision. (The first cut of
+            // the low-register probe caught only those and "disproved" itself.)
+            let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
+            let decoded = snapshot
+                .salience
+                .as_ref()
+                .and_then(|frame| decoder.decode(frame, now));
+            if now >= 1.0 {
+                verdicts.push(decoded.map(|(midi, _)| midi));
+            }
+        }
+        verdicts
+    }
+
+    /// The per-frame argmax over the same take — the baseline the Viterbi has to beat.
+    fn argmax_take(name: &str) -> Vec<Option<f32>> {
+        let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let sample_rate = reader.spec().sample_rate as f32;
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
+
+        let mut analyzer = ResonatorAnalyzer::new(sample_rate);
+        let hop = (sample_rate * 0.016) as usize;
+        let mut verdicts = Vec::new();
+        let mut fed = 0usize;
+        while fed + hop <= samples.len() {
+            analyzer.process_samples(&samples[fed..fed + hop], true);
+            fed += hop;
+            let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
+            if fed as f32 / sample_rate >= 1.0 {
+                verdicts.push(snapshot.fundamental.map(|(midi, _)| midi));
+            }
+        }
+        verdicts
+    }
+
+    /// Percentage of frames landing inside `band` (inclusive, MIDI), and the percentage that
+    /// are an octave of something in it.
+    fn tally(verdicts: &[Option<f32>], band: std::ops::RangeInclusive<i32>) -> (f32, f32) {
+        let total = verdicts.len().max(1) as f32;
+        let mut inside = 0u32;
+        let mut octave = 0u32;
+        for midi in verdicts.iter().flatten() {
+            let rounded = midi.round() as i32;
+            if band.contains(&rounded) {
+                inside += 1;
+            } else if band.contains(&(rounded - 12)) || band.contains(&(rounded + 12)) {
+                octave += 1;
+            }
+        }
+        (100.0 * inside as f32 / total, 100.0 * octave as f32 / total)
+    }
+
+    /// The takes, and the truth of each — **as the player stated it**, never as guessed. The
+    /// trills are fingers in first position, so every note from the open string to +7 is real
+    /// content (`testdata/README.md`).
+    ///
+    /// The last column is what makes `g_open_real_octave` a **control** rather than another
+    /// take: notes that must **remain**. An in-band tally cannot convict anything there,
+    /// because G3 is itself in the band — a decoder frozen on G3 for the whole take scores
+    /// "100% in band" while having missed the entire point. Only "how many frames are on the
+    /// G4 the player actually bowed" can tell tracking from paralysis, and the sweep's low-β
+    /// rows are exactly that failure caught in the act.
+    const TAKES: [(&str, i32, i32, &[(&str, i32)]); 5] = [
+        ("g_open_slow_strokes", 55, 55, &[]),
+        ("g_open_fast_strokes", 55, 55, &[]),
+        ("g_open_real_octave", 55, 67, &[("G3", 55), ("G4", 67)]),
+        ("g_string_trill", 55, 62, &[]),
+        ("a_string_trill", 69, 76, &[]),
+    ];
+
+    /// Percentage of frames sitting on exactly `midi`.
+    fn on_note(verdicts: &[Option<f32>], midi: i32) -> f32 {
+        let total = verdicts.len().max(1) as f32;
+        let hits = verdicts
+            .iter()
+            .flatten()
+            .filter(|m| m.round() as i32 == midi)
+            .count();
+        100.0 * hits as f32 / total
+    }
+
+    /// A bowed-string-ish tone: fundamental + partials, since a pure sine has no octave
+    /// ambiguity at all and would flatter any scorer.
+    fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+        let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
+        (0..len)
+            .map(|i| {
+                let t = i as f32 / sample_rate;
+                partials
+                    .iter()
+                    .enumerate()
+                    .map(|(h, a)| a * (std::f32::consts::TAU * frequency_hz * (h + 1) as f32 * t).sin())
+                    .sum::<f32>()
+                    / 3.0
+            })
+            .collect()
+    }
+
+    /// Milliseconds from a note change until the decoder reports the new note, at `beta`.
+    ///
+    /// **The other edge of the trade, and the one that convicts a stuck needle.** A decoder
+    /// that never moves scores beautifully on a take whose note never changes — which is
+    /// three of the five takes above. Only this can tell "it is right" from "it is stuck".
+    fn change_latency_ms(from_hz: f32, to_hz: f32, beta: f32) -> f32 {
+        let sample_rate = 48_000.0f32;
+        let hold = (sample_rate * 0.6) as usize;
+        let mut signal = violin_tone(from_hz, sample_rate, hold);
+        signal.extend(violin_tone(to_hz, sample_rate, hold));
+
+        let target_midi = 69.0 + 12.0 * (to_hz / 440.0).log2();
+        let mut analyzer = ResonatorAnalyzer::new(sample_rate);
+        let mut decoder = SalienceDecoder::with_beta(beta);
+        let hop = (sample_rate * 0.016) as usize;
+        let mut fed = 0usize;
+        while fed + hop <= signal.len() {
+            analyzer.process_samples(&signal[fed..fed + hop], true);
+            fed += hop;
+            let now = fed as f64 / sample_rate as f64;
+            let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
+            let decoded = snapshot
+                .salience
+                .as_ref()
+                .and_then(|frame| decoder.decode(frame, now));
+            if fed <= hold {
+                continue;
+            }
+            if let Some((midi, _)) = decoded {
+                if (midi - target_midi).abs() < 0.5 {
+                    return (fed - hold) as f32 / sample_rate * 1000.0;
+                }
+            }
+        }
+        f32::INFINITY
+    }
+
+    #[test]
+    #[ignore = "needs no testdata — run with --ignored --nocapture"]
+    fn salience_beta_latency_sweep() {
+        println!("\n=== SALIENCE_BETA vs note-change latency (ms) ===");
+        println!("(a stuck needle reads `inf` here and 100% on a take whose note never moves)");
+        let cases = [
+            ("A4->B4 (2nd) ", 440.0f32, 493.88f32),
+            ("A4->E5 (5th) ", 440.0, 659.25),
+            ("A4->A5 (8ve) ", 440.0, 880.0),
+            ("G3->D4 (low) ", 196.0, 293.66),
+        ];
+        print!("{:<16}", "beta");
+        for (name, _, _) in cases {
+            print!("{name:>16}");
+        }
+        println!();
+        for beta in CANDIDATES {
+            print!("{beta:<16.1}");
+            for (_, from, to) in cases {
+                let ms = change_latency_ms(from, to, beta);
+                if ms.is_finite() {
+                    print!("{ms:>16.0}");
+                } else {
+                    print!("{:>16}", "never");
+                }
+            }
+            println!();
+        }
+    }
+
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn salience_beta_sweep() {
+        println!("\n=== SALIENCE_BETA sweep — % of frames on a real note / an octave off ===");
+        for (name, lo, hi, must_remain) in TAKES {
+            let band = lo..=hi;
+            println!("\n--- {name}  (truth: MIDI {lo}..={hi}) ---");
+            let report = |label: String, verdicts: &[Option<f32>]| {
+                let (inside, octave) = tally(verdicts, band.clone());
+                print!("  {label:<20}: in {inside:>5.1}%   octave-off {octave:>5.1}%");
+                for (note_label, midi) in must_remain {
+                    print!("   {note_label} {:>5.1}%", on_note(verdicts, *midi));
+                }
+                println!();
+            };
+            report("argmax (no Viterbi)".to_string(), &argmax_take(name));
+            for beta in CANDIDATES {
+                report(format!("beta {beta:.1}"), &decode_take(name, beta));
+            }
+        }
+        println!(
+            "\nNOTE: `g_open_real_octave` counts the played G4 as INSIDE (band 55..=67) — a \
+             decoder that 'fixes' octaves by shoving everything down reads 100% there AND on \
+             the strokes. The strokes' band is 55..=55, so the contrast is what convicts."
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,7 +735,7 @@ mod tests {
     fn snap_preserves_fine_pitch() {
         let mut m = MelodyTracker::default();
         // Bank hears A4 17 cents sharp but an octave up; anchor says A4.
-        let (midi, _) = m.update(Some((81.17, 0.9)), Some((69.0, 0.9))).unwrap();
+        let (midi, _) = m.pin_and_gate(Some((81.17, 0.9)), Some((69.0, 0.9))).unwrap();
         assert!((midi - 69.17).abs() < 1e-4, "snapped to {midi}, expected 69.17");
     }
 
@@ -245,14 +745,14 @@ mod tests {
     fn snap_fixes_bank_octave_wandering() {
         // Bank crowned the 2nd harmonic: A5 instead of A4.
         let mut m = MelodyTracker::default();
-        let (midi, _) = m.update(Some((81.0, 0.9)), Some((69.0, 0.9))).unwrap();
+        let (midi, _) = m.pin_and_gate(Some((81.0, 0.9)), Some((69.0, 0.9))).unwrap();
         assert!(
             (midi - 69.0).abs() < 1e-4,
             "expected the anchor's octave, got {midi}"
         );
         // Bank fell to the sub-octave: A3 instead of A4.
         let mut m = MelodyTracker::default();
-        let (midi, _) = m.update(Some((57.0, 0.9)), Some((69.0, 0.9))).unwrap();
+        let (midi, _) = m.pin_and_gate(Some((57.0, 0.9)), Some((69.0, 0.9))).unwrap();
         assert!(
             (midi - 69.0).abs() < 1e-4,
             "expected the anchor's octave, got {midi}"
@@ -271,7 +771,7 @@ mod tests {
         for i in 0..40 {
             // Alternate: correct A4, then a crowned-overtone A5.
             let bank = if i % 2 == 0 { 69.0 } else { 81.0 };
-            let (midi, _) = m.update(Some((bank, 0.9)), Some((69.0, 0.9))).unwrap();
+            let (midi, _) = m.pin_and_gate(Some((bank, 0.9)), Some((69.0, 0.9))).unwrap();
             assert!(
                 (midi - 69.0).abs() < 1e-4,
                 "frame {i}: wandering should stay corrected, got {midi}"
@@ -288,7 +788,7 @@ mod tests {
     #[test]
     fn stale_anchor_does_not_drag_a_fresh_leap() {
         let mut m = MelodyTracker::default();
-        let (midi, _) = m.update(Some((76.0, 0.9)), Some((69.0, 0.9))).unwrap();
+        let (midi, _) = m.pin_and_gate(Some((76.0, 0.9)), Some((69.0, 0.9))).unwrap();
         assert!(
             (midi - 76.0).abs() < 1e-4,
             "a stale anchor a fifth away must not move the note; got {midi}"
@@ -306,12 +806,12 @@ mod tests {
         let mut m = MelodyTracker::default();
         // Settled on A4: bank and anchor agree.
         for _ in 0..4 {
-            m.update(Some((69.0, 0.9)), Some((69.0, 0.9)));
+            m.pin_and_gate(Some((69.0, 0.9)), Some((69.0, 0.9)));
         }
         // Player leaps to A5. The anchor stays on A4 for ~128 ms.
         let mut midi = 0.0;
         for _ in 0..=LEAP_CONFIRM_FRAMES {
-            midi = m.update(Some((81.0, 0.9)), Some((69.0, 0.9))).unwrap().0;
+            midi = m.pin_and_gate(Some((81.0, 0.9)), Some((69.0, 0.9))).unwrap().0;
         }
         assert!(
             (midi - 81.0).abs() < 1e-4,
@@ -325,10 +825,10 @@ mod tests {
     fn believed_leap_stays_believed() {
         let mut m = MelodyTracker::default();
         for _ in 0..=LEAP_CONFIRM_FRAMES {
-            m.update(Some((81.0, 0.9)), Some((69.0, 0.9)));
+            m.pin_and_gate(Some((81.0, 0.9)), Some((69.0, 0.9)));
         }
         for i in 0..8 {
-            let (midi, _) = m.update(Some((81.0, 0.9)), Some((69.0, 0.9))).unwrap();
+            let (midi, _) = m.pin_and_gate(Some((81.0, 0.9)), Some((69.0, 0.9))).unwrap();
             assert!(
                 (midi - 81.0).abs() < 1e-4,
                 "frame {i}: leap flapped back to {midi}"
@@ -342,11 +842,11 @@ mod tests {
     fn snap_resumes_after_the_anchor_catches_up() {
         let mut m = MelodyTracker::default();
         for _ in 0..=LEAP_CONFIRM_FRAMES {
-            m.update(Some((81.0, 0.9)), Some((69.0, 0.9))); // leap, anchor stale
+            m.pin_and_gate(Some((81.0, 0.9)), Some((69.0, 0.9))); // leap, anchor stale
         }
-        m.update(Some((81.0, 0.9)), Some((81.0, 0.9))); // anchor arrives → agreement
+        m.pin_and_gate(Some((81.0, 0.9)), Some((81.0, 0.9))); // anchor arrives → agreement
         // Now the bank wanders down an octave; the anchor must fix it at once.
-        let (midi, _) = m.update(Some((69.0, 0.9)), Some((81.0, 0.9))).unwrap();
+        let (midi, _) = m.pin_and_gate(Some((69.0, 0.9)), Some((81.0, 0.9))).unwrap();
         assert!(
             (midi - 81.0).abs() < 1e-4,
             "snap should be live again, got {midi}"
@@ -358,12 +858,12 @@ mod tests {
     fn silence_resets_the_dispute() {
         let mut m = MelodyTracker::default();
         for _ in 0..=LEAP_CONFIRM_FRAMES {
-            m.update(Some((81.0, 0.9)), Some((69.0, 0.9))); // build an unbroken dispute
+            m.pin_and_gate(Some((81.0, 0.9)), Some((69.0, 0.9))); // build an unbroken dispute
         }
-        m.update(None, Some((69.0, 0.9)));
+        m.pin_and_gate(None, Some((69.0, 0.9)));
         // A fresh phrase whose bank octave is wrong must be corrected immediately,
         // not inherit the previous phrase's dispute and be believed.
-        let (midi, _) = m.update(Some((81.0, 0.9)), Some((69.0, 0.9))).unwrap();
+        let (midi, _) = m.pin_and_gate(Some((81.0, 0.9)), Some((69.0, 0.9))).unwrap();
         assert!(
             (midi - 69.0).abs() < 1e-4,
             "dispute leaked across silence, got {midi}"
@@ -382,14 +882,14 @@ mod tests {
     fn lone_slip_is_a_gap_not_a_wrong_note() {
         let mut m = MelodyTracker::default();
         for _ in 0..5 {
-            assert!(m.update(Some((69.0, 0.9)), None).is_some()); // establish A4
+            assert!(m.pin_and_gate(Some((69.0, 0.9)), None).is_some()); // establish A4
         }
         assert!(
-            m.update(Some((81.0, 0.9)), None).is_none(),
+            m.pin_and_gate(Some((81.0, 0.9)), None).is_none(),
             "a lone slip must be dropped, not passed on"
         );
         assert!(
-            m.update(Some((71.0, 0.9)), None).is_some(),
+            m.pin_and_gate(Some((71.0, 0.9)), None).is_some(),
             "a trill-sized interval must still pass"
         );
     }
@@ -399,7 +899,7 @@ mod tests {
     #[test]
     fn unconfident_anchor_is_ignored() {
         let mut m = MelodyTracker::default();
-        let (midi, _) = m.update(Some((81.0, 0.9)), Some((69.0, 0.1))).unwrap();
+        let (midi, _) = m.pin_and_gate(Some((81.0, 0.9)), Some((69.0, 0.1))).unwrap();
         assert!(
             (midi - 81.0).abs() < 1e-4,
             "expected the bank's octave, got {midi}"
@@ -411,14 +911,14 @@ mod tests {
     #[test]
     fn no_bank_no_note() {
         let mut m = MelodyTracker::default();
-        assert!(m.update(None, Some((69.0, 0.9))).is_none());
+        assert!(m.pin_and_gate(None, Some((69.0, 0.9))).is_none());
     }
 
     /// With no anchor at all (no reading yet) the bank passes through.
     #[test]
     fn bank_passes_through_without_an_anchor() {
         let mut m = MelodyTracker::default();
-        let (midi, strength) = m.update(Some((69.5, 0.7)), None).unwrap();
+        let (midi, strength) = m.pin_and_gate(Some((69.5, 0.7)), None).unwrap();
         assert!((midi - 69.5).abs() < 1e-4);
         assert!((strength - 0.7).abs() < 1e-4);
     }

@@ -604,14 +604,26 @@ fn publish_resonator_snapshot(
         // reading. What the melody is built from is gated: below the gate the bank is
         // reporting the shape of room noise, and feeding that to the tracker keeps its
         // hysteresis alive through every rest.
+        //
+        // The melody is handed the frame's whole **salience curve**, not the argmax above:
+        // the errors left on a real violin are 4–6% near-ties, and a scalar cannot express a
+        // tie for continuity to break. See `dsp::melody::SalienceDecoder`.
         let fast_pitch = state.fast_pitch;
-        let bank = (level >= MELODY_LEVEL_GATE).then_some(fast_pitch).flatten();
+        let bank = (level >= MELODY_LEVEL_GATE)
+            .then_some(snapshot.salience.as_ref())
+            .flatten();
         // The melody line's whole latency win happens here: the bank publishes every
         // ~16 ms, so the played note is refreshed at the bank's cadence instead of
         // waiting for the 40 ms pYIN rebuild (which is itself ~128 ms behind). This
         // is also the only caller allowed to drive the tracker — see `melody_pitch`.
+        //
+        // `now_seconds` is the **audio** clock, and the tracker's Viterbi measures its frame
+        // length off it. That is not incidental: the bank's publish cadence is a user-facing
+        // slider (`ResonatorSettings::update_ms`, 8..80 ms), and a continuity model with
+        // per-frame costs would hand that slider the detector's smoothing — see
+        // `dsp::trellis`.
         let octave_anchor = state.octave_anchor;
-        let melody_pitch = state.melody.update(bank, octave_anchor);
+        let melody_pitch = state.melody.update(bank, octave_anchor, now_seconds);
         state.melody_pitch = melody_pitch;
         // …and the note the melody line is sounding is cut into written notes right
         // here too, on the sample clock. `None` covers silence and a rejected slip
