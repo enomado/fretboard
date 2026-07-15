@@ -23,9 +23,10 @@
 //!
 //! 3. **The rate is the device's.** Not 44100. See [`TakeReport::sample_rate`].
 //!
-//! The app writes takes but still never *reads* an audio file: this is an output
-//! path only. Replay into the engine would be a new input path, and that is a
-//! separate decision (`memory/kickstart_recording_and_annotation.md`).
+//! This module only ever writes. Reading a take back into the engine is `replay`'s
+//! job, and the two stay apart on purpose: what a take *is* gets decided here, once,
+//! at the tap — replay just plays back whatever this module was honest enough to
+//! write.
 
 use std::fs::File;
 use std::io::BufWriter;

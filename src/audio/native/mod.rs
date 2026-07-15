@@ -55,7 +55,9 @@ pub(super) mod imp {
         DroneState,
         MelodyFrame,
         RecorderStatus,
+        ReplayStatus,
         ResonatorReading,
+        TakeOnDisk,
         Timbre,
         TunerReading,
     };
@@ -63,6 +65,7 @@ pub(super) mod imp {
 
     mod devices;
     mod recorder;
+    mod replay;
 
     use devices::{
         cpal_device_display_name,
@@ -76,6 +79,12 @@ pub(super) mod imp {
         RecorderTap,
         recorder_ring,
         start_recorder_worker,
+    };
+    use replay::{
+        ReplayHandle,
+        list_takes,
+        load_take,
+        start_replay_source,
     };
 
     // The analysis (FFT/YIN/resonator) and the pipelines that drive it live in
@@ -165,6 +174,11 @@ pub(super) mod imp {
         // пересоздаёт весь capture, и писатель нового подхватывает то же
         // намерение вместо того, чтобы потерять его.
         recorder:            RecorderHandle,
+        /// Состояние реплея. Живёт НАД capture по той же причине, что и рекордер:
+        /// статус должен пережить capture, который его произвёл — UI спрашивает
+        /// «что там с дублем, который я проиграл» уже после того, как источник
+        /// отработал и встал.
+        replay:              ReplayHandle,
         command_tx:          Option<Sender<Command>>,
         audio_thread:        Option<JoinHandle<()>>,
     }
@@ -175,6 +189,12 @@ pub(super) mod imp {
         PlayTestNote(PNote),
         StartDrone,
         StopDrone,
+        /// Проиграть дубль через движок вместо живого входа.
+        StartReplay(PathBuf),
+        /// Вернуть живой вход. Отдельная команда, а не `SwitchInput`: вернуться
+        /// надо на ТО ЖЕ устройство, которое было выбрано до реплея, и знает его
+        /// audio-тред (capture'а), а не UI.
+        StopReplay,
     }
 
     impl Default for AudioEngine {
@@ -199,6 +219,7 @@ pub(super) mod imp {
             let drone = Arc::new(Mutex::new(DroneState::default()));
             let drone_playing = Arc::new(AtomicBool::new(false));
             let recorder = RecorderHandle::new();
+            let replay = ReplayHandle::new();
 
             let (command_tx, command_rx) = mpsc::channel::<Command>();
 
@@ -219,6 +240,7 @@ pub(super) mod imp {
                     drone:               drone.clone(),
                     drone_playing:       drone_playing.clone(),
                     recorder:            recorder.clone(),
+                    replay:              replay.clone(),
                 };
                 move || {
                     audio_thread_main(command_rx, ctx);
@@ -239,6 +261,7 @@ pub(super) mod imp {
                 drone,
                 drone_playing,
                 recorder,
+                replay,
                 command_tx: Some(command_tx),
                 audio_thread: Some(audio_thread),
             }
@@ -428,6 +451,40 @@ pub(super) mod imp {
         pub fn recorder_status(&self) -> RecorderStatus {
             self.recorder.status()
         }
+
+        /// Проиграть записанный дубль через движок вместо живого входа.
+        ///
+        /// Линия, которая при этом рисуется, — БОЕВАЯ: её строит тот же код, что и
+        /// вживую, из тех же сэмплов, в реальном времени (см. `replay`). Живой вход
+        /// на время реплея уходит и возвращается по [`Self::stop_replay`].
+        pub fn start_replay(&self, path: PathBuf) {
+            if let Some(tx) = &self.command_tx {
+                let _ = tx.send(Command::StartReplay(path));
+            }
+        }
+
+        /// Вернуть живой вход.
+        ///
+        /// Реплей НЕ делает этого сам, дойдя до конца дубля: линия, которую он
+        /// только что нарисовал, — это то, что юзер собрался размечать, а живой
+        /// микрофон писал бы поверх неё свои кадры.
+        pub fn stop_replay(&self) {
+            if let Some(tx) = &self.command_tx {
+                let _ = tx.send(Command::StopReplay);
+            }
+        }
+
+        pub fn replay_status(&self) -> ReplayStatus {
+            self.replay.status()
+        }
+
+        /// Какие дубли лежат в `dir` и, значит, могут быть проиграны.
+        ///
+        /// Читает только заголовки WAV'ов — приговора «улика/не улика» тут НЕТ и
+        /// быть не может: он про запись, а не про файл (см. [`TakeOnDisk`]).
+        pub fn list_takes(&self, dir: &std::path::Path) -> Vec<TakeOnDisk> {
+            list_takes(dir)
+        }
     }
 
     impl Drop for AudioEngine {
@@ -499,6 +556,40 @@ pub(super) mod imp {
                     drone_stream = None; // дроп стрима = тишина
                     ctx.drone_playing.store(false, Ordering::Relaxed);
                 }
+                Command::StartReplay(path) => {
+                    // Живой вход уходит целиком: два источника в одни кольца — это
+                    // микрофон, подмешанный в дубль, то есть линия про сигнал,
+                    // которого не существовало.
+                    if let Some(cap) = current.take() {
+                        cap.shutdown();
+                    }
+                    match ctx.build_replay_capture(path) {
+                        Ok(cap) => current = Some(cap),
+                        Err(msg) => {
+                            // Дубль не открылся. Сказать об этом надо ИМЕННО в
+                            // статусе реплея (UI ждёт приговор там), а живой вход
+                            // вернуть — иначе неудачный клик оставил бы приложение
+                            // вообще без входа.
+                            ctx.replay.publish(ReplayStatus::Failed(msg));
+                            match ctx.build_capture(ctx.selected_input_id.lock().unwrap().clone()) {
+                                Ok(cap) => current = Some(cap),
+                                Err(msg) => ctx.set_error(&msg),
+                            }
+                        }
+                    }
+                }
+                Command::StopReplay => {
+                    if let Some(cap) = current.take() {
+                        cap.shutdown();
+                    }
+                    ctx.replay.publish(ReplayStatus::Idle);
+                    // Обратно на то устройство, что было выбрано до реплея:
+                    // `build_replay_capture` намеренно не трогал этот выбор.
+                    match ctx.build_capture(ctx.selected_input_id.lock().unwrap().clone()) {
+                        Ok(cap) => current = Some(cap),
+                        Err(msg) => ctx.set_error(&msg),
+                    }
+                }
             }
         }
 
@@ -523,6 +614,7 @@ pub(super) mod imp {
         drone:               Arc<Mutex<DroneState>>,
         drone_playing:       Arc<AtomicBool>,
         recorder:            RecorderHandle,
+        replay:              ReplayHandle,
     }
 
     impl AudioContext {
@@ -644,7 +736,7 @@ pub(super) mod imp {
                 analysis:  analysis_prod,
                 resonator: resonator_prod,
                 monitor:   monitor_prod,
-                recorder:  self.recorder.tap(recorder_prod),
+                recorder:  Some(self.recorder.tap(recorder_prod)),
             };
 
             // Входной stream: callback тупо пушит в кольца, без блокировок и паник.
@@ -661,7 +753,11 @@ pub(super) mod imp {
             let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
             let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
             let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
-            let recorder = start_recorder_worker(sample_rate, recorder_cons, self.recorder.clone());
+            let recorder = Some(start_recorder_worker(
+                sample_rate,
+                recorder_cons,
+                self.recorder.clone(),
+            ));
             self.finish_capture_start(sample_rate, output_rate, &selected_id);
 
             Ok(ActiveCapture {
@@ -686,7 +782,7 @@ pub(super) mod imp {
                 analysis:  analysis_prod,
                 resonator: resonator_prod,
                 monitor:   monitor_prod,
-                recorder:  self.recorder.tap(recorder_prod),
+                recorder:  Some(self.recorder.tap(recorder_prod)),
             };
 
             let input = ActiveInput::Pulse(build_pulse_input(id, sample_rate, fanout, self.shared.clone())?);
@@ -694,7 +790,11 @@ pub(super) mod imp {
             let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
             let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
             let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
-            let recorder = start_recorder_worker(sample_rate, recorder_cons, self.recorder.clone());
+            let recorder = Some(start_recorder_worker(
+                sample_rate,
+                recorder_cons,
+                self.recorder.clone(),
+            ));
             self.finish_capture_start(sample_rate, output_rate, &selected_id);
 
             Ok(ActiveCapture {
@@ -767,6 +867,76 @@ pub(super) mod imp {
                 *sel = Some(selected_id.to_owned());
             }
         }
+
+        /// Поднять capture, играющий дубль с диска вместо устройства.
+        ///
+        /// Форма — ровно как у двух остальных путей (кольца → фанаут → источник →
+        /// воркеры), и это не совпадение: линия реплея обязана быть боевой линией,
+        /// а она такая ровно постольку, поскольку её рисует тот же код, которому
+        /// всё равно, откуда приехал сэмпл.
+        ///
+        /// Отличий от живых путей три, и все три — следствия того, что источник
+        /// файл, а не устройство:
+        ///
+        /// - **Частота — файла.** Пайплайны строятся под capture, так что дубль
+        ///   44.1 кГц играет как 44.1 (см. `replay::load_take`). Ресемпла нет
+        ///   нигде: он был бы обработкой сигнала, который весь смысл иметь сырым.
+        /// - **Рекордера нет** (`InputFanout::recorder = None`), см. `replay`.
+        /// - **`selected_input_id` не трогаем.** Это выбор УСТРОЙСТВА, к которому
+        ///   реплей вернётся по стопу; реплей не устройство и не выбор. Отсюда же
+        ///   `selected_id` капчура — ID живого входа, а не путь дубля: смена
+        ///   монитора посреди реплея пересоберёт живой вход, что и правильно.
+        /// - **Монитор — есть.** Дубль надо СЛЫШАТЬ: разметка границ нот идёт по
+        ///   звуку, а не по картинке (это же и есть защита от зеркала).
+        fn build_replay_capture(&self, path: PathBuf) -> Result<ActiveCapture, String> {
+            let take = load_take(&path)?;
+            let sample_rate = take.sample_rate;
+
+            let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
+            let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
+            let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
+            let fanout = InputFanout {
+                analysis:  analysis_prod,
+                resonator: resonator_prod,
+                monitor:   monitor_prod,
+                recorder:  None,
+            };
+
+            let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
+            let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
+            let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
+
+            // Чистим состояние ДО первого сэмпла дубля: иначе линия дубля начнётся
+            // с хвоста того, что микрофон слышал секунду назад, и первые кадры
+            // реплея были бы про другой звук.
+            self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
+            self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
+            self.reset_shared_state();
+
+            let selected_id = self
+                .selected_input_id
+                .lock()
+                .ok()
+                .and_then(|sel| sel.clone())
+                .unwrap_or_default();
+
+            self.replay.publish(ReplayStatus::Playing {
+                path,
+                seconds: 0.0,
+                total_seconds: take.seconds(),
+            });
+            let source = start_replay_source(take, fanout, self.replay.clone());
+
+            Ok(ActiveCapture {
+                input: ActiveInput::Replay(source),
+                output_stream,
+                analysis,
+                resonator,
+                // Рекордер на этом пути не поднимается: писать нечего и незачем.
+                recorder: None,
+                selected_id,
+            })
+        }
     }
 
     // ------------------------------------------------------------------
@@ -792,6 +962,9 @@ pub(super) mod imp {
     enum ActiveInput {
         Cpal(cpal::Stream),
         Pulse(PulseInputCapture),
+        /// Дубль, проигрываемый с диска в те же кольца. Как и у рекордера,
+        /// `AnalysisWorker` тут — просто «поток со стоп-флагом».
+        Replay(AnalysisWorker),
     }
 
     struct ActiveCapture {
@@ -801,7 +974,9 @@ pub(super) mod imp {
         resonator:     AnalysisWorker,
         /// Писатель дублей. `AnalysisWorker` здесь не про анализ — это просто
         /// «поток со стоп-флагом», и рекордеру нужен ровно он (см. тип).
-        recorder:      AnalysisWorker,
+        ///
+        /// `None` на replay-пути: писать нечего (см. `build_replay_capture`).
+        recorder:      Option<AnalysisWorker>,
         selected_id:   String,
     }
 
@@ -816,6 +991,10 @@ pub(super) mod imp {
                     drop(input_stream);
                 }
                 ActiveInput::Pulse(pulse) => pulse.shutdown(),
+                // Тред реплея проверяет стоп-флаг раз в чанк, так что join
+                // возвращается в пределах 10 мс — стоп посреди 35-секундного дубля
+                // не заставляет ждать его конца.
+                ActiveInput::Replay(source) => source.stop(),
             }
             if let Some(out) = &self.output_stream {
                 let _ = out.pause();
@@ -827,7 +1006,9 @@ pub(super) mod imp {
             self.resonator.stop();
             // Рекордер последним: он закрывает WAV (дописывает длины в RIFF-хедер)
             // и обязан успеть это сделать до того, как мы вернём управление.
-            self.recorder.stop();
+            if let Some(recorder) = self.recorder {
+                recorder.stop();
+            }
         }
     }
 
@@ -957,7 +1138,11 @@ pub(super) mod imp {
         analysis:  SampleProducer,
         resonator: SampleProducer,
         monitor:   Option<SampleProducer>,
-        recorder:  RecorderTap,
+        /// `None` на replay-пути: дубль — это то, что сыграла скрипка, а реплей
+        /// проигрывает уже записанный файл. Записать его значило бы сделать копию
+        /// с наклейкой «улика». Тапа тут нет физически, а не по договорённости —
+        /// и кнопка Record при реплее мертва (`take_panel`).
+        recorder:  Option<RecorderTap>,
     }
 
     impl InputFanout {
@@ -979,8 +1164,10 @@ pub(super) mod imp {
                 let _ = monitor.try_push(sample);
             }
             // А здесь потеря НЕ безобидна: это дыра в улике. Считается — см.
-            // `RecorderTap::push`.
-            self.recorder.push(sample);
+            // `RecorderTap::push`. При реплее тапа нет (см. поле).
+            if let Some(recorder) = self.recorder.as_mut() {
+                recorder.push(sample);
+            }
         }
     }
 
@@ -1508,6 +1695,93 @@ pub(super) mod imp {
                     + 0.2 * bell * (4.0 * tau).sin())
                     * 0.6
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// DIAGNOSTIC: does a take, played back through the **public engine API**, put a
+        /// line on the melody history?
+        ///
+        /// The module's other tests each prove one link — `replay` proves the source hands
+        /// over the take in real time, `core`'s rig proves the pipelines draw a line when
+        /// fed. Nothing proves the links are *joined*: that Start actually tears down the
+        /// live capture, builds a replay one, wires it to the same rings the analysis
+        /// workers drain, and that frames come out the other end. Every one of those is a
+        /// place where replay could fail silently — the app would look idle and the roll
+        /// would stay empty, with no error anywhere.
+        ///
+        /// Needs no audio device: the monitor is off by default, so the replay capture
+        /// opens no output, and the live capture failing to build on a headless box is
+        /// exactly the state a user hits when they replay with no mic plugged in.
+        ///
+        /// Not an assertion of a number — the counts depend on the bow. It fails on zero,
+        /// which is the reading that means replay is broken rather than the take quiet.
+        #[test]
+        #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+        fn a_take_replayed_through_the_engine_draws_a_line() {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("testdata")
+                .join("g_open_slow_strokes.wav");
+            let engine = AudioEngine::new();
+
+            engine.start_replay(path.clone());
+
+            // The bank is gated on a UI-driven deadline: nothing publishes melody frames
+            // unless a panel keeps asking. The panel that hosts replay does exactly this
+            // every frame; a test that forgot would measure the gate, not replay.
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut frames = Vec::new();
+            let mut cursor = None;
+            let mut playing_seen = false;
+            loop {
+                engine.request_resonator();
+                for frame in engine.melody_since(cursor) {
+                    cursor = Some(frame.seq);
+                    frames.push(frame);
+                }
+                match engine.replay_status() {
+                    ReplayStatus::Playing { .. } => playing_seen = true,
+                    ReplayStatus::Finished { .. } => break,
+                    ReplayStatus::Failed(msg) => panic!("replay refused the take: {msg}"),
+                    other => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "replay never started; stuck at {other:?}"
+                        );
+                    }
+                }
+                assert!(Instant::now() < deadline, "replay never finished");
+                thread::sleep(Duration::from_millis(16)); // ~a UI frame
+            }
+            // Drain what landed between the last poll and the end of the take.
+            for frame in engine.melody_since(cursor) {
+                frames.push(frame);
+            }
+
+            let voiced = frames.iter().filter(|f| f.pitch.is_some()).count();
+            let scored = frames.iter().filter(|f| f.salience.is_some()).count();
+            println!("\n=== g_open_slow_strokes replayed through the engine ===");
+            println!("  frames      : {}", frames.len());
+            println!("  ...scored   : {scored}");
+            println!("  ...voiced   : {voiced}");
+
+            assert!(
+                playing_seen,
+                "replay went straight to Finished — it played nothing"
+            );
+            assert!(
+                !frames.is_empty(),
+                "replay finished the take but the engine published no frames — the source is \
+                 not wired to the analysis rings"
+            );
+            assert!(
+                voiced > 0,
+                "the engine replayed {} frames of a bowed G and decided no pitch, ever",
+                frames.len()
+            );
         }
     }
 }

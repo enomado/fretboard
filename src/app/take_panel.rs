@@ -24,7 +24,10 @@ use eframe::egui::{
 };
 
 use super::App;
-use crate::audio::RecorderStatus;
+use crate::audio::{
+    RecorderStatus,
+    ReplayStatus,
+};
 use crate::ui::segmented::{
     RowCaption,
     SegmentedButton,
@@ -46,10 +49,19 @@ impl App {
                 ui.add_space(14.0);
                 ui.separator();
                 ui.add_space(10.0);
-                ui.label(RichText::new("This session").color(color::TEXT_CAPTION).strong());
+                ui.label(RichText::new("Corpus").color(color::TEXT_CAPTION).strong());
                 ui.add_space(6.0);
-                self.draw_session_takes(ui);
+                self.draw_corpus(ui);
             });
+    }
+
+    /// Перечитать опись `testdata/`.
+    ///
+    /// Зовётся при старте и после каждого законченного дубля — то есть ровно тогда,
+    /// когда содержимое папки могло измениться нашими руками. Не покадрово: это
+    /// открытие файлов, а корпус не меняется сам по себе.
+    pub(super) fn refresh_corpus(&mut self) {
+        self.corpus = self.audio.list_takes(&take_dir());
     }
 
     /// Имя, кнопка, приговор по текущему/последнему дублю.
@@ -70,6 +82,13 @@ impl App {
         }
 
         let recording = matches!(status, RecorderStatus::Recording { .. });
+        // Пока реплей держит capture, микрофона на входе нет: писать нечего. Дубль
+        // — это то, что сыграла скрипка, а не то, что мы сами же и проигрываем (см.
+        // `audio::native::imp::replay`); кнопка это признаёт, а не делает вид.
+        let replaying = !matches!(
+            self.audio.replay_status(),
+            ReplayStatus::Idle | ReplayStatus::Unsupported
+        );
 
         ui.horizontal(|ui| {
             ui.add(RowCaption::new("Take"));
@@ -89,8 +108,8 @@ impl App {
                 ("Record", color::PLAY_FILL, color::PLAY_STROKE)
             };
             // Без имени писать некуда — но только для старта: начатый дубль
-            // остановить можно всегда.
-            let armed = recording || !self.take_name.trim().is_empty();
+            // остановить можно всегда. При реплее старт запрещён (см. `replaying`).
+            let armed = recording || (!replaying && !self.take_name.trim().is_empty());
             let button = SegmentedButton::colored(label, fill, stroke).min_width(88.0);
             if ui.add_enabled(armed, button).clicked() {
                 if recording {
@@ -105,53 +124,100 @@ impl App {
         draw_take_status(ui, &status);
     }
 
-    /// Что записано с запуска приложения.
+    /// Что лежит в `testdata/` и что из этого можно проиграть.
     ///
-    /// Только эта сессия, и это не лень: отчёты уже лежат в памяти, поэтому
-    /// список ничего не читает с диска. Показать так же длину и приговор для
-    /// СТАРЫХ дублей значило бы декодировать их WAV'ы — то есть завести
-    /// приложению входной путь для аудио, которого у него нет и который никто не
-    /// заказывал (см. `audio::native::imp::recorder`).
-    fn draw_session_takes(&self, ui: &mut Ui) {
-        if self.takes.is_empty() {
+    /// Приговор «улика / не улика» стоит **только** у дублей этой сессии: он про
+    /// запись (сколько сэмплов потерялось), а не про файл, и с диска его не
+    /// прочитать — WAV с дырой валиден побайтово. Врать нулём вместо «не знаю» тут
+    /// нельзя: ровно от этой лжи и заведён счётчик (см. `TakeOnDisk`).
+    fn draw_corpus(&mut self, ui: &mut Ui) {
+        if self.corpus.is_empty() {
             ui.label(
-                RichText::new("Nothing recorded yet — takes land in testdata/")
+                RichText::new("No takes in testdata/ yet — record one above")
                     .color(color::TEXT_MUTED)
                     .size(12.0),
             );
             return;
         }
 
-        for report in &self.takes {
+        let replay = self.audio.replay_status();
+        let playing_now = match &replay {
+            ReplayStatus::Playing { path, .. } => Some(path.clone()),
+            _ => None,
+        };
+        // Реплей держит capture целиком, так что играть два дубля разом нельзя —
+        // и второй Play не должен выглядеть доступным.
+        let replay_busy = playing_now.is_some();
+
+        for take in &self.corpus {
+            let is_playing = playing_now.as_deref() == Some(take.path.as_path());
             ui.horizontal(|ui| {
-                // Приговор первым и значком: в списке из десятка дублей глаз ищет
-                // не имя, а «какие годятся».
-                let (mark, tint) = if report.is_evidence() {
-                    ("✓", color::STATUS_LISTENING)
+                let (label, fill, stroke) = if is_playing {
+                    ("■", color::STOP_FILL, color::STOP_STROKE)
                 } else {
-                    ("✗", color::STATUS_ERROR)
+                    ("▶", color::PLAY_FILL, color::PLAY_STROKE)
+                };
+                let button = SegmentedButton::colored(label, fill, stroke).min_width(32.0);
+                if ui.add_enabled(is_playing || !replay_busy, button).clicked() {
+                    if is_playing {
+                        self.audio.stop_replay();
+                    } else {
+                        self.audio.start_replay(take.path.clone());
+                    }
+                }
+
+                // Приговор — только для дублей ЭТОЙ сессии; про остальные молчим,
+                // потому что не знаем.
+                let verdict = self
+                    .takes
+                    .iter()
+                    .find(|report| report.path == take.path)
+                    .map(|report| report.is_evidence());
+                let (mark, tint) = match verdict {
+                    Some(true) => ("✓", color::STATUS_LISTENING),
+                    Some(false) => ("✗", color::STATUS_ERROR),
+                    None => (" ", color::TEXT_MUTED),
                 };
                 ui.label(RichText::new(mark).color(tint).monospace());
+
                 ui.label(
-                    RichText::new(take_label(&report.path))
-                        .color(color::TEXT_VALUE)
+                    RichText::new(take_label(&take.path))
+                        .color(if is_playing {
+                            color::STATUS_LISTENING
+                        } else {
+                            color::TEXT_VALUE
+                        })
                         .monospace()
                         .size(12.0),
                 );
                 ui.label(
-                    RichText::new(format!("{:.1} s · {} Hz", report.seconds(), report.sample_rate))
+                    RichText::new(format!("{:.1} s · {} Hz", take.seconds(), take.sample_rate))
                         .color(color::TEXT_HINT)
                         .monospace()
                         .size(12.0),
                 );
-                if !report.is_evidence() {
+                if verdict == Some(false) {
                     ui.label(
-                        RichText::new(format!("{} samples dropped — not evidence", report.dropped))
+                        RichText::new("samples dropped — not evidence")
                             .color(color::STATUS_ERROR)
                             .size(12.0),
                     );
                 }
             });
+        }
+
+        ui.add_space(8.0);
+        draw_replay_status(ui, &replay);
+
+        // Дубль доиграл, но capture всё ещё реплейный (линия заморожена — её и
+        // размечают). Вернуть живой вход — отдельный осознанный клик.
+        if matches!(replay, ReplayStatus::Finished { .. }) {
+            ui.add_space(6.0);
+            let button = SegmentedButton::colored("Back to live input", color::STOP_FILL, color::STOP_STROKE)
+                .min_width(150.0);
+            if ui.add(button).clicked() {
+                self.audio.stop_replay();
+            }
         }
     }
 
@@ -173,6 +239,9 @@ impl App {
             return;
         }
         self.takes.push(report);
+        // Файл только что появился — опись устарела ровно сейчас, и это
+        // единственный момент, когда её надо перечитать.
+        self.refresh_corpus();
     }
 }
 
@@ -185,9 +254,13 @@ impl App {
 /// сборки здесь честнее рантаймового; на телефоне его нет, запись там честно
 /// упадёт с ошибкой пути, а не запишет дубль в никуда.
 fn take_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("testdata")
-        .join(take_file_name(name))
+    take_dir().join(take_file_name(name))
+}
+
+/// Корпус — `testdata/` в дереве ИСХОДНИКОВ. Отсюда же его и читает реплей, и
+/// пишет рекордер, и грузят тесты: одна папка, один смысл. См. [`take_path`].
+fn take_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata")
 }
 
 /// Имя из поля ввода → имя файла.
@@ -266,6 +339,52 @@ fn draw_take_status(ui: &mut Ui, status: &RecorderStatus) {
             }
         }
         RecorderStatus::Failed(message) => (message.clone(), color::STATUS_ERROR),
+    };
+
+    ui.label(RichText::new(text).color(tint).size(12.0));
+}
+
+/// Что делает реплей.
+///
+/// Главное здесь — сказать, что линия на pitch roll СЕЙЧАС не про микрофон, а про
+/// дубль. Без этой строки картинка врёт: она выглядит ровно как живая игра, потому
+/// что её рисует тот же код (и это ровно то, чего мы добивались).
+fn draw_replay_status(ui: &mut Ui, status: &ReplayStatus) {
+    let (text, tint) = match status {
+        // На вебе реплея нет — как и рекордера, и по той же причине: нет диска.
+        // Молчим, а не показываем мёртвую строку: список дублей там всё равно пуст.
+        ReplayStatus::Unsupported => return,
+        ReplayStatus::Idle => {
+            (
+                "Play a take to see the line the detector draws for it — live path, real time".to_owned(),
+                color::TEXT_HINT,
+            )
+        }
+        ReplayStatus::Playing {
+            path,
+            seconds,
+            total_seconds,
+        } => {
+            (
+                format!(
+                    "▶ {} — {seconds:.1} / {total_seconds:.1} s · live input is off while replaying",
+                    take_label(path)
+                ),
+                color::STATUS_LISTENING,
+            )
+        }
+        // Стоим на конце дубля намеренно: линия, которую юзер смотрит, — это то,
+        // что он сейчас размечает, и живой вход писал бы поверх неё.
+        ReplayStatus::Finished { path } => {
+            (
+                format!(
+                    "{} played to the end — the line is frozen. Stop to hand the input back",
+                    take_label(path)
+                ),
+                color::TEXT_VALUE,
+            )
+        }
+        ReplayStatus::Failed(message) => (message.clone(), color::STATUS_ERROR),
     };
 
     ui.label(RichText::new(text).color(tint).size(12.0));

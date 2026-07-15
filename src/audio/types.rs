@@ -315,6 +315,78 @@ impl TakeReport {
     }
 }
 
+/// A take sitting in the corpus directory, found by looking rather than by having
+/// recorded it.
+///
+/// **Deliberately not a [`TakeReport`], and the missing field is the reason.** A
+/// report carries `dropped`, which is what decides whether a take is evidence — and
+/// `dropped` is a property of the *recording*, not of the file. A WAV with a hole in
+/// it is byte-for-byte as valid as one without. So a take found on disk has no
+/// verdict available, and this type has nowhere to put one: filling `dropped` with 0
+/// would make every old file claim to be evidence, which is precisely the silent lie
+/// the counter exists to prevent (see [`TakeReport::dropped`]).
+///
+/// The panel therefore shows a verdict only for takes recorded in this session, and
+/// says nothing about the rest — because nothing is what it knows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TakeOnDisk {
+    pub path:        PathBuf,
+    pub sample_rate: u32,
+    pub samples:     u64,
+}
+
+impl TakeOnDisk {
+    pub fn seconds(&self) -> f32 {
+        self.samples as f32 / self.sample_rate as f32
+    }
+}
+
+/// What replay is doing right now — a recorded take being pushed back through the
+/// live analysis path, so the line it produces can be looked at and marked up.
+///
+/// The UI reads this every frame; the replay source thread
+/// (`audio::native::imp::replay`) is the only thing that sets it.
+///
+/// # Why replay exists at all
+///
+/// The engine never writes down what it decided — a take plus the current detector
+/// *is* the decision, recomputed, and by today's version rather than whichever one
+/// was running when the take was played. That invariant is deliberate and stays. It
+/// does mean, though, that after Stop there is no line to look at: the frames are
+/// gone, and the melody history keeps only the last few seconds against takes that
+/// run half a minute. So "mark up what the detector did" has exactly one honest
+/// implementation — play the take back through the detector and watch.
+///
+/// # Why it runs in real time
+///
+/// Both planes gate their cadence on the wall clock (`ResonatorPipeline::last_publish`,
+/// `AnalysisPipeline::last_analysis`), so audio shovelled in faster than real time is
+/// analysed once and never again. Replay therefore sleeps between chunks exactly as a
+/// device callback would — which is not a cost so much as the point: the line it draws
+/// is the line the instrument gets, latency and cadence included, because it is
+/// produced by the same code driven the same way.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReplayStatus {
+    /// This build cannot replay. Same reason the recorder is `Unsupported` there:
+    /// the browser engine has no filesystem to read a take from.
+    Unsupported,
+    Idle,
+    /// A take is playing through the engine. `seconds` is how far in the audio has
+    /// got — the position of the line being drawn, not a wall-clock stopwatch.
+    Playing {
+        path:          PathBuf,
+        seconds:       f32,
+        total_seconds: f32,
+    },
+    /// The take reached its end. The capture deliberately stays parked here rather
+    /// than falling back to the microphone: the line just drawn is what the user is
+    /// about to mark up, and a live input would keep writing frames over it.
+    Finished {
+        path: PathBuf,
+    },
+    Failed(String),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioInputKind {
     Microphone,

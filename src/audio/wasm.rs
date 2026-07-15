@@ -44,7 +44,9 @@ use crate::audio::types::{
     MelodyFrame,
     MelodyHistory,
     RecorderStatus,
+    ReplayStatus,
     ResonatorReading,
+    TakeOnDisk,
     TunerReading,
 };
 use crate::audio::worker_proto::{
@@ -341,6 +343,23 @@ impl AudioEngine {
 
     pub fn recorder_status(&self) -> RecorderStatus {
         RecorderStatus::Unsupported
+    }
+
+    // Replay — absent for the same reason, from the other side: there is no take on
+    // disk here to play back, because there is no disk.
+
+    pub fn start_replay(&self, _path: PathBuf) {
+    }
+
+    pub fn stop_replay(&self) {
+    }
+
+    pub fn replay_status(&self) -> ReplayStatus {
+        ReplayStatus::Unsupported
+    }
+
+    pub fn list_takes(&self, _dir: &std::path::Path) -> Vec<TakeOnDisk> {
+        Vec::new()
     }
 }
 

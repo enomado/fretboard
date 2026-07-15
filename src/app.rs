@@ -35,6 +35,7 @@ use crate::audio::{
     AudioInputKind,
     AudioInputOption,
     AudioStatus,
+    TakeOnDisk,
     TakeReport,
 };
 use crate::core_types::note::{
@@ -272,9 +273,15 @@ pub struct App {
     /// прошлому имени незачем.
     take_name: String,
     /// Дубли, записанные с запуска приложения, в порядке записи. Собирается
-    /// `harvest_finished_take` покадрово; не персистится и НЕ читается с диска —
-    /// это то, что записала эта сессия, а не опись `testdata/`.
+    /// `harvest_finished_take` покадрово; не персистится.
+    ///
+    /// Это НЕ опись `testdata/` (её даёт `corpus`), и разделение принципиальное:
+    /// только здесь есть `dropped`, то есть приговор «улика или нет». Файл на диске
+    /// его не помнит — см. `TakeOnDisk`.
     takes: Vec<TakeReport>,
+    /// Опись `testdata/`: что можно проиграть. Читается с диска — при старте и после
+    /// каждого законченного дубля, а не покадрово (лишний stat на каждый кадр UI).
+    corpus: Vec<TakeOnDisk>,
 }
 
 struct HoveredNote {
@@ -326,7 +333,9 @@ impl App {
             mobile_panel: WorkspaceTab::ResonatorSnail,
             take_name: String::new(),
             takes: Vec::new(),
+            corpus: Vec::new(),
         };
+        app.refresh_corpus();
 
         // Restore last session's preferences over the defaults built above.
         // Defaults stay intact for any field a stale RON file is missing.

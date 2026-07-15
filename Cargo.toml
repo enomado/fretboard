@@ -53,15 +53,20 @@ image = "0.25"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "*"
 ringbuf = "*"
-# WAV, both directions, and both ends are about the same corpus:
+# WAV, both directions, and every end is about the same corpus:
 #   - `audio::native::imp::recorder` WRITES takes straight off the capture ring,
 #     which is what makes a take *be* the signal the detector saw rather than a
 #     recording that resembles it;
-#   - `dsp::swipe`'s real-audio probes READ them back to measure the octave
+#   - `audio::native::imp::replay` READS one back INTO the engine, so the line the
+#     detector draws for a take can be looked at after the fact;
+#   - `dsp::swipe`'s real-audio probes read them too, to measure the octave
 #     decision on a real bowed G string instead of a synthetic column.
-# The app writes audio files but still never *loads* one: recording is an output
-# path. Replay into the engine would be a new input path — a decision nobody has
-# taken (see `memory/kickstart_recording_and_annotation.md`).
+# The app used to write audio files and never load one. Replay ended that, by a
+# decision taken 2026-07-15 with the cost understood: the alternative was that a
+# take's line existed only while it was being played and could never be marked up
+# (`memory/kickstart_recording_and_annotation.md`). What the invariant protected
+# still holds — the detector's decisions are still never written down; replay
+# recomputes them with today's engine, which is what the invariant was for.
 hound = "3"
 
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
