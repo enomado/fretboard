@@ -61,10 +61,6 @@
 //! anchor is still independent evidence.
 
 use super::octave_gate::OctaveGate;
-use super::pitch::{
-    TRACKED_MAX_MIDI,
-    TRACKED_MIN_MIDI,
-};
 use super::swipe::SalienceFrame;
 use super::trellis::{
     Emissions,
@@ -187,10 +183,24 @@ impl SalienceDecoder {
     /// frame length measured off the wall, or off a slider, would put a display knob back in
     /// charge of the detector.
     fn decode(&mut self, frame: &SalienceFrame, now_seconds: f64) -> Option<(f32, f32)> {
-        // The trellis decodes the app's pitch domain (C1..C8) at the frame's own resolution:
+        // The trellis decodes the app's pitch domain at the frame's own resolution:
         // resampling the curve onto some other grid would blur the very peaks the decision is
         // made from.
-        let grid = PitchGrid::new(TRACKED_MIN_MIDI, TRACKED_MAX_MIDI, frame.bins_per_semitone());
+        //
+        // The domain comes from `tracked_bins`, which is C1..C8 **clamped to what this bank
+        // actually reaches** — and taking it from the constants instead was a crash, not a
+        // detail. `ResonatorSettings::max_midi` is a slider (a direct CPU dial), so the curve
+        // is only as long as the user's bank: at the C8 default the last state lands on the
+        // curve's last bin, i.e. it fitted by *exactly nothing*, and a bank ceiling of C6 had
+        // this reading 192 bins past the end. That panics on the audio thread, which kills
+        // the bank worker, which empties the staff and the pitch roll — the report was
+        // "вообще нот нет".
+        let bins = frame.tracked_bins()?;
+        let (lo, hi) = (frame.midi_of_bin(*bins.start()), frame.midi_of_bin(*bins.end()));
+        if hi <= lo {
+            return None; // a bank narrower than one bin of the domain: nothing to decode
+        }
+        let grid = PitchGrid::new(lo, hi, frame.bins_per_semitone());
         let dt = self
             .last_t
             .map(|last| (now_seconds - last) as f32)
@@ -211,8 +221,9 @@ impl SalienceDecoder {
         // resolution, so they differ by a constant offset — the octave the waterfall draws
         // below the app's pitch domain. This is the one arithmetic step where a slip is a
         // silent transposition rather than a crash, which is why `PitchState` is a newtype
-        // and why the offset is computed from the two grids rather than assumed.
-        let offset = frame.bin_of_midi(TRACKED_MIN_MIDI);
+        // and why the offset is the *same* `tracked_bins` the grid above came from, rather
+        // than a second derivation that has to agree with it.
+        let offset = *bins.start();
 
         // Emissions: a Gibbs link from salience to likelihood, `exp(β·(s − s_max))`.
         //
@@ -728,6 +739,56 @@ mod beta_sweep {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::dsp::analysis_math::SPIRAL_BINS_PER_SEMITONE;
+    use crate::audio::dsp::swipe::SwipeKernel;
+
+    /// REGRESSION, and it was total: **the bank's span is a slider, and the decoder assumed
+    /// it was the default.**
+    ///
+    /// `ResonatorSettings::max_midi` is user-facing — the bank is a per-sample IIR, so its
+    /// span is a direct CPU dial "kept user-adjustable for weak devices". The salience curve
+    /// is therefore only as long as *that* bank. The trellis meanwhile built its grid from
+    /// `TRACKED_MIN_MIDI..TRACKED_MAX_MIDI` unconditionally and read the curve at
+    /// `offset + state`.
+    ///
+    /// At the C8 default the last state lands on the curve's last bin — it fitted by
+    /// **exactly nothing**, so every test and every default run passed and the bug was
+    /// invisible. On the ceiling this test uses (C6, which is what was actually in the
+    /// user's persisted settings) it read 192 bins past the end and panicked **on the audio
+    /// thread**. That kills the bank worker, so the staff and the pitch roll just go empty:
+    /// no error, no log, nothing to see. The report was "вообще нот нет".
+    ///
+    /// The lesson is the one this project keeps relearning from the other side: a user knob
+    /// reached the detector. Here it did not bend the decision — it deleted it.
+    #[test]
+    fn a_bank_narrower_than_the_pitch_domain_decodes_instead_of_panicking() {
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        // C0..C6 — verbatim from ~/.local/share/fretboard/app.ron when this was reported.
+        let (min_midi, max_midi) = (12.0f32, 84.0f32);
+        let kernel = SwipeKernel::new(bps);
+
+        // A4 with partials, so there is a genuine harmonic series inside the narrow bank.
+        let len = ((max_midi - min_midi) * bps) as usize + 1;
+        let mut column = vec![0.0f32; len];
+        for (index, amplitude) in [1.0f32, 0.8, 0.6, 0.35].into_iter().enumerate() {
+            let hz = 440.0 * (index + 1) as f32;
+            let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+            let bin = ((midi - min_midi) * bps).round() as usize;
+            if bin < len {
+                column[bin] += amplitude;
+            }
+        }
+
+        let frame = SalienceFrame::score(&column, min_midi, bps, &kernel).unwrap();
+        let mut decoder = SalienceDecoder::default();
+        let decoded = decoder.decode(&frame, 0.0);
+
+        let (midi, _) = decoded.expect("a narrow bank must still decode the note inside it");
+        assert!(
+            (midi - 69.0).abs() < 0.5,
+            "decoded {midi} on a C0..C6 bank; A4 is inside it and should be found"
+        );
+    }
 
     /// The bank's fine pitch (and therefore its cents) survives a snap untouched —
     /// the snap only ever moves whole octaves.

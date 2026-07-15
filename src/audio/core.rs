@@ -764,6 +764,61 @@ mod tests {
         }
     }
 
+    /// DIAGNOSTIC: does the engine put notes on the line for a **real violin**, through the
+    /// real wiring?
+    ///
+    /// [`engine_writes_a_played_note_end_to_end`] proves the wiring with a synthetic tone
+    /// that starts instantly at full amplitude and never stops. A bowed string does none of
+    /// that — it has an attack, a level that moves with the bow, and rests between strokes.
+    /// So a staff that stays empty on the instrument is not something that test can see, and
+    /// "empty" is not a report anyone can act on: it does not say whether the audio arrived,
+    /// whether the bank scored it, whether the decoder rejected it, or whether the segmenter
+    /// threw the note away as too short. This prints each of those, at its own boundary.
+    ///
+    /// Not an assertion of a number: the takes are ground truth for the *octave decision*
+    /// (`testdata/README.md`), and the counts here depend on the bow. It fails only on zero
+    /// — which is the one reading that means the pipeline is broken rather than picky.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn real_violin_through_the_whole_engine() {
+        let path = format!("{}/testdata/g_open_slow_strokes.wav", env!("CARGO_MANIFEST_DIR"));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let sr = reader.spec().sample_rate as f32;
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
+
+        let mut rig = Rig::new(sr);
+        rig.feed(&samples, sr);
+
+        // Only the last `MELODY_HISTORY_SECONDS` survive here — the engine's ring is a
+        // bridge between two panel reads, not an archive. That is enough to answer "is
+        // anything coming out at all".
+        let frames = rig.melody_since(None);
+        let voiced = frames.iter().filter(|f| f.pitch.is_some()).count();
+        let scored = frames.iter().filter(|f| f.salience.is_some()).count();
+        let line = rig.note_line();
+
+        println!("\n=== g_open_slow_strokes through the real engine ===");
+        println!("  audio fed          : {:.1} s", samples.len() as f32 / sr);
+        println!("  frames (last ~2 s) : {}", frames.len());
+        println!("  ...scored by SWIPE′: {scored}");
+        println!("  ...with a pitch    : {voiced}");
+        println!("  written notes      : {}", line.history.len());
+        println!("  still sounding     : {:?}", line.current.map(|n| n.midi));
+
+        assert!(
+            !frames.is_empty(),
+            "the bank published nothing at all — audio never arrived"
+        );
+        assert!(
+            voiced > 0,
+            "the engine heard a violin for {:.1} s and decided no pitch, ever",
+            samples.len() as f32 / sr
+        );
+    }
+
     /// REGRESSION: a played note reaches `TunerReading::note_line` through the REAL
     /// engine wiring — and is committed to the written line when it stops.
     ///

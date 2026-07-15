@@ -318,6 +318,13 @@ impl SalienceFrame {
     }
 
     /// Salience at a bin of *this* grid.
+    ///
+    /// Contract: `bin` comes from [`Self::tracked_bins`]. It is **not** enough for it to be a
+    /// bin of the app's pitch domain — this grid is the user's bank, which may stop below
+    /// that domain's ceiling, and the difference is what panicked the audio thread
+    /// (`melody::tests::a_bank_narrower_than_the_pitch_domain_decodes_instead_of_panicking`).
+    /// Left as a bare index on purpose: this is the decoder's inner loop, and the bounds
+    /// question belongs at the domain's one gate, not once per bin.
     pub(crate) fn salience_at(&self, bin: usize) -> f32 {
         self.curve[bin]
     }
@@ -349,21 +356,32 @@ impl SalienceFrame {
         out
     }
 
-    /// The bin holding `midi` on this grid, rounded. Bounds are the caller's problem: this
-    /// grid spans the *waterfall's* C0..C8, and what lives outside the app's pitch domain is
-    /// a question for `pitch::TRACKED_MIN_MIDI`, not for arithmetic.
-    pub(crate) fn bin_of_midi(&self, midi: f32) -> usize {
-        ((midi - self.min_midi) * self.bins_per_semitone).round() as usize
+    /// MIDI at a bin's position on this grid.
+    ///
+    /// There is deliberately **no** `bin_of_midi` beside it any more. There was, and it is
+    /// how the crash came to be written: it answered "which bin is C8" for a grid that may
+    /// well stop at C6, cheerfully, because the arithmetic cannot see how long the curve is.
+    /// Bins now only ever come from [`Self::tracked_bins`], which can.
+    pub(crate) fn midi_of_bin(&self, bin: usize) -> f32 {
+        self.min_midi + bin as f32 / self.bins_per_semitone
     }
 
     /// The bins of the app's pitch domain (C1..C8) on this grid — the only candidates worth
-    /// scoring.
+    /// scoring — **clamped to what this column actually reaches**.
     ///
     /// Candidates come from the app's pitch domain, **not** from the column's own extent.
     /// The column reaches down to C0 = 16 Hz because that suits the spectrum waterfall, and
     /// scoring candidates there lets room rumble win: see `pitch::TRACKED_MIN_MIDI` for the
     /// mechanism and the measurement.
-    fn tracked_bins(&self) -> Option<std::ops::RangeInclusive<usize>> {
+    ///
+    /// But the domain is an *intent* and the column is a *fact*, and where they disagree the
+    /// column wins: the bank's span is a user-facing slider (`ResonatorSettings::min_midi`/
+    /// `max_midi`, a direct CPU dial for weak devices), so a bank that stops at C6 has no
+    /// evidence about C7 to offer and pretending otherwise reads off the end of the curve.
+    /// This clamp is the only place that reconciles the two, which is why every consumer must
+    /// come through it rather than re-derive the domain from the constants — one that did
+    /// crashed the audio thread on any ceiling but the default (`melody::decode`).
+    pub(crate) fn tracked_bins(&self) -> Option<std::ops::RangeInclusive<usize>> {
         let first = (((TRACKED_MIN_MIDI - self.min_midi) * self.bins_per_semitone)
             .ceil()
             .max(0.0)) as usize;
