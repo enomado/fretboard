@@ -42,6 +42,13 @@ use super::pitch::{
     TRACKED_MIN_MIDI,
     cmndf,
 };
+#[cfg(test)]
+use super::trellis::PitchState;
+use super::trellis::{
+    Emissions,
+    PitchGrid,
+    PitchTrellis,
+};
 
 // --- Candidate stage ---------------------------------------------------------
 
@@ -139,11 +146,18 @@ fn pyin_candidates(c: &Cmndf, prior: &ThresholdPrior, sample_rate: f32) -> (Vec<
 }
 
 // --- HMM stage ---------------------------------------------------------------
+//
+// The Viterbi itself is **not** here — it is `dsp::trellis`, shared with the fast
+// channel. It lived here first, and moved out for a reason worth keeping: a
+// continuity model is a claim about how a player's pitch moves over time, and that
+// is a property of the instrument, not of the detector watching it. Two copies would
+// be two things to keep in sync. What stays here is what is genuinely pYIN's: how a
+// CMNDF becomes candidates, and how candidates become one frame's emissions.
 
 /// Pitch-grid resolution: 10 cents/bin (Mauch's default). Fine enough that the
 /// octave decision is exact; the reported frequency comes from the candidate, not
 /// the bin, so display cents stay sharp.
-const BINS_PER_SEMITONE: usize = 10;
+const BINS_PER_SEMITONE: f32 = 10.0;
 /// Tracked pitch span, C1..C8 — the app's one pitch domain, declared in
 /// [`super::pitch::TRACKED_MIN_MIDI`] and shared with `dsp::swipe` so the two detectors
 /// cannot drift apart about what this app claims to hear. The top must clear
@@ -151,103 +165,34 @@ const BINS_PER_SEMITONE: usize = 10;
 /// correctly lands outside the HMM grid and decodes as unvoiced instead.
 const MIN_MIDI: f32 = TRACKED_MIN_MIDI;
 const MAX_MIDI: f32 = TRACKED_MAX_MIDI;
-/// Number of pitch states; index `N_PITCH` is the extra unvoiced state.
-const N_PITCH: usize = ((MAX_MIDI - MIN_MIDI) as usize) * BINS_PER_SEMITONE;
-/// Transition reaches ±1 octave; beyond that a move must go through unvoiced.
-const TRANS_WINDOW: usize = 12 * BINS_PER_SEMITONE;
-/// Probability the pitch *stays* in its bin frame to frame (given it stays
-/// voiced). Must dominate so persistence is cheap — otherwise the (nearly free)
-/// unvoiced self-loop out-races every voiced state and the tracker never commits.
-/// The remaining `1 − SELF_STAY` is spread over neighbours by the kernel below.
-const SELF_STAY: f32 = 0.8;
-/// Gaussian width (cents) of the *glide* spread — how far a glide/vibrato can move
-/// per frame within the non-self mass.
-const TRANS_SIGMA_CENTS: f32 = 70.0;
-/// Mass reserved for a **leap**: the player can jump any interval between frames,
-/// and this is the only route that models it honestly.
-///
-/// Spread uniformly over the whole ±octave window, so a leap of *any* size costs a
-/// bounded ~9 nats that decisive evidence can overcome — rather than the Gaussian's
-/// tail, where a fifth sits 10σ out at exp(−50) and only the old floor (1e-6) kept
-/// the cost finite at all. The design intended leaps to route through the unvoiced
-/// state, but a *legato* leap never goes unvoiced, so that route is emission-blocked
-/// and the tracker's only escape was to wait for the old note to leave the analysis
-/// window entirely — measured as +120 ms on every octave.
-///
-/// Small enough that a lone octave-outlier frame still loses to continuity (its own
-/// emission is weaker, and the true pitch keeps a candidate), which is the property
-/// `hmm_rejects_a_lone_octave_outlier` guards.
-const LEAP_MASS: f32 = 0.02;
-/// Probability of leaving a pitch for the unvoiced state each frame (and vice
-/// versa). Small: notes persist, but a real gap can switch voicing.
-const VOICING_SWITCH: f32 = 0.02;
-/// Emission floor so no state has log-prob −∞.
-const EMIT_EPS: f32 = 1e-9;
 
-fn freq_to_bin(frequency_hz: f32) -> f32 {
-    let midi = 69.0 + 12.0 * (frequency_hz / 440.0).log2();
-    (midi - MIN_MIDI) * BINS_PER_SEMITONE as f32
+/// This tracker's frame length: it is driven once per `core::ANALYSIS_INTERVAL`.
+///
+/// The one cadence in the app that is *not* user-adjustable, which is why the
+/// transition rates in [`super::trellis`] are calibrated here — see that module for
+/// what happens on the channel whose cadence **is** a slider.
+const FRAME_DT: f32 = 0.040;
+
+fn freq_to_midi(frequency_hz: f32) -> f32 {
+    69.0 + 12.0 * (frequency_hz / 440.0).log2()
 }
 
-fn bin_to_freq(bin: usize) -> f32 {
-    let midi = MIN_MIDI + bin as f32 / BINS_PER_SEMITONE as f32;
+fn midi_to_freq(midi: f32) -> f32 {
     440.0 * 2.0f32.powf((midi - 69.0) / 12.0)
 }
 
 /// Stateful probabilistic-YIN pitch tracker: one per audio stream. Feeds on
-/// analysis windows and carries the HMM's Viterbi trellis frame to frame.
+/// analysis windows and carries its trellis frame to frame.
 pub(crate) struct PitchTracker {
-    prior:       ThresholdPrior,
-    /// log-prob of the best path ending in each state (renormalized each frame);
-    /// length `N_PITCH + 1`, last entry = unvoiced.
-    delta:       Vec<f32>,
-    /// log of the normalized pitch→pitch kernel, indexed `offset + TRANS_WINDOW`.
-    log_kernel:  Vec<f32>,
-    initialized: bool,
+    prior:   ThresholdPrior,
+    trellis: PitchTrellis,
 }
 
 impl PitchTracker {
     pub(crate) fn new() -> Self {
-        // Transition kernel over offsets −W..=W as a proper distribution summing to
-        // 1, mixing three components that model three different things a player does:
-        //
-        //   SELF_STAY  — hold the note. Must dominate: diagonal dominance is what
-        //                lets a voiced state hold against the (nearly free) unvoiced
-        //                self-loop, which otherwise out-races every pitch and the
-        //                tracker never commits.
-        //   Gaussian   — glide/vibrato, a few tens of cents per frame.
-        //   LEAP_MASS  — jump to any other pitch, uniform over the window. Without a
-        //                real mass here, an interval past ~3 semitones costs so much
-        //                that the tracker cannot move until the *old* note's evidence
-        //                vanishes from the analysis window — the +120 ms octave lag.
-        let w = TRANS_WINDOW as isize;
-        let n_offsets = (2 * TRANS_WINDOW) as f32; // every offset except the diagonal
-        let mut kernel = vec![0.0f32; 2 * TRANS_WINDOW + 1];
-        let mut glide_sum = 0.0f32;
-        for off in -w..=w {
-            if off == 0 {
-                continue;
-            }
-            let cents = off as f32 * (100.0 / BINS_PER_SEMITONE as f32);
-            let g = (-0.5 * (cents / TRANS_SIGMA_CENTS).powi(2)).exp();
-            kernel[(off + w) as usize] = g;
-            glide_sum += g;
-        }
-        let glide_mass = 1.0 - SELF_STAY - LEAP_MASS;
-        for (i, k) in kernel.iter_mut().enumerate() {
-            if i == TRANS_WINDOW {
-                *k = SELF_STAY;
-            } else {
-                *k = glide_mass * *k / glide_sum + LEAP_MASS / n_offsets;
-            }
-        }
-        let log_kernel = kernel.iter().map(|k| k.ln()).collect();
-
         Self {
-            prior: ThresholdPrior::new(),
-            delta: vec![0.0; N_PITCH + 1],
-            log_kernel,
-            initialized: false,
+            prior:   ThresholdPrior::new(),
+            trellis: PitchTrellis::new(PitchGrid::new(MIN_MIDI, MAX_MIDI, BINS_PER_SEMITONE), FRAME_DT),
         }
     }
 
@@ -280,100 +225,36 @@ impl PitchTracker {
         self.step(&candidates, voiced)
     }
 
-    /// One HMM frame: build emissions from the candidates, advance the Viterbi
-    /// trellis, and read off the current best state.
+    /// One HMM frame: turn the candidates into emissions, advance the trellis, and
+    /// read the decoded state back out as a frequency.
+    ///
+    /// Each candidate deposits its prior mass around its bin; the unvoiced state gets
+    /// the mass of the thresholds that found no dip at all. That mapping — *this* is
+    /// what makes the shared trellis pYIN's — is the only part of the HMM stage that
+    /// belongs to this module.
     fn step(&mut self, candidates: &[Candidate], voiced: f32) -> Option<(f32, f32)> {
-        let uv = N_PITCH;
-
-        // Emissions (linear). Each candidate deposits its mass around its bin
-        // (centre + half to each neighbour); the unvoiced state gets the leftover.
-        let mut emit = vec![EMIT_EPS; N_PITCH + 1];
+        let mut emissions = Emissions::zeroed(self.trellis.grid());
         for cand in candidates {
-            let bf = freq_to_bin(cand.frequency_hz);
-            let center = bf.round() as isize;
-            for off in -1..=1isize {
-                let b = center + off;
-                if b < 0 || b >= N_PITCH as isize {
-                    continue;
-                }
-                let weight = if off == 0 { 1.0 } else { 0.5 };
-                emit[b as usize] += cand.probability * weight;
-            }
+            emissions.add_at_bin(
+                self.trellis.grid().bin_of_midi(freq_to_midi(cand.frequency_hz)),
+                cand.probability,
+            );
         }
-        emit[uv] += 1.0 - voiced;
-        let logb: Vec<f32> = emit.iter().map(|e| e.max(EMIT_EPS).ln()).collect();
-
-        if !self.initialized {
-            // Uniform prior over states → the first frame's path is just its
-            // emission.
-            self.delta.copy_from_slice(&logb);
-            self.initialized = true;
-        } else {
-            let log_stay = (1.0 - VOICING_SWITCH).ln();
-            let log_p2uv = VOICING_SWITCH.ln();
-            let log_uv2uv = (1.0 - VOICING_SWITCH).ln();
-            // Unvoiced re-enters pitch uniformly — this is the escape hatch that
-            // lets a genuine octave leap (across a note gap) track.
-            let log_uv2p = (VOICING_SWITCH / N_PITCH as f32).ln();
-
-            let max_pitch_delta = self.delta[..N_PITCH]
-                .iter()
-                .copied()
-                .fold(f32::NEG_INFINITY, f32::max);
-
-            let mut next = vec![f32::NEG_INFINITY; N_PITCH + 1];
-            for j in 0..N_PITCH {
-                let lo = j.saturating_sub(TRANS_WINDOW);
-                let hi = (j + TRANS_WINDOW).min(N_PITCH - 1);
-                let mut best = f32::NEG_INFINITY;
-                for i in lo..=hi {
-                    let off = i as isize - j as isize + TRANS_WINDOW as isize;
-                    let v = self.delta[i] + log_stay + self.log_kernel[off as usize];
-                    if v > best {
-                        best = v;
-                    }
-                }
-                // …or arrive from unvoiced.
-                let from_uv = self.delta[uv] + log_uv2p;
-                if from_uv > best {
-                    best = from_uv;
-                }
-                next[j] = best + logb[j];
-            }
-            // Unvoiced: stay unvoiced, or the best pitch decides to drop out.
-            next[uv] = (self.delta[uv] + log_uv2uv).max(max_pitch_delta + log_p2uv) + logb[uv];
-
-            self.delta = next;
-        }
-
-        // Renormalize (subtract the max) to keep the log-probs bounded over time.
-        let m = self.delta.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        if m.is_finite() {
-            for d in &mut self.delta {
-                *d -= m;
-            }
-        }
-
-        // Greedy online decode: the current most-likely state.
-        let best_state = self
-            .delta
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(i, _)| i)
-            .unwrap();
-        if best_state == uv {
-            return None;
-        }
+        emissions.set_unvoiced(1.0 - voiced);
+        let state = self.trellis.step(&emissions, FRAME_DT)?;
 
         // Report the winning *candidate's* frequency (sub-cent) rather than the
         // 10-cent bin centre, so the tuner's cents stay sharp. Fall back to the bin
         // centre if no candidate sits near the decoded bin.
-        let mut freq = bin_to_freq(best_state);
+        let mut freq = midi_to_freq(self.trellis.grid().midi_of_state(state));
         let mut best_p = 0.0f32;
         for cand in candidates {
-            let cb = freq_to_bin(cand.frequency_hz).round() as isize;
-            if (cb - best_state as isize).abs() <= 2 && cand.probability > best_p {
+            let cb = self
+                .trellis
+                .grid()
+                .bin_of_midi(freq_to_midi(cand.frequency_hz))
+                .round() as isize;
+            if (cb - state.0 as isize).abs() <= 2 && cand.probability > best_p {
                 best_p = cand.probability;
                 freq = cand.frequency_hz;
             }
@@ -518,7 +399,8 @@ mod tests {
     /// below anything this HMM can represent, and every frame paid for it.
     #[test]
     fn floor_clears_the_hmm_grid() {
-        let lowest_state_hz = bin_to_freq(0);
+        let grid = PitchGrid::new(MIN_MIDI, MAX_MIDI, BINS_PER_SEMITONE);
+        let lowest_state_hz = midi_to_freq(grid.midi_of_state(PitchState(0)));
 
         // Downward: every pitch the HMM has a state for must be *findable*, with the
         // longest lag landing past that note's period rather than clipping its dip.

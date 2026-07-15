@@ -15,3 +15,4 @@ pub(crate) mod resonator;
 pub(crate) mod segmenter;
 pub(crate) mod spectrum;
 pub(crate) mod swipe;
+pub(crate) mod trellis;
