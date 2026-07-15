@@ -52,6 +52,12 @@ impl App {
                 ui.label(RichText::new("Corpus").color(color::TEXT_CAPTION).strong());
                 ui.add_space(6.0);
                 self.draw_corpus(ui);
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(10.0);
+                // Дубль целиком, со скроллом и зумом — то, чего живой ролл дать не
+                // может (окно 10 с против дублей до 35 с). См. `app::take_roll`.
+                self.draw_take_roll(ui);
             });
     }
 

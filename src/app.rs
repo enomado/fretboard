@@ -11,6 +11,7 @@ mod resonator_panel;
 mod scale_finder;
 mod staff_panel;
 mod take_panel;
+mod take_roll;
 mod workspace;
 
 use std::ops::Range;
@@ -282,6 +283,9 @@ pub struct App {
     /// Опись `testdata/`: что можно проиграть. Читается с диска — при старте и после
     /// каждого законченного дубля, а не покадрово (лишний stat на каждый кадр UI).
     corpus: Vec<TakeOnDisk>,
+    /// Замороженный ролл: проигранный дубль ЦЕЛИКОМ + окно, которым его читают.
+    /// Не персистится — кадры добываются реплеем, а он идёт реальное время.
+    take_roll: take_roll::TakeRoll,
 }
 
 struct HoveredNote {
@@ -334,6 +338,7 @@ impl App {
             take_name: String::new(),
             takes: Vec::new(),
             corpus: Vec::new(),
+            take_roll: take_roll::TakeRoll::default(),
         };
         app.refresh_corpus();
 
@@ -632,6 +637,10 @@ impl eframe::App for App {
         // живёт в аудио-треде и на UI не смотрит — список не должен зависеть от
         // того, куда смотрит юзер. См. `take_panel::harvest_finished_take`.
         self.harvest_finished_take();
+        // По той же причине, но жёстче: реплей идёт РЕАЛЬНОЕ время и ровно один
+        // раз, а движок держит лишь `MELODY_HISTORY_SECONDS` — кадры, не забранные
+        // вовремя, не «подождут», их выбросит. См. `take_roll::harvest_take_roll`.
+        self.harvest_take_roll(ui.ctx());
 
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         subsecond::call(|| self.render(ui));

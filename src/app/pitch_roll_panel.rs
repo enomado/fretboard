@@ -40,6 +40,8 @@ use crate::ui::pianoroll::{
     self,
     PitchPoint,
     RollColumn,
+    RollMode,
+    TimeAxis,
 };
 use crate::ui::tokens::color;
 
@@ -59,20 +61,34 @@ use crate::ui::tokens::color;
 /// ground truth a slip is supposed to be visible against. Blanking it there would hide
 /// the evidence the layer exists to show.
 const HEAT_LEVEL_GATE: f32 = 0.02;
-/// How much of the past the roll keeps, **in seconds of played audio** — exactly what
-/// the plot shows, read from the renderer so there is one number and not two.
+/// How much of the past the roll keeps **and shows**, in seconds of played audio.
+///
+/// One number, two jobs, and they must not become two numbers: it is the history's
+/// retention *and* the width of the plot's time axis. Two copies would be two opinions
+/// about the span, and the moment they drifted the ruler would quietly start lying —
+/// which is the failure this whole path exists to undo, not one to re-introduce.
 ///
 /// It replaces a count of 600 UI frames, which was a span of seconds only if you knew
 /// the frame rate and it never changed ("~10 s at 60 fps, ~20 s at 30 fps"). Enforced
 /// against [`MelodyFrame::t`], so 30 fps, 60 fps and a stuttering frame all hold the
 /// same ten seconds.
-const VISIBLE_SECONDS: f64 = pianoroll::VISIBLE_SECONDS as f64;
+///
+/// It lives here rather than in the renderer because it is *this panel's* window: the
+/// live roll watches a fixed span ending at the playhead. The take roll reads the same
+/// renderer with a window it scrolls and zooms, and the day a constant one module down
+/// decided the span for both was the day the second one could not exist.
+pub(super) const VISIBLE_SECONDS: f64 = 10.0;
 /// Padding (semitones) kept above/below the played range so the line never rides
 /// the very edge of the view.
-const VIEW_PAD: f32 = 2.5;
+///
+/// Shared with the take roll: the two panels disagree about *what* range to frame — and
+/// sharply, on purpose (`take_roll`) — but not about a line needing room to breathe once
+/// the range is chosen.
+pub(super) const VIEW_PAD: f32 = 2.5;
 /// Minimum visible pitch span (semitones) so a single sustained note still shows a
-/// sensible band of rows around it instead of one giant row.
-const MIN_SPAN: f32 = 14.0;
+/// sensible band of rows around it instead of one giant row. Shared with the take roll,
+/// like [`VIEW_PAD`] and for the same reason.
+pub(super) const MIN_SPAN: f32 = 14.0;
 /// Per-frame easing for the view window toward its target range. Small = the rows
 /// glide rather than jump when the played range changes.
 const VIEW_EASE: f32 = 0.08;
@@ -108,6 +124,19 @@ const VIEW_QUANTILE_HI: f32 = 0.90;
 /// oversized view is not. So the view grows on demand and shrinks only when it is
 /// clearly, persistently too wide.
 const VIEW_SHRINK_SLACK: f32 = 3.0;
+
+/// The live roll's time axis, and it never varies: a fixed [`VISIBLE_SECONDS`] window
+/// whose right edge is the playhead and whose ruler counts backwards from it, so the
+/// newest audio is always in the same place and the eye can stop hunting for it.
+///
+/// A constant, where the take roll's is state, because that difference *is* the
+/// difference between the two panels: one watches, the other reads.
+const LIVE_TIME_AXIS: TimeAxis = TimeAxis {
+    near_s:     0.0,
+    far_s:      VISIBLE_SECONDS as f32,
+    zero_age_s: 0.0,
+    mode:       RollMode::Live,
+};
 
 /// Which evidence layer is painted under the melody line.
 ///
@@ -282,42 +311,56 @@ impl PitchRoll {
 
     /// The frames as the renderer wants them: aged against the playhead, with the
     /// heat gated for display.
-    ///
-    /// The gate is **display only**, and is not the engine's silence gate wearing a
-    /// disguise (see [`HEAT_LEVEL_GATE`]). It stays here because it decides nothing:
-    /// the line's `pitch` arrives already gated and already octave-judged.
     fn columns(&self, now: f64) -> Vec<RollColumn<'_>> {
-        self.frames
-            .iter()
-            .map(|frame| {
-                RollColumn {
-                    age_s: (now - frame.t) as f32,
-                    pitch: frame.pitch.map(|midi_f| {
-                        PitchPoint {
-                            midi_f,
-                            level: frame.level,
-                        }
-                    }),
-                    // Both layers are normalized to their own column's max upstream, so
-                    // both need the same silence gate for the same reason — see
-                    // [`HEAT_LEVEL_GATE`]. A quiet salience column is room noise scored
-                    // and stretched to full scale, which paints the rests just as
-                    // convincingly as a quiet spectrum does.
-                    heat:  if frame.level >= HEAT_LEVEL_GATE {
-                        match self.layer {
-                            RollLayer::Spectrum => frame.heat.as_slice(),
-                            // `None` = a column with no energy to score at all, which is
-                            // the same picture as a gated one: a gap. Nothing is lost by
-                            // folding them together — neither has evidence in it.
-                            RollLayer::Salience => frame.salience.as_deref().unwrap_or(&[]),
-                        }
-                    } else {
-                        &[]
-                    },
-                }
-            })
-            .collect()
+        columns_of(self.frames.iter(), now, self.layer)
     }
+}
+
+/// Frames → columns the renderer can draw: aged against `playhead_t`, the chosen layer
+/// picked out, the heat gated for display.
+///
+/// Free, and shared with the take roll, because both rolls draw the same frames through
+/// the same renderer and only disagree about *which* frames and *when*. The gate in
+/// particular must exist once: it is subtle enough (see [`HEAT_LEVEL_GATE`]) that a
+/// second copy would be a second policy within a release or two, and the two rolls would
+/// then paint the same take differently — with no way to tell which one was lying.
+///
+/// The gate is **display only**, and is not the engine's silence gate wearing a disguise.
+/// It decides nothing: the line's `pitch` arrives already gated and already octave-judged.
+pub(super) fn columns_of<'a>(
+    frames: impl Iterator<Item = &'a MelodyFrame>,
+    playhead_t: f64,
+    layer: RollLayer,
+) -> Vec<RollColumn<'a>> {
+    frames
+        .map(|frame| {
+            RollColumn {
+                age_s: (playhead_t - frame.t) as f32,
+                pitch: frame.pitch.map(|midi_f| {
+                    PitchPoint {
+                        midi_f,
+                        level: frame.level,
+                    }
+                }),
+                // Both layers are normalized to their own column's max upstream, so
+                // both need the same silence gate for the same reason — see
+                // [`HEAT_LEVEL_GATE`]. A quiet salience column is room noise scored
+                // and stretched to full scale, which paints the rests just as
+                // convincingly as a quiet spectrum does.
+                heat:  if frame.level >= HEAT_LEVEL_GATE {
+                    match layer {
+                        RollLayer::Spectrum => frame.heat.as_slice(),
+                        // `None` = a column with no energy to score at all, which is
+                        // the same picture as a gated one: a gap. Nothing is lost by
+                        // folding them together — neither has evidence in it.
+                        RollLayer::Salience => frame.salience.as_deref().unwrap_or(&[]),
+                    }
+                } else {
+                    &[]
+                },
+            }
+        })
+        .collect()
 }
 
 impl App {
@@ -394,6 +437,7 @@ impl App {
                         res_max_midi,
                         self.pitch_roll.view_lo,
                         self.pitch_roll.view_hi,
+                        LIVE_TIME_AXIS,
                         style,
                     );
                     return;
@@ -406,6 +450,7 @@ impl App {
                     res_max_midi,
                     self.pitch_roll.view_lo,
                     self.pitch_roll.view_hi,
+                    LIVE_TIME_AXIS,
                     style,
                 );
             });
