@@ -190,18 +190,54 @@ In rough order of risk:
 
 ### Next work, in order
 
-**→ 0. [`kickstart-viterbi-over-salience`](../memory/kickstart_viterbi_over_salience.md) —
-the Viterbi on the fast channel.** Requested by the user, and the design already pointed at
-it: SWIPE′ emits the whole salience curve every 16 ms, which is exactly an online Viterbi's
-input. The remaining octave errors are 4–6% near-ties, which no threshold can fix and
-continuity can. **The HMM already exists and is on the wrong channel** — `pyin`'s trellis
-runs on the 128 ms window where the octave never broke, while the fast channel that draws
-the staff has no probabilistic model at all. Generalise that trellis; do not write a second.
-Landing it should retire `LEAP_CONFIRM_FRAMES`, `snap_to_anchor_octave`, `OctaveGate` and
-the melody's dependency on the slow anchor — **after** D and E are recorded, not before.
+**→ 0. The Viterbi on the fast channel — ✅ DONE** (`4f2e75b` + `5e48dce`); see
+[`kickstart-viterbi-over-salience`](../memory/kickstart_viterbi_over_salience.md). `pyin`'s
+trellis was generalised into `dsp::trellis` (not reimplemented — pYIN's 14 tests pass
+untouched, which is the check that the generalisation is faithful), and `melody::
+SalienceDecoder` now decodes SWIPE′'s whole curve instead of its argmax. Measured on the
+real violin, against the argmax it replaces:
+
+| take | argmax | Viterbi |
+|---|---|---|
+| `g_open_slow_strokes` | 78.4% | **88.4%** |
+| `g_open_fast_strokes` | 84.3% | **100.0%** |
+| `g_string_trill` | 89.4% | **93.5%** |
+| `a_string_trill` | 79.7% | **93.1%** |
+| `g_open_real_octave` ← control | G3 44.6% · G4 15.1% | G3 43.7% · **G4 14.6%** |
+
+The control is the argument: the deliberately bowed G4 **remains**, which is what "an octave
+jump is an error" would have destroyed. And the octave got *faster* — 104 ms end to end,
+against the 120 ms it had ever been.
+
+Two things it taught, both of which will matter again for **any** new front end under this
+trellis (the neural scorer included) — see
+[`emission-scale-does-not-transfer`](../memory/emission_scale_does_not_transfer.md):
+
+- **Transition rates transfer between channels; the emission scale does not.** pYIN's
+  emissions are near-deltas (20.7 nats of contrast) so its ~9.9-nat leap is pocket change;
+  SWIPE′'s curve is broad and the right note leads by 0.017. Inheriting the exchange rate
+  priced every note change out of reach (octave 120 → 248 ms) — silently. Fixed with a Gibbs
+  link `exp(β·s)`, which is *also* the structural form of "only comparisons of SWIPE′'s scale
+  are assertable": it is shift-invariant, so only differences reach the trellis.
+- **A low β scores perfectly and is broken.** At β=1 the strokes read 100% — a *stuck
+  needle*, which on a take whose note never changes is indistinguishable from accuracy. Only
+  the latency sweep convicts it (`A4→B4` and `A4→A5` never arrive). Hence two sweeps, always.
 
 **→ 0b. Record the D and E strings** (`testdata/README.md` has the exact procedure). Cheap,
-and it is the gate on removing the repair layer.
+and it is **the gate** on removing the repair layer — the evidence today is two strings.
+
+**→ 0c. Then retire the repair layer, in one piece**: `snap_to_anchor_octave`,
+`LEAP_CONFIRM_FRAMES`, `OctaveGate`, and the melody's dependency on the slow anchor. Expected
+octave ≈ **88 ms**.
+
+⚠ `LEAP_CONFIRM_FRAMES` and `snap_to_anchor_octave` are **one mechanism, not two**: the snap
+only ever acts on an octave dispute and `LEAP_CONFIRM_FRAMES` arbitrates every such action,
+so removing the arbiter makes the snap return `bank_midi` unconditionally — dead code, taking
+`YIN_OCTAVE_CONFIDENCE` and the anchor dependency with it. That is three of the four pieces
+at once, which is why they go together or not at all. For now it is `4 → 1` (not 0): the
+constant is sized against the bank's octave *wandering*, and wandering is exactly what the
+Viterbi removed (bank slips: 0.0% of frames on both open-G takes). That alone took the
+end-to-end octave 152 → 104 ms, and the layer stays whole until the gate opens.
 
 1. **Answer the ghost question with the instrument** (see above), then fix or drop it.
    It is the only thing here that is *known* to write wrong notes.

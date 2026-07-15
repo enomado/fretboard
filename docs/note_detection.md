@@ -15,9 +15,8 @@ algorithms and why these ones) and [`violin_trainer_plan.md`](violin_trainer_pla
 
 **Two sources, opposite failure modes, each covering the other's.**
 
-- The **resonator bank** is *fast and octave-naive*: it follows a note change in
-  **8–29 ms**, but on a bowed string its harmonic scoring can crown an overtone and
-  wander an octave.
+- The **resonator bank** is *fast*: it follows a note change in **8–29 ms**. It is the
+  melody line's pitch, and its latency is the reason this design exists.
 - **pYIN** is *octave-robust and slow*: rock steady during sustain, but its
   note-change latency equals its analysis window **exactly** — it will not leave a
   note while the window still holds any trace of it (**128 ms** at 6144 samples).
@@ -25,6 +24,33 @@ algorithms and why these ones) and [`violin_trainer_plan.md`](violin_trainer_pla
 So the melody line takes **timing and fine pitch from the bank**, and borrows exactly
 **one bit from pYIN: which octave**. That is the whole design. The perceptual
 threshold for pitch feedback is ~30–40 ms; the bank fits inside it, pYIN never can.
+
+### …and the two things that made the fast half trustworthy
+
+The bank used to be *octave-naive*, and the melody line carried a **repair layer** to
+patch that. Two phases removed the cause rather than the symptom, and both are load-
+bearing enough that the repair layer is now expected to be redundant (it is still here —
+§7 says why):
+
+- **The scorer stopped being able to be wrong that way** (`dsp::swipe`, Phase 1.11). The
+  old comb only ever *added* credit at a candidate's harmonics, and Camacho's thesis
+  enumerates exactly that function and exactly its failure: a reward-only comb peaks at
+  sub- **and supra**-harmonics. SWIPE′'s negative valleys punish 2·f0 for the energy at
+  3·f0 and 5·f0 that lands in them. The phantom octave went **57% → 0%** of frames on a
+  real bowed open G.
+- **The fast channel got a model of time** (`dsp::trellis` + `melody::SalienceDecoder`).
+  What SWIPE′ left behind was not a confident error but a **tie** — the right note losing
+  to junk by 4–6%. No threshold can fix a tie, because the tie is in the evidence, not in
+  the rule reading it. Continuity can: a lone excursion costs ~9.9 nats and buys back
+  ~0.04, so it loses by ~225× and the path holds.
+
+> **The trap, avoided on purpose.** "A jump of an octave or more is an error" is the
+> intuitive rule and it is **wrong** — `testdata/g_open_real_octave.wav` is the user
+> deliberately bowing an octave, and that rule would delete it. The difference between a
+> phantom octave and a real one was never the interval. It is whether the evidence
+> **persists**: a real leap's old note goes quiet so its emission collapses and it pays
+> off the leap within a frame or three; a phantom's true note never leaves, so it never
+> pays. That is a property of the path, and it needs no rule at all.
 
 > **The mistake to not make again.** The other arrangement — fusing the bank *into*
 > the pYIN HMM as a weighted candidate — was built, shipped, and **removed**. Off an
@@ -65,13 +91,15 @@ flowchart TD
 
     subgraph FAST["Plane B — fast &amp; fine · every 16 ms · per-sample IIR"]
         B --> BANK["dsp::resonator::OnePoleBank<br/>leaky resonators · 5/semitone · C0..C8<br/>+ Δφ reassignment + coherence gate"]
-        BANK --> FUND["analysis_math::resonator_fundamental<br/>harmonic-aware fundamental"]
+        BANK --> SWIPE["dsp::swipe::SalienceFrame<br/>SWIPE′ salience · the whole curve<br/>peaks reward, valleys punish"]
+        SWIPE --> ARGMAX["·argmax() → fast_pitch<br/><i>the frame's own raw opinion</i>"]
     end
 
     HMM -->|"octave anchor<br/>(midi, clarity)"| MELODY
-    FUND -->|"fast_pitch<br/>(midi, strength)"| MELODY
+    SWIPE -->|"the salience CURVE<br/>(a scalar cannot express a tie)"| MELODY
     LVL -->|"silence gate"| MELODY
-    MELODY["dsp::melody::MelodyTracker<br/><b>the only octave decision</b><br/>snap · leap hysteresis · slip gate"]
+    ARGMAX --> FP["TunerReading::fast_pitch"]
+    MELODY["dsp::melody::MelodyTracker<br/><b>the only octave decision</b><br/>SalienceDecoder (Viterbi over the curve)<br/>+ repair layer: snap · leap hysteresis · slip gate"]
 
     MELODY --> SEG
     ONSET -->|"onset_seq"| SEG
@@ -148,29 +176,47 @@ load-bearing:
 | | |
 |---|---|
 | Cadence | 16 ms (`ResonatorSettings::update_ms`), fed per sample |
-| Output | `fast_pitch` = `(fractional_midi, strength)`, + the heat column |
+| Output | the **salience curve**, + `fast_pitch` = `(fractional_midi, strength)`, + the heat column |
 
 A bank of leaky one-pole resonators, 5 per semitone across C0..C8, plus Δφ
 **instantaneous-frequency reassignment** (super-resolution, with a coherence gate that
-drops the negative-frequency image and noise). `resonator_fundamental` then scores
-every bin *as a fundamental* — summing its first harmonics at fixed `+12·log2(h)`
-offsets, weighted `1/h`, and requiring real energy at the bin itself — which beats a
-plain argmax on both octave-up (crowned overtone) and sub-octave (half-pitch phantom).
+drops the negative-frequency image and noise). `dsp::swipe` then scores every bin *as a
+fundamental* — see `docs/swipe_salience_design.md`, and §1 for why the scorer this
+replaced could not be fixed, only replaced.
 
-This is the melody line's pitch. Its latency is the reason the design exists.
+Two things about the output are easy to miss and both are deliberate:
 
-### Stage 2 — the fusion (`dsp::melody::MelodyTracker`)
+- **The curve is the output; the argmax is a by-product.** An argmax throws away exactly
+  what the next frame's decision needs — a 4–6% tie *is* the remaining error, and a
+  scalar cannot express a tie. So `ResonatorSnapshot::salience` carries the whole curve
+  (plus the raw column it was scored from, since the fine pitch is read off the winning
+  series' loudest partial and continuity may pick a different series than the argmax did).
+- **`fast_pitch` stays the frame's own raw opinion**, unsmoothed. `dsp::melody` borrows
+  pYIN's octave to *cross-examine* the bank, and a witness already smoothed against its
+  own past is a worse witness, not a better one. (This is the same error as Phase 1.5's
+  fusion, in a new place: a mirror cannot be a witness.)
+
+### Stage 2 — the decode (`dsp::melody::MelodyTracker`)
 
 Runs at **plane B's cadence** and is the **only** place the melody line's octave is
-decided. Three layers, each covering the previous one's blind spot:
+decided. Two stages, and only the first has a model of time:
 
-| layer | mechanism | covers |
+| stage | mechanism | what it does |
 |---|---|---|
-| 1 | the bank's harmonic scoring (upstream) | its best single-frame guess |
-| 2 | **snap** to pYIN's octave | the bank's wandering, whenever pYIN is confident |
-| 3 | **`OctaveGate`** median | a slip on a frame where pYIN had *no* opinion — exactly when layer 2 stands down |
+| 1 | **`SalienceDecoder`** — online Viterbi over the salience curve | decides the note, by continuity |
+| 2 | the **repair layer** — snap · `LEAP_CONFIRM_FRAMES` · `OctaveGate` | patches a per-frame argmax that no longer exists (§7) |
 
-Two guards on the snap, both of which took a measurement to find:
+**Stage 1** turns the curve into emissions through a Gibbs link, `exp(β·s)`, and runs it
+through the shared trellis. Two properties of that link are not decoration:
+
+- It is **shift-invariant**, so only salience *differences* ever reach the trellis. That
+  is the structural form of the one thing SWIPE′'s scale means — its absolute value is
+  normalized against a 480-resonator column and is an invented number, so only
+  comparisons are assertable.
+- `SALIENCE_BETA` (40) is the **exchange rate** between salience and nats, and it could
+  **not** be inherited from pYIN. See §6.
+
+**Stage 2** is the old repair layer. Its guards, both of which took a measurement to find:
 
 - **`OCTAVE_AGREE_SEMITONES`** — for ~128 ms after a leap the anchor is still on the
   *previous* note. Snapping a fresh E5 (76) toward a stale A4 (69) computes
@@ -182,9 +228,16 @@ Two guards on the snap, both of which took a measurement to find:
   disagreement is intermittent (any correct frame resets the count), a real leap's is
   unbroken until the anchor catches up. Trusting the anchor here measured 261 ms.
 
-A confirmed leap **resets the gate**. Layer 3's median is still on the old octave, so
-left alone it would reject the leap for another few frames out of inertia — a second
-conservatism tax on a decision layer 2 already paid for over five frames.
+  It is **1**, down from 4, and the reason is the sentence above: it is sized against the
+  bank's *wandering*, and wandering is what stage 1 removed (bank octave slips are 0.0% of
+  frames on both open-G takes). Not 0 — at 0 the bank wins every dispute on its first
+  frame, which makes the snap return `bank_midi` unconditionally, i.e. dead code, taking
+  `YIN_OCTAVE_CONFIDENCE` and the anchor dependency with it. **The snap and this constant
+  are one mechanism, not two**, so they go together or not at all (§7).
+
+A confirmed leap **resets the gate**. The `OctaveGate`'s median is still on the old
+octave, so left alone it would reject the leap for another few frames out of inertia — a
+second conservatism tax on a decision already paid for.
 
 ### Stage 2b — note segmentation (`dsp::segmenter::NoteSegmenter`)
 
@@ -338,10 +391,18 @@ value being available.
 | resonator bank alone | **8–29 ms** | 8 ms |
 | pYIN alone | **128 ms** (= window length, exactly) | 208 ms |
 | plain YIN (pre-pYIN reference) | 128 ms | 128 ms |
-| **melody line, to the engine's decision** | **24–40 ms** | **72 ms** |
-| *(same path, measured to the UI frame that drew it — Phase 1.8)* | *28 ms* | *78 ms* |
+| **melody line, to the engine's decision** | **24–40 ms** | **104 ms** |
+| *(same path, measured to the UI frame that drew it — Phase 1.8)* | *28 ms* | *~110 ms* |
 | *(staff, before Phase 1.7)* | *128 ms* | *328 ms* |
 | perceptual threshold | ~30–40 ms | |
+
+The low register pays more than the table's "ordinary" column: **G3→D4 is 104 ms** against
+A4→E5's 40 ms, and they are the *same fifth*. The kernel geometry is identical; the bank is
+constant-Q, so its ring-down is a roughly fixed number of *cycles* and therefore longer in
+seconds the lower you go. While the old note still rings, its partials sit in the new
+candidate's valleys and vote against it — and they are not wrong: it really is still
+sounding. That is the price of the mechanism that took the phantom octave to 0%, not a
+defect in it.
 
 > **The top two rows are the same path measured at different points, not a speed-up.**
 > Phase 1.9 moved segmentation into the engine, so the probe now stops when the engine
@@ -354,14 +415,44 @@ pYIN's latency tracks its window length *exactly*, at every size — 1024→21 m
 is the HMM refusing to leave a note while the window holds a trace of it.
 
 The octave leap is the only interval that pays `LEAP_CONFIRM_FRAMES`, and that is the
-deliberate price of not re-breaking octave wandering.
+deliberate price of not re-breaking octave wandering. At **104 ms** it is now *faster* than
+the 120 ms it was before the Viterbi existed, despite continuity also holding the note:
+dropping that constant 4 → 1 more than paid for the Viterbi's own ~32 ms. Retiring the
+repair layer entirely should take it to ~**88 ms**.
+
+### The two constants that could not be inherited, and one that could
+
+This is the most reusable thing this page knows, and it will matter again for **any** new
+front end under the same trellis:
+
+- **Transition rates transfer.** They describe how a *player's* pitch moves in time, which
+  no detector changes. So pYIN's kernel — tuned and measured at 40 ms — carried over to the
+  16 ms channel intact, as **rates per second** rather than per-frame probabilities (§4).
+- **The emission scale does not.** pYIN's candidates are near-deltas: `p = 1.000` against a
+  1e-9 floor is **20.7 nats** of contrast, so a leap's ~9.9 nats is pocket change to it.
+  SWIPE′'s curve is broad and low-contrast — the right note leads by **0.017**. Inheriting
+  the exchange rate silently priced every note change out of reach: the octave went 120 →
+  **248 ms**, a whole tone 24 → **120 ms**. It compiles, and the tests that matter pass;
+  it is just slow. Hence `SALIENCE_BETA`, and hence the Gibbs link.
+- **`SALIENCE_BETA` is bounded from both sides, and one bound is invisible to the corpus.**
+  Too high and the 4–6% ties buy their way through — the phantom returns. Too low and the
+  needle **sticks**: at β=1 the stroke takes read a perfect **100%**, which is not accuracy
+  but paralysis, because on a take whose note never changes a frozen decoder is always
+  right. Only the latency sweep convicts it (`A4→B4` and `A4→A5` never arrive). **Two
+  sweeps, always** — an accuracy corpus alone will always argue for over-smoothing.
 
 ### The tests that hold this
 
 | test | asserts |
 |---|---|
 | `resonator::bank_latency_probe` | bank follows a change ≤ 40 ms |
-| `segmenter::end_to_end_latency_probe` | the line shows a note ≤ 60 ms (≤ 100 ms octave), through the *real* bank + tracker + melody + segmenter |
+| `segmenter::end_to_end_latency_probe` | the line shows a note ≤ 60 ms (≤ 130 ms octave / low register), through the *real* bank + tracker + melody + segmenter |
+| `trellis::the_rates_are_dt_invariant_where_the_per_frame_constants_were_not` | the `update_ms` slider cannot move the detector: rates ×1.21 across 8..80 ms, **and the per-frame kernel it replaced ×10.0 on the same sweep** — the oracle must fail, or the test measures nothing |
+| `trellis::kernel_reproduces_pyins_numbers_at_its_own_cadence` | the generalisation *is* pYIN's kernel at 40 ms (0.8 / 0.18 / 0.02), so its measured latency table carries over rather than restarting |
+| `trellis::a_lone_outlier_does_not_move_the_path` / `sustained_evidence_moves_the_path` | the pair that separates a phantom octave from a real one — same interval, different persistence |
+| `melody::beta_sweep::salience_beta_sweep` | `SALIENCE_BETA` against the whole corpus, incl. the `g_open_real_octave` control (the played G4 must **remain**) |
+| `melody::beta_sweep::salience_beta_latency_sweep` | the other bound — the one that convicts a stuck needle |
+| `swipe::the_old_comb_fails_the_same_column` | the non-circular half: the scorer SWIPE′ replaced **fails** the same input |
 | `core::engine_writes_a_played_note_end_to_end` | a note reaches `note_line` through the real **engine wiring** — both pipelines, the level atomic, the onset hand-off, the sample clock |
 | `core::the_melody_history_is_published_on_the_audio_clock` | `t` tracks the audio through the real pipelines; a cursor hands each frame over once; two cursors are independent |
 | `pitch_roll_panel::history_is_paced_by_the_audio_not_the_frame_rate` | a panel repainting half as often still holds **every** bank frame (fed a trill, the case that dies first) |
@@ -409,3 +500,23 @@ deliberate price of not re-breaking octave wandering.
    silently.
 6. **Latency claims are measured, not reasoned.** Every number here came from a probe;
    several contradicted a comment in the code that read perfectly plausibly.
+7. **There is one trellis** (`dsp::trellis`), and a new detector supplies *emissions*, not
+   a second copy of the continuity model. How a player's pitch moves in time is a property
+   of the instrument; it does not fork per front end. But **re-measure the emission scale**
+   — it does not transfer (§6).
+8. **A per-frame constant in `dsp::` is a bug in waiting.** The frame is `update_ms`, an
+   8..80 ms *display* slider, so "per frame" means "per whatever the user dragged it to".
+   Specify rates per second and discretize with a real `dt` off the **sample clock**. This
+   was the fourth time a display setting silently steered this detector (after the UI
+   meter's smoothing, `gamma`, and the waterfall's C0..C8 extent) — and the first to leak
+   as a *clock* rather than a value, which is why the earlier trigger missed it.
+   `melody::LEAP_CONFIRM_FRAMES` and `segmenter`'s hardcoded `bank_publish_ms = 16.0` are
+   the two that remain.
+9. **The repair layer is still here, and that is on purpose.** `snap_to_anchor_octave`,
+   `LEAP_CONFIRM_FRAMES`, `OctaveGate` and the anchor dependency all patch a per-frame
+   argmax that stage 1 replaced, so they are expected to be redundant — but the evidence is
+   **two strings**, G and A. Retiring them on that would be this plan's own recurring
+   mistake: a number verified in one condition, restated as a property. The gate is
+   recordings of D and E (`testdata/README.md`); then they go **in one piece**, because the
+   snap and `LEAP_CONFIRM_FRAMES` are one mechanism and removing either alone leaves dead
+   code behind.
