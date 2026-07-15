@@ -614,6 +614,48 @@ mod tests {
                 pct(new_g4),
                 pct(new_other)
             );
+            // First position on a violin string spans the open note up to the 4th finger,
+            // i.e. the open string + 7 semitones. `g_string_trill` and `a_string_trill`
+            // are the player putting fingers down in first position, so *every* note from
+            // the open string to +7 is real content — the earlier reading of these takes
+            // as "spread" was the probe's G3/G4 buckets calling real notes "other", not
+            // the detector erring.
+            let playable: Option<std::ops::RangeInclusive<i32>> = match name {
+                "g_string_trill" => Some(55..=62), // G3 open .. D4
+                "a_string_trill" => Some(69..=76), // A4 open .. E5
+                _ => None,                         // open-G takes: G3 only, see above
+            };
+            if let Some(band) = playable {
+                let inside: u32 = ranked
+                    .iter()
+                    .filter(|(midi, _)| band.contains(midi))
+                    .map(|(_, count)| *count)
+                    .sum();
+                let total: u32 = ranked.iter().map(|(_, count)| *count).sum();
+                println!(
+                    "  in first position: {inside}/{total} ({:.1}%) — everything else is a real error",
+                    100.0 * inside as f32 / total.max(1) as f32
+                );
+                // Name the errors. Whether they are octaves of a played note or junk in a
+                // register the violin cannot reach decides whether temporal smoothing is
+                // even the right tool: a Viterbi can outvote a lone excursion, but it
+                // cannot invent a candidate the salience never proposed.
+                let mut errors: Vec<(i32, u32)> = ranked
+                    .iter()
+                    .filter(|(midi, _)| !band.contains(midi))
+                    .copied()
+                    .collect();
+                errors.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+                let octave_errors: u32 = errors
+                    .iter()
+                    .filter(|(midi, _)| band.contains(&(midi - 12)) || band.contains(&(midi + 12)))
+                    .map(|(_, count)| *count)
+                    .sum();
+                println!(
+                    "    of which an OCTAVE of a played note: {octave_errors} ({:.1}% of all frames)",
+                    100.0 * octave_errors as f32 / total.max(1) as f32
+                );
+            }
             let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
             let top: Vec<String> = ranked
                 .iter()

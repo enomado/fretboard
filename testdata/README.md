@@ -84,10 +84,19 @@ issue"). The app is an intonation trainer; it reported the intonation.
 
 ### `g_string_trill` — the case that breaks duration filters
 
-A trill on the G string.
+The player putting fingers down in **first position** on the G string — *"я просто тыкал
+пальцами в первой позиции"*.
 
-**Truth: to be confirmed** — see "Open questions" below. The player's description is
-*"ничего не играется выше диапазона g и g+1"* (nothing above G and one step).
+**Truth: every note from the open string to the 4th finger, i.e. MIDI 55–62** (G3 · G♯3 ·
+A3 · B♭3 · B3 · C4 · C♯4 · D4). Anything outside that band is an error.
+
+> **Read this before calling a spread an error.** This take was first written up as SWIPE′
+> "spreading up to a fourth above the open G", which looked bad — until the player said
+> what they had actually played. `A3 · G3 · A♯3 · B3 · C4 · G♯3` *is* first position on the
+> G string. The detector was reporting the notes; the probe's G3/G4 buckets were filing
+> real content under "other". The corpus is only ground truth to the extent someone says
+> what is in it, and a take whose truth is guessed will be used to prove whatever the
+> guess was.
 
 Why a trill matters: it is the one thing a duration-based filter cannot survive. A
 two-frame trill note and a two-frame octave spike are the same length, so anything that
@@ -96,11 +105,16 @@ says this — it is why that gate is interval-based, not duration-based.
 
 ### `a_string_trill` — the same, one string up
 
-A trill on the A string (A4, 440 Hz), where the fundamental is *not* suppressed by the
-body. Isolates "trill" from "weak fundamental": if a trill misbehaves here too, the cause
-is the trill, not the G string's physics.
+First position on the A string, where the fundamental is *not* suppressed by the body.
+Isolates "trill" from "weak fundamental": if this misbehaves too, the cause is the playing,
+not the G string's physics.
 
-**Truth: to be confirmed.**
+**Truth: MIDI 69–76** (A4 open .. E5, 4th finger).
+
+The player also notes some readings are likely an **overtone from an under-pressed string**
+(*"обертон от C из-за недожима"*) — a finger that does not fully stop the string sounds
+partly like a harmonic. That is a real acoustic event in the take, not a detector fault:
+the instrument really did emit it.
 
 ## Measured — 2026-07-15, at `cfa4f68`
 
@@ -141,19 +155,36 @@ a_string_trill      : A4 26% · B4 21% · C5 11% · A#4 10% · C#5 4% · F#0 2%
   evidence would be this plan's own recurring mistake.
 - **The trills are unexplained** (below).
 
+Scored against the real first-position bands, which is the number that means something:
+
+| take | in position | error | **of which an octave of a played note** |
+|---|---|---|---|
+| `g_string_trill` | 83.8% (924/1103) | 16.2% | **7.5%** |
+| `a_string_trill` | 76.9% (1697/2206) | 23.1% | **5.3%** |
+
+**This confirms the live report on the current scorer, not just the old one.** The player
+reported *"на pitch roll постоянно промахи через октаву вверх и низ"*, and octave errors
+are still here at 5.3–7.5% of frames — an order of magnitude better than the old comb, but
+"better" is not "right", and a pitch roll draws every frame. The remaining ~9–18% is mostly
+the low-register junk below.
+
 ## Open questions
 
-1. **What is actually played in the trills?** The G take reports a spread up to C4 — a
-   fourth above the open G — which does not match *"nothing above g and g+1"*. Either the
-   take is wider than described, or SWIPE′ is wrong across a third of its frames. **Until
-   this is settled, no claim about trills is supported by this corpus.** Needs the player.
-2. **A trill is polyphonic in the bank, and the scorer is not.** At a trill's rate the
-   previous note has not decayed when the next starts — the bank's ring-down is ~80 ms at
-   G3 (constant-Q; see `resonator::bank_latency_probe`) — so the column genuinely contains
-   *two* harmonic series at once. SWIPE′ picks the single series that best explains the
-   column, and the best single explanation of a two-note mixture need not be either note.
-   This is a hypothesis with a mechanism, not a finding. It predicts the spread is *worse*
-   on the G string (longer ring) than on the A string, which the takes can test.
-3. **Low-register junk.** The strokes takes report G2 (~4%) and scattered C0–E1. The bank
-   offers candidates down to C0 = 16 Hz where no violin plays. That is a candidate-range
-   question and must not be answered with a violin-shaped magic floor.
+1. **The octave errors that survive SWIPE′** (5.3–7.5% on the trills). These are *lone*
+   excursions from a correct neighbourhood, which is exactly what per-frame argmax cannot
+   fix and what temporal continuity can: a Viterbi over the salience curve outvotes a
+   one-frame jump without needing a rule about octaves. Note the trap in stating it as
+   "a jump of an octave or more is an error" — `g_open_real_octave` is the player
+   deliberately leaping an octave, and that rule would break it. The distinction is not
+   the interval, it is whether the evidence *persists*.
+2. **Low-register junk.** The strokes takes report G2 (~4%) and scattered C0–E1; the trills
+   show F♯0. The bank offers candidates down to C0 = 16 Hz where no violin plays. That is a
+   candidate-range question and must not be answered with a violin-shaped magic floor.
+3. **A trill is polyphonic in the bank, and the scorer is not.** At a trill's rate the
+   previous note has not decayed when the next starts — ring-down is ~80 ms at G3
+   (constant-Q; see `resonator::bank_latency_probe`) — so the column genuinely holds *two*
+   harmonic series, and SWIPE′ picks the single series that best explains it, which for a
+   mixture need not be either note. Hypothesis with a mechanism, not a finding. It predicts
+   a worse in-position rate on G (longer ring) than on A; the takes say **83.8% G vs 76.9%
+   A**, i.e. the *opposite*, so either the mechanism is not dominant here or the A take is
+   harder for another reason (it is twice as long and reaches higher). Unresolved.
