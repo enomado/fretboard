@@ -528,7 +528,13 @@ mod tests {
         let bps = SPIRAL_BINS_PER_SEMITONE as f32;
         let min_midi = NOTE_BUCKET_MIN_MIDI as f32;
 
-        for name in ["g_open_slow_strokes", "g_open_fast_strokes", "g_open_real_octave"] {
+        for name in [
+            "g_open_slow_strokes",
+            "g_open_fast_strokes",
+            "g_open_real_octave",
+            "g_string_trill",
+            "a_string_trill",
+        ] {
             let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
             let mut reader = hound::WavReader::open(&path).unwrap();
             let sample_rate = reader.spec().sample_rate as f32;
