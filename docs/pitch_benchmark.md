@@ -76,7 +76,8 @@ this benchmark died on `No space left on device`.
 
 Every frame is scored against the annotation at several lags in **one** pass (running the
 bank is ~99 % of the cost; a binary search into the annotation is free). The first run
-came back like this on two tracks:
+came back like this **on two tracks** — kept because the whole sweep exists because of it,
+and because the corpus went on to move its peak:
 
 | lag (ms) | RPA | ±1-semitone share of misses |
 |---|---|---|
@@ -86,24 +87,44 @@ came back like this on two tracks:
 | **24** | **91.86 %** | 43.7 % |
 | 32 | 91.03 % | 50.5 % |
 
-Two things fell out of that table:
+### The corpus, all 230 tracks (2026-07-15) — these are the numbers
+
+The first full run: 4.7 h, 1.57 M voiced frames, `datasets/bench_runs/`. It is the baseline
+any detector change is argued against, and **the two-track probe above was not it** — the
+peak moved from 24 ms to **16 ms**, and every figure is a point or two lower.
+
+| lag (ms) | RPA, full band | RPA, 65–2093 Hz |
+|---|---|---|
+| 0 | 82.99 % | 83.93 % |
+| 8 | 87.93 % | 89.07 % |
+| **16** | **90.18 %** | **91.02 %** |
+| 24 | 89.84 % | 90.11 % |
+| 32 | 87.64 % | 87.44 % |
+
+Two tracks were never going to settle a peak — they were 0.9 % of the corpus, and the
+sweep's spacing is 8 ms. Quote the corpus; the probe is history, not a second opinion.
+
+Two things fell out of the original table, and only one survived:
 
 1. **Half of our "errors" were timing, not scoring.** ±1-semitone misses were 52 % of all
    errors and near-symmetric (+1: 664, −1: 587) — the signature of a detector chasing a
    moving pitch, not of a kernel confusing harmonics (which would lean one way).
-2. ~~**The benchmark independently measured the bank's group delay.**~~ The curve peaks at
-   24 ms and falls off both sides, landing inside the 8–29 ms measured by an entirely
+2. ~~**The benchmark independently measured the bank's group delay.**~~ The curve peaked at
+   24 ms and fell off both sides, landing inside the 8–29 ms measured by an entirely
    different method (`resonator::bank_latency_probe`). **This reading is wrong — see
    below.** It is struck through rather than deleted because the coincidence was the whole
    reason to believe it, and the next person to find a peak inside an expected range
-   deserves to know that this one was not the confirmation it looked like.
+   deserves to know that this one was not the confirmation it looked like. The corpus then
+   put the peak at 16 ms, which is *also* inside 8–29: a 21 ms-wide range accepts almost
+   anything, which is the point.
 
 So there are **two honest numbers**, answering different questions:
 
 - **lag 0** — the *pipeline*, latency included. What the player actually gets.
-- **lag ≈ 24 ms** — the *scorer*. The number comparable to the literature, whose FFT-based
-  estimators centre a symmetric window and are therefore delay-compensated by
-  construction. Scoring our IIR at lag 0 against their centred FFT flatters *them*.
+- **lag ≈ 16 ms** (the corpus's peak) — the *scorer*. The number comparable to the
+  literature, whose FFT-based estimators centre a symmetric window and are therefore
+  delay-compensated by construction. Scoring our IIR at lag 0 against their centred FFT
+  flatters *them*.
 
 Neither is the "real" one; quoting only the flattering one would be the lie.
 
@@ -148,11 +169,12 @@ What this does and does not change:
 - **Does not change the numbers.** Both columns are still the numbers they were, and
   comparing two detectors *each at its own peak* is still fair — the envelope term is
   common to both. The RT-SWIPE gate (`R2`) is unaffected.
-- **Does change what 24 ms means.** The bank's own group delay is `24 − its envelope bias`,
-  and that bias is not yet measured — the +5.11 ms above is a *symmetric* 64 ms window's,
-  while the bank's window is a causal IIR decay of a different shape and width. So 24 ms is
-  an upper bound on the bank's delay, not a measurement of it, and "it landed inside 8–29"
-  was never evidence: an 21 ms-wide range accepts almost anything.
+- **Does change what the peak means.** The bank's own group delay is `peak − its envelope
+  bias`, and that bias is not yet measured — the +5.11 ms above is a *symmetric* 64 ms
+  window's, while the bank's window is a causal IIR decay of a different shape and width. So
+  the peak (16 ms on the corpus) is an upper bound on the bank's delay, not a measurement of
+  it, and "it landed inside 8–29" was never evidence: a 21 ms-wide range accepts almost
+  anything.
 - **The way to measure the bank's delay** is `resonator::bank_latency_probe`, which drives
   a step and watches the output. That one is a real latency measurement. The corpus sweep
   is not, and should stop being quoted as a second opinion on it.
