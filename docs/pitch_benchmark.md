@@ -91,9 +91,12 @@ Two things fell out of that table:
 1. **Half of our "errors" were timing, not scoring.** ±1-semitone misses were 52 % of all
    errors and near-symmetric (+1: 664, −1: 587) — the signature of a detector chasing a
    moving pitch, not of a kernel confusing harmonics (which would lean one way).
-2. **The benchmark independently measured the bank's group delay.** The curve peaks at
+2. ~~**The benchmark independently measured the bank's group delay.**~~ The curve peaks at
    24 ms and falls off both sides, landing inside the 8–29 ms measured by an entirely
-   different method (`resonator::bank_latency_probe`).
+   different method (`resonator::bank_latency_probe`). **This reading is wrong — see
+   below.** It is struck through rather than deleted because the coincidence was the whole
+   reason to believe it, and the next person to find a peak inside an expected range
+   deserves to know that this one was not the confirmation it looked like.
 
 So there are **two honest numbers**, answering different questions:
 
@@ -103,6 +106,56 @@ So there are **two honest numbers**, answering different questions:
   construction. Scoring our IIR at lag 0 against their centred FFT flatters *them*.
 
 Neither is the "real" one; quoting only the flattering one would be the lie.
+
+### A lag-sweep peak is not a group delay (2026-07-15)
+
+The SwiftF0 oracle broke claim 2. SwiftF0 peaks at **+9.4 ms** on this corpus — and
+SwiftF0 has no group delay to have: it is a centred STFT plus a conv stack, and the
+reference resamples its frames onto our grid zero-phase. A peak the *delay-free* estimator
+also shows cannot be a measurement of anybody's delay.
+
+`tools/lag_sweep_probe.py` (one command, ~4 min) chases it down. Two attractive answers are
+wrong, and both are worth knowing about because each survived a plausible-sounding argument:
+
+- **"SwiftF0 is late."** It is not. Its `CENTER_OFFSET = 127.5` samples is a claim the
+  Python cannot enforce — the pad is computed *inside* the ONNX graph — but reading the
+  graph out shows a true 384/384 split, so the claim holds. And a vibrato-phase probe
+  through the oracle's own path measures the model at **+1.4 ms**, with self-checks that
+  recover an imposed 8 ms shift to within 0.01 ms.
+- **"The corpus is offset."** It is not. A centred-window YIN at 44.1 kHz — no model, no
+  resampling, zero delay by construction — matches MDB-stem-synth's annotation to
+  **~1 cent at ~0 ms**. (This one had me: SwiftF0's +9.4 ms looked exactly like a corpus
+  offset until an instrument sharing nothing with the first one said otherwise.)
+
+What is actually happening is the **envelope**. Inside a symmetric window straddling a
+decaying note, the energy is weighted toward the note's earlier, louder part, so an
+energy-weighted estimator reports what the signal was doing slightly in the *past*. It is
+late, and the wider its window, the later — with no group delay in it anywhere. The probe
+demonstrates it on synthetic audio where the truth is analytic and there is nothing left to
+be offset:
+
+| envelope | lag | note |
+|---|---|---|
+| flat amplitude | **+0.01 ms** | identical pitch trajectory |
+| note attack + decay | **+5.11 ms** | *only* the envelope differs |
+
+Real music is made of decaying notes, so **every** estimator on this corpus pays this,
+including the bank. A peak is therefore `group_delay + envelope_bias`, and only the first
+term belongs to the detector.
+
+What this does and does not change:
+
+- **Does not change the numbers.** Both columns are still the numbers they were, and
+  comparing two detectors *each at its own peak* is still fair — the envelope term is
+  common to both. The RT-SWIPE gate (`R2`) is unaffected.
+- **Does change what 24 ms means.** The bank's own group delay is `24 − its envelope bias`,
+  and that bias is not yet measured — the +5.11 ms above is a *symmetric* 64 ms window's,
+  while the bank's window is a causal IIR decay of a different shape and width. So 24 ms is
+  an upper bound on the bank's delay, not a measurement of it, and "it landed inside 8–29"
+  was never evidence: an 21 ms-wide range accepts almost anything.
+- **The way to measure the bank's delay** is `resonator::bank_latency_probe`, which drives
+  a step and watches the output. That one is a real latency measurement. The corpus sweep
+  is not, and should stop being quoted as a second opinion on it.
 
 ## What it reports, and why each line is there
 
