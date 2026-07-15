@@ -207,9 +207,12 @@ pub(crate) fn spectrum_norm(warped: &[f32]) -> f32 {
 mod tests {
     use super::*;
     use crate::audio::dsp::analysis_math::{
+        NOTE_BUCKET_MIN_MIDI,
         SPIRAL_BINS_PER_SEMITONE,
         resonator_fundamental,
     };
+    use crate::audio::dsp::resonator::ResonatorAnalyzer;
+    use crate::core_types::note::AccidentalStyle;
 
     /// The kernel must reproduce eq. 3-12 where the harmonic set is unbroken, and SWIPE′'s
     /// stated valley weights where it is not. Checked on the raw cosine·envelope product,
@@ -367,6 +370,140 @@ mod tests {
                 );
             }
             None => println!("  picked NOTHING — the floor rejected every candidate"),
+        }
+    }
+
+    /// **The real thing.** Everything above runs on synthetic columns — one bin per
+    /// partial, no skirts. The real reassigned column is *spiky*, because reassignment
+    /// splats energy at its measured instantaneous frequency and the coherence gate drops
+    /// what does not cohere, whereas SWIPE expects a dense √-spectrum. Whether the
+    /// kernel's valleys still collect the odd harmonics on such a column is design §4.3 —
+    /// the one risk that can sink the whole approach, and it cannot be reasoned out.
+    ///
+    /// So: real violin, real bow, real bank. Recorded on the open G (196 Hz) — the string
+    /// whose fundamental the instrument barely radiates — through the same PulseAudio
+    /// source the app captures from, unprocessed and unclipped.
+    ///
+    /// Both scorers run on the **same** column from the **same** bank frame, so the only
+    /// difference is the scoring. Tallied over the frames the old scorer itself considers
+    /// voiced, which is apples-to-apples: those are exactly the frames that reach the
+    /// melody line today.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn real_violin_g_probe() {
+        // `ResonatorViewSettings::default().gamma` — the *display's* contrast, which the
+        // shipped `resonator_snapshot` bakes into the column before scoring it. Undone
+        // below to recover the bank's own magnitudes; see design §1.4 for why a display
+        // knob must not reach a detector in the first place.
+        const DISPLAY_GAMMA: f32 = 0.72;
+        const G3_MIDI: f32 = 55.0;
+        const G4_MIDI: f32 = 67.0;
+
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        let min_midi = NOTE_BUCKET_MIN_MIDI as f32;
+        let kernel = SwipeKernel::new(bps);
+
+        for name in ["g_open_slow_strokes", "g_open_fast_strokes", "g_open_real_octave"] {
+            let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
+            let mut reader = hound::WavReader::open(&path).unwrap();
+            let sample_rate = reader.spec().sample_rate as f32;
+            let samples: Vec<f32> = reader
+                .samples::<i16>()
+                .map(|s| s.unwrap() as f32 / 32768.0)
+                .collect();
+
+            let mut analyzer = ResonatorAnalyzer::new(sample_rate);
+            // Sample the decision at the bank's own ~16 ms publish cadence, which is the
+            // rate `MelodyTracker` is contractually driven at.
+            let hop = (sample_rate * 0.016) as usize;
+
+            let (mut old_g3, mut old_g4, mut old_other, mut old_silent) = (0u32, 0u32, 0u32, 0u32);
+            let (mut new_g3, mut new_g4, mut new_other) = (0u32, 0u32, 0u32);
+            let mut new_verdicts: Vec<f32> = Vec::new();
+
+            let mut fed = 0usize;
+            while fed + hop <= samples.len() {
+                analyzer.process_samples(&samples[fed..fed + hop], true);
+                fed += hop;
+                let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
+
+                let Some((old_midi, _strength)) = snapshot.fundamental else {
+                    old_silent += 1;
+                    continue;
+                };
+                let near = |midi: f32, target: f32| (midi - target).abs() < 0.5;
+                if near(old_midi, G3_MIDI) {
+                    old_g3 += 1;
+                } else if near(old_midi, G4_MIDI) {
+                    old_g4 += 1;
+                } else {
+                    old_other += 1;
+                }
+
+                // Undo the display's gamma to recover the bank's magnitudes up to the
+                // column max: `normalize_bars` computes `(v/max)^gamma` and the clamp is a
+                // no-op because `max` is the max. The residual `1/max` is a global scale,
+                // and SWIPE's numerator is linear in `√|X|` with a candidate-independent
+                // denominator, so it cannot move the argmax.
+                let magnitudes: Vec<f32> = snapshot
+                    .spectrum
+                    .iter()
+                    .map(|v| v.powf(1.0 / DISPLAY_GAMMA))
+                    .collect();
+                let warped = sqrt_warp(&magnitudes);
+                let curve = kernel.salience_curve(&warped);
+                let best = curve
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                    .map(|(bin, _)| bin)
+                    .unwrap();
+                let new_midi = min_midi + best as f32 / bps;
+                new_verdicts.push(new_midi);
+                if near(new_midi, G3_MIDI) {
+                    new_g3 += 1;
+                } else if near(new_midi, G4_MIDI) {
+                    new_g4 += 1;
+                } else {
+                    new_other += 1;
+                }
+            }
+
+            // What IS the "other" bucket? An unexplained quarter of the frames is where
+            // the next bug hides, so name the notes instead of lumping them.
+            let mut histogram: std::collections::BTreeMap<i32, u32> = Default::default();
+            for &midi in &new_verdicts {
+                *histogram.entry(midi.round() as i32).or_default() += 1;
+            }
+            let mut ranked: Vec<(i32, u32)> = histogram.into_iter().collect();
+            ranked.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+
+            let voiced = old_g3 + old_g4 + old_other;
+            let pct = |n: u32| 100.0 * n as f32 / voiced.max(1) as f32;
+            println!("\n=== {name} — {voiced} voiced frames ({old_silent} silent) ===");
+            println!(
+                "  OLD comb : G3 {old_g3:>4} ({:>5.1}%)   G4(phantom) {old_g4:>4} ({:>5.1}%)   other {old_other:>4} ({:>5.1}%)",
+                pct(old_g3),
+                pct(old_g4),
+                pct(old_other)
+            );
+            println!(
+                "  SWIPE'   : G3 {new_g3:>4} ({:>5.1}%)   G4          {new_g4:>4} ({:>5.1}%)   other {new_other:>4} ({:>5.1}%)",
+                pct(new_g3),
+                pct(new_g4),
+                pct(new_other)
+            );
+            let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+            let top: Vec<String> = ranked
+                .iter()
+                .take(6)
+                .map(|(midi, count)| {
+                    let octave = midi / 12 - 1;
+                    let name = names[(midi % 12) as usize];
+                    format!("{name}{octave} {:.0}%", pct(*count))
+                })
+                .collect();
+            println!("  SWIPE' says   : {}", top.join(" · "));
         }
     }
 }

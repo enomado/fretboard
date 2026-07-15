@@ -45,6 +45,10 @@ eframe.workspace = true
 [dev-dependencies]
 # Direct handle on the same RON used by eframe storage, for the persistence round-trip test.
 ron = "*"
+# Reads the real violin recordings in `testdata/` so the octave decision can be
+# measured on a real bowed G string rather than argued from a synthetic column
+# (`dsp::swipe`'s real-audio probe). Test-only: the app never loads a file.
+hound = "3"
 # Renders widgets offscreen through the real egui/epaint/wgpu stack, so the pill's
 # text centring can be asserted on actual pixels instead of on font metrics.
 egui_kittest = { version = "0.35", features = ["wgpu"] }
