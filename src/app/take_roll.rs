@@ -12,12 +12,14 @@
 //! `pitch_roll_panel::columns_of`). Only two policies differ, and both differ for the
 //! same reason — **a take is evidence, and the live roll is a mirror to play into.**
 //!
-//! ## Both axes move, and the wheel is not ours
+//! ## Both axes move, one at a time, and the wheel is not ours
 //!
-//! Drag pans time and pitch; **ctrl+wheel / pinch** zooms them, about the cursor;
-//! double-click fits the take back into view. The plain wheel belongs to the pane's
-//! `ScrollArea` — this panel is taller than most panes, so it has to be scrollable, and
-//! the roll is most of what the wheel would land on. See [`LoadedTake::interact`].
+//! Drag pans time and pitch together; zoom takes them one axis at a time, about the
+//! cursor — **ctrl+wheel = time, ctrl+shift+wheel = pitch** (a pinch does both at once,
+//! because two fingers say so). Double-click fits the take back into view. The plain
+//! wheel belongs to the pane's `ScrollArea` — this panel is taller than most panes, so it
+//! has to be scrollable, and the roll is most of what the wheel would land on. See
+//! [`LoadedTake::interact`].
 //!
 //! ## The framing is min/max, where the live roll's is quantiles — deliberately
 //!
@@ -54,6 +56,7 @@ use eframe::egui::{
     Align,
     Color32,
     Context,
+    Event,
     Layout,
     Rect,
     Response,
@@ -264,6 +267,25 @@ struct Marking {
     against:  MarkedAgainst,
 }
 
+/// Which axis a wheel zoom moves — the roll zooms one at a time, see
+/// [`LoadedTake::interact`].
+///
+/// Latched rather than read per frame, and that is not a style choice: egui smooths one
+/// notch of the wheel over several frames, and the frames after the first carry no event
+/// and no modifier — by then the user may well have let go of shift. Reading the live
+/// modifier every frame puts the head of one flick on one axis and its tail on the other.
+/// egui hit this first and latches the wheel's modifiers at the notch for exactly this
+/// reason (`WheelState::modifiers`: *«If the user lets go of a modifier - ignore it»*),
+/// but keeps them private, so the latch is ours to keep.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum ZoomAxis {
+    /// Plain ctrl+wheel. The default because time is what a take is read along.
+    #[default]
+    Time,
+    /// ctrl+shift+wheel.
+    Pitch,
+}
+
 /// A take, and the window onto it.
 struct LoadedTake {
     /// Which take this is — the identity the harvest compares against to notice that a
@@ -307,6 +329,9 @@ struct LoadedTake {
     /// is free to scroll and zoom, which matters because a note's two ends are often not
     /// on screen at the same magnification.
     draft:      Option<f64>,
+    /// Which axis the wheel's zoom is aimed at, latched at the notch — see
+    /// [`Self::interact`], which is also the only thing that writes it.
+    zoom_axis:  ZoomAxis,
     /// Why the last write of the marks file failed, if it did. `None` = the file on disk
     /// matches what is on screen.
     ///
@@ -323,6 +348,7 @@ impl LoadedTake {
             // a year from now must arrive with its truth attached.
             marks: load_marks(&path),
             draft: None,
+            zoom_axis: ZoomAxis::default(),
             save_error: None,
             path,
             seconds,
@@ -652,7 +678,7 @@ impl LoadedTake {
         self.window = start..(start + span);
     }
 
-    /// Pan and zoom, on both axes.
+    /// Pan on both axes at once; zoom one axis at a time.
     ///
     /// ## The wheel is the pane's, and the roll does not touch it
     ///
@@ -664,13 +690,14 @@ impl LoadedTake {
     /// the pane a zero and made the panel unscrollable over its own main body: the roll
     /// was at once the reason to scroll and the thing preventing it. Now the wheel is
     /// simply not ours — plain wheel scrolls the pane, and the roll zooms on
-    /// **ctrl+wheel / pinch**, which is what egui_plot does and therefore what the
-    /// gesture already means to anyone who has used a plot.
+    /// **ctrl+wheel** (time) and **ctrl+shift+wheel** (pitch), which is what egui_plot
+    /// does and therefore what the gesture already means to anyone who has used a plot.
     ///
     /// Nothing is taken from anyone, and that is structural rather than polite: egui
-    /// routes a wheel with the zoom modifier into `zoom_delta_2d` and leaves
-    /// `smooth_scroll_delta` at **zero** (`egui::InputState::begin_pass`). The two
-    /// gestures cannot both fire, so there is nothing left to arbitrate.
+    /// routes a wheel with the zoom modifier into the zoom factor and leaves
+    /// `smooth_scroll_delta` at **zero** (`egui::InputState::begin_pass`), with or
+    /// without shift. The two gestures cannot both fire, so there is nothing left to
+    /// arbitrate.
     ///
     /// `bank` is the resonator's pitch range — the bounds of where evidence can exist at
     /// all (see [`Self::clamp_pitch`]). `marking` is the armed declaration, if any — see
@@ -726,12 +753,49 @@ impl LoadedTake {
         let Some(pos) = resp.hover_pos() else {
             return;
         };
-        // `zoom_delta_2d` rather than a wheel delta of our own: it already carries both
-        // the ctrl+wheel case (both axes together) and a real pinch's independent axes,
-        // and it is a *factor*, so a notch multiplies the span and zooming out undoes
-        // zooming in exactly. Holding egui's horizontal/vertical scroll modifier splits
-        // it to one axis — time alone or pitch alone — inherited rather than invented.
-        let zoom = ui.input(|input| input.zoom_delta_2d());
+        // One axis per gesture: **ctrl+wheel = time, ctrl+shift+wheel = pitch.** The two
+        // axes of this roll answer different questions — "when did the note start" and
+        // "what did the detector think it was" — and zooming both at once means never
+        // getting to ask either one: the note you zoomed into on the time axis walks off
+        // the top while you do it. Shift for the second axis is the user's convention
+        // across their tools, asked for by name (07-15).
+        //
+        // 🔑 This **overrides** egui's own split, which is why the reading is by hand.
+        // `zoom_delta_2d` splits on the horizontal/vertical *scroll* modifiers — shift =
+        // x, alt = y — so inheriting it would give shift the axis the user wants alt to
+        // have, and alt is the one modifier a Linux WM is likely to eat before the app
+        // ever sees it. The scalar `zoom_delta` is unaffected by either modifier (the
+        // zoom factor sums both wheel components, so shift's collapse of the wheel onto
+        // its x component cannot reach it), which is what makes it safe to route here.
+        //
+        // The axis comes off the **wheel event's own modifiers**, not off the live
+        // keyboard, and is latched — see [`ZoomAxis`], which is where that is argued.
+        //
+        // A real pinch keeps `zoom_delta_2d`: two fingers *measure* both axes, so their
+        // split is data, not a convention we get to pick, and there is no modifier in the
+        // gesture to latch.
+        let (pinch, factor, notch) = ui.input(|input| {
+            (
+                input.multi_touch().map(|touch| touch.zoom_delta_2d),
+                input.zoom_delta(),
+                input.events.iter().rev().find_map(|event| {
+                    match event {
+                        Event::MouseWheel { modifiers, .. } => Some(modifiers.shift),
+                        _ => None,
+                    }
+                }),
+            )
+        });
+        if let Some(shift) = notch {
+            self.zoom_axis = if shift { ZoomAxis::Pitch } else { ZoomAxis::Time };
+        }
+        // A factor rather than a wheel delta of our own: a notch multiplies the span, so
+        // zooming out undoes zooming in exactly.
+        let zoom = match (pinch, self.zoom_axis) {
+            (Some(pinch), _) => pinch,
+            (None, ZoomAxis::Time) => Vec2::new(factor, 1.0),
+            (None, ZoomAxis::Pitch) => Vec2::new(1.0, factor),
+        };
         if zoom == Vec2::splat(1.0) {
             return; // no zoom gesture this frame — and the wheel, if any, is the pane's
         }
@@ -1201,33 +1265,90 @@ mod tests {
         );
     }
 
-    /// The other half: **ctrl+wheel zooms the roll, and the pane holds still.**
+    /// The other half: **ctrl+wheel zooms the roll's time axis, and the pane holds
+    /// still.**
     ///
     /// Nothing has to be taken for this to work, and that is the point. egui routes a
-    /// wheel carrying the zoom modifier into `zoom_delta_2d` and leaves
+    /// wheel carrying the zoom modifier into the zoom factor and leaves
     /// `smooth_scroll_delta` at zero, so the two gestures cannot both fire — the
     /// arbitration the old code was doing by hand does not exist to be got wrong. This
     /// test is what pins that contract: it is inherited from egui, so nothing in this
     /// repository would otherwise notice it changing.
+    ///
+    /// The pitch span is asserted *unchanged* here, and that half is not inherited — it
+    /// is the axis split (see [`ctrl_shift_wheel_zooms_pitch_and_leaves_time_alone`]).
     #[test]
-    fn ctrl_wheel_zooms_the_roll_and_the_pane_holds_still() {
+    fn ctrl_wheel_zooms_time_alone_and_the_pane_holds_still() {
         let mut harness = rig(take(10.0));
         harness.run_steps(3);
         let plot = harness.state().plot;
-        let span_before = harness.state().take.span_s();
+        let (span_before, pitch_before) = {
+            let take = &harness.state().take;
+            (take.span_s(), take.pitch_span())
+        };
 
         wheel(&harness, on_screen(plot), 50.0, Modifiers::COMMAND);
         harness.run_steps(6);
 
-        let span_after = harness.state().take.span_s();
+        let take = &harness.state().take;
+        let span_after = take.span_s();
         assert!(
             span_after < span_before - 0.01,
             "ctrl+wheel must zoom the roll in: span {span_before:.3} → {span_after:.3} s"
+        );
+        assert!(
+            (take.pitch_span() - pitch_before).abs() < 0.01,
+            "ctrl+wheel is the *time* axis alone: pitch span {pitch_before:.2} → {:.2} semitones",
+            take.pitch_span()
         );
         assert_eq!(
             harness.state().offset_y,
             0.0,
             "the pane must not scroll while the roll zooms — one gesture, one effect"
+        );
+    }
+
+    /// The axis split, asked for by the user (07-15): **ctrl+shift+wheel zooms pitch, and
+    /// time does not move.**
+    ///
+    /// This one is *not* inherited — it inverts egui, which is the whole reason it needs
+    /// pinning. `zoom_delta_2d` splits on the scroll modifiers (shift = x = time here,
+    /// alt = y = pitch), so taking egui's answer would give this gesture the time axis
+    /// and leave pitch behind alt — the one modifier a Linux WM tends to swallow before
+    /// the app sees it. Nothing else in the repository would notice `interact` drifting
+    /// back to `zoom_delta_2d`: it would still zoom, just the wrong axis.
+    #[test]
+    fn ctrl_shift_wheel_zooms_pitch_and_leaves_time_alone() {
+        let mut harness = rig(take(10.0));
+        harness.run_steps(3);
+        let plot = harness.state().plot;
+        let (span_before, pitch_before) = {
+            let take = &harness.state().take;
+            (take.span_s(), take.pitch_span())
+        };
+
+        wheel(
+            &harness,
+            on_screen(plot),
+            50.0,
+            Modifiers::COMMAND | Modifiers::SHIFT,
+        );
+        harness.run_steps(6);
+
+        let take = &harness.state().take;
+        assert!(
+            take.pitch_span() < pitch_before - 0.01,
+            "ctrl+shift+wheel must zoom the pitch axis in: {pitch_before:.2} → {:.2} semitones",
+            take.pitch_span()
+        );
+        assert!(
+            (take.span_s() - span_before).abs() < 0.01,
+            "ctrl+shift+wheel is the *pitch* axis alone: time span {span_before:.3} → {:.3} s",
+            take.span_s()
+        );
+        assert!(
+            take.framing == PitchFraming::Manual,
+            "a hand-aimed pitch window is manual — otherwise the next frame reframes it away"
         );
     }
 
