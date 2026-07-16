@@ -66,7 +66,6 @@ use super::swipe::{
     SalienceFrame,
     SwipeKernel,
     spectrum_norm,
-    sqrt_warp,
     tracked_bins,
 };
 
@@ -120,6 +119,17 @@ pub(crate) struct RtSwipe {
     /// `lambda[bin]` = the rungs that explain `bin`, and their weights, summing to 1.
     /// Precomputed: the grid and the ladder are both fixed at construction.
     lambda:       Vec<Vec<(WindowId, f32)>>,
+
+    // Reused scratch, so [`Self::frame`] allocates nothing on the audio thread beyond the
+    // one frame it returns (its curve, and the winner's column). This is a real-time-safety
+    // fix, not just a speed one: `malloc` can block on a global lock, so per-frame allocation
+    // on the audio path is a *jitter* hazard regardless of its average cost. One buffer per
+    // window (FFT in place), plus the per-rung grid columns the blend reads.
+    scratch_fft:      Vec<Vec<Complex32>>, // one per window, `window.size` long
+    scratch_spectrum: Vec<Vec<f32>>,       // one per window, `window.size / 2` long (`|X|`)
+    scratch_columns:  Vec<Vec<f32>>,       // one per window, `SPIRAL_BIN_COUNT` long (raw)
+    scratch_warped:   Vec<Vec<f32>>,       // one per window, `SPIRAL_BIN_COUNT` long (√-warped)
+    scratch_norms:    Vec<f32>,            // one per window
 }
 
 impl RtSwipe {
@@ -138,6 +148,15 @@ impl RtSwipe {
             .collect();
 
         let longest = windows.iter().map(|window| window.size).max().unwrap();
+        let rungs = windows.len();
+        let scratch_fft = windows
+            .iter()
+            .map(|window| vec![Complex32::new(0.0, 0.0); window.size])
+            .collect();
+        let scratch_spectrum = windows
+            .iter()
+            .map(|window| vec![0.0f32; window.size / 2])
+            .collect();
         Self {
             sample_rate,
             reference_hz,
@@ -147,6 +166,11 @@ impl RtSwipe {
             lambda: blend_weights(&windows, reference_hz),
             kernel: SwipeKernel::new(BINS_PER_SEMITONE),
             windows,
+            scratch_fft,
+            scratch_spectrum,
+            scratch_columns: vec![vec![0.0; SPIRAL_BIN_COUNT]; rungs],
+            scratch_warped: vec![vec![0.0; SPIRAL_BIN_COUNT]; rungs],
+            scratch_norms: vec![0.0; rungs],
         }
     }
 
@@ -168,16 +192,28 @@ impl RtSwipe {
     /// that [`SalienceFrame::score`] returns `None` for. A frame whose curve is merely
     /// *negative* everywhere is still a frame: whether that means "no pitch" is
     /// [`SalienceFrame::argmax`]'s call, in one place, as it is for the bank.
-    pub(crate) fn frame(&self) -> Option<SalienceFrame> {
-        // Each rung on its own terms: raw column → √-warp → *its own* spectral norm.
-        let columns: Vec<Vec<f32>> = self.windows.iter().map(|window| self.column(window)).collect();
-        let warped: Vec<Vec<f32>> = columns.iter().map(|column| sqrt_warp(column)).collect();
-        let norms: Vec<f32> = warped.iter().map(|column| spectrum_norm(column)).collect();
-        if norms.iter().all(|&norm| norm <= 0.0) {
+    pub(crate) fn frame(&mut self) -> Option<SalienceFrame> {
+        // Each rung on its own terms: raw column → √-warp → *its own* spectral norm, all into
+        // reused scratch (see the fields). Disjoint field borrows, so no `self` method call in
+        // the loop — that would borrow all of `self` and clash with the scratch it writes.
+        for i in 0..self.windows.len() {
+            fill_column(
+                &self.windows[i],
+                &self.history,
+                self.sample_rate,
+                self.reference_hz,
+                &mut self.scratch_fft[i],
+                &mut self.scratch_spectrum[i],
+                &mut self.scratch_columns[i],
+            );
+            sqrt_warp_into(&self.scratch_columns[i], &mut self.scratch_warped[i]);
+            self.scratch_norms[i] = spectrum_norm(&self.scratch_warped[i]);
+        }
+        if self.scratch_norms.iter().all(|&norm| norm <= 0.0) {
             return None;
         }
 
-        let curve = self.blend(&warped, &norms);
+        let curve = self.blend(&self.scratch_warped, &self.scratch_norms);
         // The winner must be found *before* the frame is built, because it decides which of
         // the eight columns the frame carries. `tracked_bins` is called rather than
         // re-derived: see its docs for what re-deriving it cost last time.
@@ -200,9 +236,12 @@ impl RtSwipe {
             .max_by(|(_, left), (_, right)| left.total_cmp(right))
             .unwrap()
             .0;
+        // The winner's raw column is cloned out because the scratch it lives in is overwritten
+        // next frame; this and the `curve` are the only two allocations a frame makes, and both
+        // are data the returned `SalienceFrame` owns.
         Some(SalienceFrame::from_curve(
             curve,
-            columns[rung].clone(),
+            self.scratch_columns[rung].clone(),
             MIN_MIDI,
             BINS_PER_SEMITONE,
         ))
@@ -264,28 +303,23 @@ impl RtSwipe {
         curve
     }
 
-    /// One rung's **raw** magnitude column on the shared grid.
+    /// One rung's **raw** magnitude column on the shared grid — the allocating form, kept for
+    /// the tests that read a single rung; [`Self::frame`] uses [`fill_column`] into scratch.
+    #[cfg(test)]
     fn column(&self, window: &AnalysisWindow) -> Vec<f32> {
-        // Right-aligned: the window ends at the newest sample. This is RT-SWIPE's one
-        // structural change to SWIPE, and the reason the delay is N/2 rather than N_max/2.
-        let start = self.history.len() - window.size;
-        let mut buffer: Vec<Complex32> = self.history[start..]
-            .iter()
-            .zip(&window.taper)
-            .map(|(sample, taper)| Complex32::new(sample * taper, 0.0))
-            .collect();
-        window.fft.process(&mut buffer);
-
-        // |X|, not |X|². The display's FFT reaches for `norm_sqr` because a waterfall wants
-        // power; SWIPE warps the *magnitude*, with √ ([`sqrt_warp`]), and the thesis picks
-        // that exponent on a worked example that is this app's exact signal. Handing the
-        // kernel power would be `sqrt_warp` cancelling out into no warping at all.
-        let spectrum: Vec<f32> = buffer[..window.size / 2].iter().map(|bin| bin.norm()).collect();
-        resample_to_log_grid(
-            &spectrum,
-            self.sample_rate / window.size as f32,
+        let mut fft_buf = vec![Complex32::new(0.0, 0.0); window.size];
+        let mut spectrum = vec![0.0f32; window.size / 2];
+        let mut out = vec![0.0f32; SPIRAL_BIN_COUNT];
+        fill_column(
+            window,
+            &self.history,
+            self.sample_rate,
             self.reference_hz,
-        )
+            &mut fft_buf,
+            &mut spectrum,
+            &mut out,
+        );
+        out
     }
 
     /// The delay this frontend owes a candidate at `hz`: half its window, in seconds.
@@ -372,8 +406,50 @@ fn blend_weights(windows: &[AnalysisWindow], reference_hz: f32) -> Vec<Vec<(Wind
         .collect()
 }
 
-/// Read a linear-frequency `spectrum` (bins `hz_per_bin` apart) at every bin of the shared
-/// log-frequency grid, by linear interpolation.
+/// One rung's **raw** magnitude column into `out`, allocating nothing: window the history,
+/// FFT it in `fft_buf` in place, and resample the magnitudes onto the shared log grid.
+///
+/// Free rather than a method so [`RtSwipe::frame`] can call it while holding disjoint mutable
+/// borrows of its scratch fields — a `&self` method would borrow all of `self` and clash.
+/// `out.len()` is [`SPIRAL_BIN_COUNT`]; `fft_buf.len()` is `window.size`.
+fn fill_column(
+    window: &AnalysisWindow,
+    history: &[f32],
+    sample_rate: f32,
+    reference_hz: f32,
+    fft_buf: &mut [Complex32],
+    spectrum: &mut [f32],
+    out: &mut [f32],
+) {
+    // Right-aligned: the window ends at the newest sample. This is RT-SWIPE's one structural
+    // change to SWIPE, and the reason the delay is N/2 rather than N_max/2.
+    let start = history.len() - window.size;
+    for (slot, (sample, taper)) in fft_buf.iter_mut().zip(history[start..].iter().zip(&window.taper)) {
+        *slot = Complex32::new(sample * taper, 0.0);
+    }
+    window.fft.process(fft_buf);
+    // |X|, not |X|², materialized **once** into `spectrum` (a low bin of the grid reads the
+    // same FFT bin dozens of times, so norming on demand would recompute a `sqrt` per read —
+    // measured 40 % slower). The display's FFT reaches for `norm_sqr` because a waterfall wants
+    // power; SWIPE warps the *magnitude*, with √ (`sqrt_warp`), and the thesis picks that
+    // exponent on a worked example that is this app's exact signal — handing the kernel power
+    // would be the √-warp cancelling into no warping at all.
+    for (mag, bin) in spectrum.iter_mut().zip(&fft_buf[..window.size / 2]) {
+        *mag = bin.norm();
+    }
+    resample_to_log_grid(spectrum, sample_rate / window.size as f32, reference_hz, out);
+}
+
+/// √-warp `src` into `dst` (both [`SPIRAL_BIN_COUNT`] long) — the in-place form of
+/// `swipe::sqrt_warp`, so a frame reuses `dst` instead of allocating.
+fn sqrt_warp_into(src: &[f32], dst: &mut [f32]) {
+    for (d, s) in dst.iter_mut().zip(src) {
+        *d = s.max(0.0).sqrt();
+    }
+}
+
+/// Read a linear-frequency `spectrum` (`|X|`, bins `hz_per_bin` apart) at every bin of the
+/// shared log-frequency grid, by linear interpolation, into `out`.
 ///
 /// A **gather**, deliberately, where `analysis_math::splat_linear` scatters. The scatter is
 /// right when the source is dense and the destination coarse (the display's spiral: many FFT
@@ -382,29 +458,29 @@ fn blend_weights(windows: &[AnalysisWindow], reference_hz: f32) -> Vec<Vec<(Wind
 /// so scattering would leave nine of every ten low bins empty and hand the kernel a comb of
 /// holes to correlate against. Camacho interpolates for this reason (`swipep.m` splines it;
 /// linear is the conservative choice, and the rounding the rest of this app's grids use).
-fn resample_to_log_grid(spectrum: &[f32], hz_per_bin: f32, reference_hz: f32) -> Vec<f32> {
-    (0..SPIRAL_BIN_COUNT)
-        .map(|bin| {
-            let midi = MIN_MIDI + bin as f32 / BINS_PER_SEMITONE;
-            let position = midi_to_hz(midi, reference_hz) / hz_per_bin;
-            let left = position.floor() as usize;
-            // Guards the grid against a rung that cannot reach its top. Unreachable for the
-            // shipped ladder — even the shortest rung's Nyquist is 22 kHz against a grid that
-            // stops at 4186 Hz — but the two extents are independent facts, and reading off
-            // the end of one of them is not the failure to leave to chance.
-            if left + 1 >= spectrum.len() {
-                return 0.0;
-            }
-            let fraction = position - left as f32;
-            spectrum[left] * (1.0 - fraction) + spectrum[left + 1] * fraction
-        })
-        .collect()
+fn resample_to_log_grid(spectrum: &[f32], hz_per_bin: f32, reference_hz: f32, out: &mut [f32]) {
+    for (bin, slot) in out.iter_mut().enumerate() {
+        let midi = MIN_MIDI + bin as f32 / BINS_PER_SEMITONE;
+        let position = midi_to_hz(midi, reference_hz) / hz_per_bin;
+        let left = position.floor() as usize;
+        // Guards the grid against a rung that cannot reach its top. Unreachable for the shipped
+        // ladder — even the shortest rung's Nyquist is 22 kHz against a grid that stops at
+        // 4186 Hz — but the two extents are independent facts, and reading off the end of one
+        // of them is not the failure to leave to chance.
+        if left + 1 >= spectrum.len() {
+            *slot = 0.0;
+            continue;
+        }
+        let fraction = position - left as f32;
+        *slot = spectrum[left] * (1.0 - fraction) + spectrum[left + 1] * fraction;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::f32::consts::TAU;
 
+    use super::super::swipe::sqrt_warp;
     use super::*;
 
     /// A tone with `partials` relative amplitudes, at `hz`.
