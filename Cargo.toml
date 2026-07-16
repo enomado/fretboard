@@ -33,6 +33,10 @@ web-time = "*"
 # engines (`audio::dsp`/`audio::core`), so these are all-target deps. cpal/ringbuf
 # stay native-only: the browser captures via Web Audio, not cpal.
 rustfft = "*"
+# Real-input FFT for the RT-SWIPE frontend (`audio::dsp::rtswipe`): half the
+# butterflies of a full complex FFT on a real signal, same output bins. Wraps the
+# same `rustfft` (^6, unifies with the pin above → one `num_complex`, one `Complex32`).
+realfft = "*"
 # Fork (PR jhartquist/resonators#6): adds OnePoleBank — the phasor-free, self-
 # stabilizing core (~1.4–1.7× faster) plus an f64 de-rotation fix that keeps
 # phase()/complex() accurate over a long session. We drive the snail's Δφ

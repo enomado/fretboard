@@ -45,12 +45,12 @@
 
 use std::sync::Arc;
 
+use realfft::{
+    RealFftPlanner,
+    RealToComplex,
+};
 use resonators::midi_to_hz;
 use rustfft::num_complex::Complex32;
-use rustfft::{
-    Fft,
-    FftPlanner,
-};
 
 use super::analysis_math::{
     NOTE_BUCKET_MIN_MIDI,
@@ -102,7 +102,11 @@ struct AnalysisWindow {
     optimal_hz: f32,
     /// Cached because the ladder is fixed: 32 KB of tables against ~32k cosines per frame.
     taper:      Vec<f32>,
-    fft:        Arc<dyn Fft<f32>>,
+    /// Real-input FFT. On a real signal it does about half the butterflies of the full complex
+    /// FFT this used to plan, and its output bins 0..=N/2 equal that FFT's bins 0..=N/2 to
+    /// rounding — so the magnitude column the kernel reads is unchanged, and nothing downstream
+    /// (RPA, octave errors) moves. It is a throughput fix, not an accuracy one.
+    fft:        Arc<dyn RealToComplex<f32>>,
 }
 
 pub(crate) struct RtSwipe {
@@ -123,18 +127,21 @@ pub(crate) struct RtSwipe {
     // Reused scratch, so [`Self::frame`] allocates nothing on the audio thread beyond the
     // one frame it returns (its curve, and the winner's column). This is a real-time-safety
     // fix, not just a speed one: `malloc` can block on a global lock, so per-frame allocation
-    // on the audio path is a *jitter* hazard regardless of its average cost. One buffer per
-    // window (FFT in place), plus the per-rung grid columns the blend reads.
-    scratch_fft:      Vec<Vec<Complex32>>, // one per window, `window.size` long
-    scratch_spectrum: Vec<Vec<f32>>,       // one per window, `window.size / 2` long (`|X|`)
-    scratch_columns:  Vec<Vec<f32>>,       // one per window, `SPIRAL_BIN_COUNT` long (raw)
-    scratch_warped:   Vec<Vec<f32>>,       // one per window, `SPIRAL_BIN_COUNT` long (√-warped)
-    scratch_norms:    Vec<f32>,            // one per window
+    // on the audio path is a *jitter* hazard regardless of its average cost. Per window: a real
+    // input buffer, the FFT's complex output, and the FFT's own scratch (a real FFT is not an
+    // in-place transform); plus the per-rung grid columns the blend reads.
+    scratch_input:    Vec<Vec<f32>>, // one per window, `window.size` (windowed real input)
+    scratch_fft_out:  Vec<Vec<Complex32>>, // one per window, `window.size / 2 + 1` (DC..Nyquist)
+    scratch_fft_work: Vec<Vec<Complex32>>, // one per window, the FFT's own scratch (`get_scratch_len`)
+    scratch_spectrum: Vec<Vec<f32>>, // one per window, `window.size / 2` long (`|X|`)
+    scratch_columns:  Vec<Vec<f32>>, // one per window, `SPIRAL_BIN_COUNT` long (raw)
+    scratch_warped:   Vec<Vec<f32>>, // one per window, `SPIRAL_BIN_COUNT` long (√-warped)
+    scratch_norms:    Vec<f32>,      // one per window
 }
 
 impl RtSwipe {
     pub(crate) fn new(sample_rate: f32, reference_hz: f32) -> Self {
-        let mut planner = FftPlanner::new();
+        let mut planner = RealFftPlanner::<f32>::new();
         let windows: Vec<AnalysisWindow> = window_ladder(sample_rate, reference_hz)
             .into_iter()
             .map(|size| {
@@ -149,9 +156,17 @@ impl RtSwipe {
 
         let longest = windows.iter().map(|window| window.size).max().unwrap();
         let rungs = windows.len();
-        let scratch_fft = windows
+        // The real FFT's own vector shapes: `make_output_vec` is N/2+1, `make_scratch_vec` is
+        // `get_scratch_len`. Asking the plan rather than hardcoding keeps this correct if the
+        // backend's scratch needs ever change.
+        let scratch_input = windows.iter().map(|window| vec![0.0f32; window.size]).collect();
+        let scratch_fft_out = windows
             .iter()
-            .map(|window| vec![Complex32::new(0.0, 0.0); window.size])
+            .map(|window| window.fft.make_output_vec())
+            .collect();
+        let scratch_fft_work = windows
+            .iter()
+            .map(|window| window.fft.make_scratch_vec())
             .collect();
         let scratch_spectrum = windows
             .iter()
@@ -166,7 +181,9 @@ impl RtSwipe {
             lambda: blend_weights(&windows, reference_hz),
             kernel: SwipeKernel::new(BINS_PER_SEMITONE),
             windows,
-            scratch_fft,
+            scratch_input,
+            scratch_fft_out,
+            scratch_fft_work,
             scratch_spectrum,
             scratch_columns: vec![vec![0.0; SPIRAL_BIN_COUNT]; rungs],
             scratch_warped: vec![vec![0.0; SPIRAL_BIN_COUNT]; rungs],
@@ -202,7 +219,9 @@ impl RtSwipe {
                 &self.history,
                 self.sample_rate,
                 self.reference_hz,
-                &mut self.scratch_fft[i],
+                &mut self.scratch_input[i],
+                &mut self.scratch_fft_out[i],
+                &mut self.scratch_fft_work[i],
                 &mut self.scratch_spectrum[i],
                 &mut self.scratch_columns[i],
             );
@@ -307,7 +326,9 @@ impl RtSwipe {
     /// the tests that read a single rung; [`Self::frame`] uses [`fill_column`] into scratch.
     #[cfg(test)]
     fn column(&self, window: &AnalysisWindow) -> Vec<f32> {
-        let mut fft_buf = vec![Complex32::new(0.0, 0.0); window.size];
+        let mut input = vec![0.0f32; window.size];
+        let mut fft_out = window.fft.make_output_vec();
+        let mut work = window.fft.make_scratch_vec();
         let mut spectrum = vec![0.0f32; window.size / 2];
         let mut out = vec![0.0f32; SPIRAL_BIN_COUNT];
         fill_column(
@@ -315,7 +336,9 @@ impl RtSwipe {
             &self.history,
             self.sample_rate,
             self.reference_hz,
-            &mut fft_buf,
+            &mut input,
+            &mut fft_out,
+            &mut work,
             &mut spectrum,
             &mut out,
         );
@@ -406,35 +429,47 @@ fn blend_weights(windows: &[AnalysisWindow], reference_hz: f32) -> Vec<Vec<(Wind
         .collect()
 }
 
-/// One rung's **raw** magnitude column into `out`, allocating nothing: window the history,
-/// FFT it in `fft_buf` in place, and resample the magnitudes onto the shared log grid.
+/// One rung's **raw** magnitude column into `out`, allocating nothing: window the history into
+/// `input`, real-FFT it into `fft_out` (with `work` as the transform's scratch), and resample
+/// the magnitudes onto the shared log grid.
 ///
 /// Free rather than a method so [`RtSwipe::frame`] can call it while holding disjoint mutable
 /// borrows of its scratch fields — a `&self` method would borrow all of `self` and clash.
-/// `out.len()` is [`SPIRAL_BIN_COUNT`]; `fft_buf.len()` is `window.size`.
+/// `out.len()` is [`SPIRAL_BIN_COUNT`]; `input.len()` is `window.size`, `fft_out.len()` is
+/// `window.size / 2 + 1`.
 fn fill_column(
     window: &AnalysisWindow,
     history: &[f32],
     sample_rate: f32,
     reference_hz: f32,
-    fft_buf: &mut [Complex32],
+    input: &mut [f32],
+    fft_out: &mut [Complex32],
+    work: &mut [Complex32],
     spectrum: &mut [f32],
     out: &mut [f32],
 ) {
     // Right-aligned: the window ends at the newest sample. This is RT-SWIPE's one structural
     // change to SWIPE, and the reason the delay is N/2 rather than N_max/2.
     let start = history.len() - window.size;
-    for (slot, (sample, taper)) in fft_buf.iter_mut().zip(history[start..].iter().zip(&window.taper)) {
-        *slot = Complex32::new(sample * taper, 0.0);
+    for (slot, (sample, taper)) in input.iter_mut().zip(history[start..].iter().zip(&window.taper)) {
+        *slot = sample * taper;
     }
-    window.fft.process(fft_buf);
+    // Real-input FFT: `input` is N reals, `fft_out` the N/2+1 bins DC..Nyquist. About half the
+    // butterflies of the complex FFT this replaced, because a real signal's spectrum is
+    // conjugate-symmetric and the upper half was always redundant. `process_with_scratch` takes
+    // `work` from the caller so the audio thread still allocates nothing (see the fields). The
+    // `unwrap` is contractual: the only errors are length mismatches, and the lengths are the
+    // plan's own `make_*_vec` sizes, fixed at construction.
+    window.fft.process_with_scratch(input, fft_out, work).unwrap();
     // |X|, not |X|², materialized **once** into `spectrum` (a low bin of the grid reads the
     // same FFT bin dozens of times, so norming on demand would recompute a `sqrt` per read —
-    // measured 40 % slower). The display's FFT reaches for `norm_sqr` because a waterfall wants
-    // power; SWIPE warps the *magnitude*, with √ (`sqrt_warp`), and the thesis picks that
-    // exponent on a worked example that is this app's exact signal — handing the kernel power
-    // would be the √-warp cancelling into no warping at all.
-    for (mag, bin) in spectrum.iter_mut().zip(&fft_buf[..window.size / 2]) {
+    // measured 40 % slower). Only the first N/2 bins are taken, exactly as the complex path took
+    // `&fft_buf[..N/2]`; the extra Nyquist bin the real FFT also returns sits above the grid's
+    // top (4186 Hz) and is never resampled. The display's FFT reaches for `norm_sqr` because a
+    // waterfall wants power; SWIPE warps the *magnitude*, with √ (`sqrt_warp`), and the thesis
+    // picks that exponent on a worked example that is this app's exact signal — handing the
+    // kernel power would be the √-warp cancelling into no warping at all.
+    for (mag, bin) in spectrum.iter_mut().zip(&fft_out[..window.size / 2]) {
         *mag = bin.norm();
     }
     resample_to_log_grid(spectrum, sample_rate / window.size as f32, reference_hz, out);
@@ -512,6 +547,68 @@ mod tests {
             fed += hop;
         }
         rtswipe.frame().unwrap()
+    }
+
+    /// **Real-FFT ≡ complex-FFT, bin for bin** — the golden check the whole optimization
+    /// rests on. Its only claim is that it changes throughput and nothing else, so this pins
+    /// the shipped column to the exact path it replaced: the same right-aligned windowed
+    /// history through a **full complex FFT** (rustfft directly, an independent implementation
+    /// — the reference is *run*, not asserted from), the same `|X|` of the first N/2 bins, the
+    /// same resample. If the two ever diverge past FFT rounding, "non-lossy" is false and every
+    /// RPA/octave number measured after this commit is suspect — so the tolerance is a part in
+    /// 1e4 of the column's own peak, not a loose "same note".
+    #[test]
+    fn the_real_fft_column_equals_the_complex_fft() {
+        use rustfft::FftPlanner;
+
+        let sample_rate = 48_000.0f32;
+        let mut driven = RtSwipe::new(sample_rate, 440.0);
+        // A real, harmonically rich tone so every rung's column carries something across the
+        // grid — a divergence that only bit near-null bins would hide behind a pure sinusoid.
+        let samples = tone(233.0, sample_rate, 0.8, &[1.0, 0.7, 0.5, 0.3, 0.2, 0.15]);
+        driven.process_samples(&samples);
+
+        let mut planner = FftPlanner::<f32>::new();
+        println!("\n=== real-FFT column vs full complex FFT, per rung ===");
+        for window in &driven.windows {
+            // The reference: the path this commit deleted. Full complex FFT of the same
+            // right-aligned windowed history, magnitudes of the first N/2 bins, same resample.
+            let start = driven.history.len() - window.size;
+            let mut buf: Vec<Complex32> = driven.history[start..]
+                .iter()
+                .zip(&window.taper)
+                .map(|(sample, taper)| Complex32::new(sample * taper, 0.0))
+                .collect();
+            planner.plan_fft_forward(window.size).process(&mut buf);
+            let mut spectrum = vec![0.0f32; window.size / 2];
+            for (mag, bin) in spectrum.iter_mut().zip(&buf[..window.size / 2]) {
+                *mag = bin.norm();
+            }
+            let mut reference = vec![0.0f32; SPIRAL_BIN_COUNT];
+            resample_to_log_grid(&spectrum, sample_rate / window.size as f32, 440.0, &mut reference);
+
+            let shipped = driven.column(window);
+            // Absolute worst divergence measured against the column's peak: the two transforms
+            // recombine their butterflies in a different order, so their bits differ, but the
+            // magnitude of any bin must agree to a part in 1e4 of the largest bin.
+            let peak = reference.iter().cloned().fold(0.0f32, f32::max).max(1e-6);
+            let worst = reference
+                .iter()
+                .zip(&shipped)
+                .map(|(r, s)| (r - s).abs())
+                .fold(0.0f32, f32::max);
+            println!(
+                "  N={:>6}  peak {peak:>10.2}  worst |Δ| {worst:.3e}  ({:.1e} rel)",
+                window.size,
+                worst / peak
+            );
+            assert!(
+                worst < 1e-4 * peak,
+                "N={}: real-FFT column diverges from the complex FFT by {worst:.3e} \
+                 against peak {peak:.3e} — the optimization is not non-lossy",
+                window.size
+            );
+        }
     }
 
     /// The ladder is what the kickstart predicted, at both rates that matter, and it is
@@ -736,6 +833,76 @@ mod tests {
                 "MIDI {midi_truth} ({hz:.1} Hz) read as {midi:.2}"
             );
         }
+    }
+
+    /// **What real-FFT bought, measured** — printed like the delay probe, not asserted, because
+    /// a timing is machine-specific and a debug build's is noise (run `--release`). Times one
+    /// ladder of the shipped `process_with_scratch` against the full complex FFT it replaced,
+    /// each rung including its identical windowing copy, so the ratio is the FFT's own share.
+    #[test]
+    #[ignore = "timing probe — run with --release --ignored --nocapture"]
+    fn what_did_the_real_fft_buy() {
+        use std::time::Instant;
+
+        use rustfft::FftPlanner;
+
+        let sample_rate = 48_000.0f32;
+        let mut driven = RtSwipe::new(sample_rate, 440.0);
+        driven.process_samples(&tone(233.0, sample_rate, 0.8, &[1.0, 0.7, 0.5, 0.3]));
+        let start = driven.history.len();
+
+        let mut complex_planner = FftPlanner::<f32>::new();
+        const ITERS: u32 = 4000;
+        println!("\n=== FFT cost per rung: full-complex (deleted) vs real (shipped), {ITERS}× ===");
+        println!("       N      complex        real     speedup");
+        let (mut sum_complex, mut sum_real) = (0u128, 0u128);
+        for window in &driven.windows {
+            let from = start - window.size;
+
+            let complex = complex_planner.plan_fft_forward(window.size);
+            let mut cbuf = vec![Complex32::new(0.0, 0.0); window.size];
+            let t = Instant::now();
+            for _ in 0..ITERS {
+                for (slot, (s, taper)) in cbuf
+                    .iter_mut()
+                    .zip(driven.history[from..].iter().zip(&window.taper))
+                {
+                    *slot = Complex32::new(s * taper, 0.0);
+                }
+                complex.process(&mut cbuf);
+            }
+            let c_ns = t.elapsed().as_nanos() / ITERS as u128;
+
+            let mut input = vec![0.0f32; window.size];
+            let mut out = window.fft.make_output_vec();
+            let mut work = window.fft.make_scratch_vec();
+            let t = Instant::now();
+            for _ in 0..ITERS {
+                for (slot, (s, taper)) in input
+                    .iter_mut()
+                    .zip(driven.history[from..].iter().zip(&window.taper))
+                {
+                    *slot = s * taper;
+                }
+                window
+                    .fft
+                    .process_with_scratch(&mut input, &mut out, &mut work)
+                    .unwrap();
+            }
+            let r_ns = t.elapsed().as_nanos() / ITERS as u128;
+
+            sum_complex += c_ns;
+            sum_real += r_ns;
+            println!(
+                "  {:>6}  {c_ns:>8} ns  {r_ns:>8} ns  {:.2}×",
+                window.size,
+                c_ns as f32 / r_ns as f32
+            );
+        }
+        println!(
+            "  ladder  {sum_complex:>8} ns  {sum_real:>8} ns  {:.2}×  (all eight, one frame)",
+            sum_complex as f32 / sum_real as f32
+        );
     }
 
     /// The delay is pitch-dependent and this is the shape of it — the number R3 would trade
