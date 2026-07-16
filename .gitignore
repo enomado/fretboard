@@ -3,3 +3,11 @@
 # f0-annotated corpora for the pitch benchmark (`bin/pitch_bench`). Gigabytes of
 # third-party audio: fetched on demand, never committed. See docs/pitch_benchmark.md.
 /datasets
+
+# Assistant working memory — lives in the repo folder (see CLAUDE.md) but is kept
+# local only, never published.
+/memory
+
+# Real violin recordings — ground truth for the pitch tests (read by
+# `audio::dsp::swipe::tests::real_violin_g_probe`). Kept locally; not published.
+/testdata/*.wav
