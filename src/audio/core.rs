@@ -55,6 +55,7 @@ use crate::audio::types::{
     MelodyHistory,
     NoteLine,
     PitchFrontend,
+    SalienceHeat,
     TunerReading,
 };
 use crate::core_types::note::AccidentalStyle;
@@ -341,8 +342,11 @@ impl ResonatorPipeline {
             shared,
             self.analyzer
                 .snapshot(analysis_settings.resonator.reassign, analysis_settings.accidental),
-            rtswipe_frame,
-            frontend,
+            FrontendFrame {
+                source: rtswipe_frame,
+                frontend,
+                gamma: analysis_settings.resonator.gamma,
+            },
             analysis_settings.resonator.history,
             level,
             self.samples_seen as f64 / self.sample_rate as f64,
@@ -627,19 +631,34 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
 /// `now_seconds` is the **audio** clock, off the sample count. This is the only place
 /// allowed to drive `melody`/`segmenter`, because both count their timescales in the
 /// bank frames this function publishes.
-// `melody_override`: the RT-SWIPE frame to decode the note from, or `None` to use the bank's
-// own (`snapshot.salience`). `Some` only when `frontend` is `RtSwipe`. The frontend tag rides
-// alongside because it is what selects the β (`melody::salience_beta`), not inferable from the
-// frame — the two frontends' curves are on different scales (see `dsp::rtswipe`).
+/// The note-frontend inputs for one publish, kept together because they only make sense
+/// together: which frame decides the note, which detector it came from, and the display
+/// `gamma` its salience layer is drawn with.
+struct FrontendFrame {
+    /// The RT-SWIPE frame to decode the note from, or `None` to use the bank's own
+    /// (`snapshot.salience`). `Some` only when `frontend` is `RtSwipe`.
+    source:   Option<SalienceFrame>,
+    /// Which detector `source` is — it selects the β (`melody::salience_beta`), not inferable
+    /// from the frame, because the two frontends' curves are on different scales (see
+    /// `dsp::rtswipe`).
+    frontend: PitchFrontend,
+    /// Display contrast for the salience layer, the same knob the spectrum column gets.
+    gamma:    f32,
+}
+
 fn publish_resonator_snapshot(
     shared: &Arc<Mutex<SharedState>>,
     snapshot: ResonatorSnapshot,
-    melody_override: Option<SalienceFrame>,
-    frontend: PitchFrontend,
+    front: FrontendFrame,
     history_len: usize,
     level: f32,
     now_seconds: f64,
 ) {
+    let FrontendFrame {
+        source: melody_override,
+        frontend,
+        gamma,
+    } = front;
     if let Ok(mut state) = shared.lock() {
         state.resonator_spectrum = snapshot.spectrum;
         state.resonator_labels = snapshot.note_labels;
@@ -660,6 +679,20 @@ fn publish_resonator_snapshot(
         // regardless — it is the bank's reading for the tuner and the octave cross-check, not
         // the melody's decision.
         let melody_source = melody_override.as_ref().or(snapshot.salience.as_ref());
+        // The roll's salience layer, from the frame that actually decided the note — so it
+        // mirrors the *chosen* detector, not always the bank. Built here rather than in the
+        // snapshot (which only ever knows the bank) and on the frame's **own** grid: the bank
+        // and RT-SWIPE frames disagree about it (a user-narrowed bank vs the fixed pitch
+        // domain), and painting one on the other's grid lands the curve at the wrong pitch.
+        // Ungated on purpose — the display gate is the panel's (`HEAT_LEVEL_GATE`), the same
+        // rule the raw `heat` above is left ungated for. See `SalienceHeat`.
+        let salience_heat = melody_source.map(|frame| {
+            SalienceHeat {
+                data:              frame.display_heat(gamma),
+                min_midi:          frame.min_midi(),
+                bins_per_semitone: frame.bins_per_semitone(),
+            }
+        });
         let bank = (level >= MELODY_LEVEL_GATE).then_some(melody_source).flatten();
         // The melody line's whole latency win happens here: the bank publishes every
         // ~16 ms, so the played note is refreshed at the bank's cadence instead of
@@ -702,7 +735,7 @@ fn publish_resonator_snapshot(
             // Raw, exactly like `heat` above: the display gate is the panel's
             // (`HEAT_LEVEL_GATE`), not the engine's. `MELODY_LEVEL_GATE` gated the copy the
             // *decoder* saw and has no business deciding a picture.
-            salience: snapshot.salience_heat,
+            salience: salience_heat,
         });
         push_limited_history(
             &mut state.resonator_waterfall,
@@ -937,7 +970,10 @@ mod tests {
         println!("  audio fed          : {:.1} s", samples.len() as f32 / sr);
         println!("  frames (last ~2 s) : {}", frames.len());
         println!("  ...with a pitch    : {voiced}");
-        assert!(!frames.is_empty(), "no frames — the pipeline stalled or the thread died");
+        assert!(
+            !frames.is_empty(),
+            "no frames — the pipeline stalled or the thread died"
+        );
         assert!(voiced > 0, "RT-SWIPE decided no pitch on a real violin, ever");
     }
 
@@ -976,6 +1012,56 @@ mod tests {
             .as_ref()
             .is_some_and(|r| !r.resonator_spectrum.is_empty());
         assert!(has_display, "the bank stopped driving the display under RT-SWIPE");
+    }
+
+    /// REGRESSION: the roll's salience layer mirrors the **frontend that decoded the note**,
+    /// on that frontend's **own grid** — not the bank's.
+    ///
+    /// The bug this pins: the published `MelodyFrame::salience` used to be the bank's
+    /// pre-baked heat unconditionally, so with RT-SWIPE selected the layer under the line was
+    /// the *bank's* evidence on the *bank's* grid — a mirror of a detector that did not make
+    /// the decision. Invisible while the bank spans the whole pitch domain (both grids are
+    /// then 12..108 @ 8), which is why it needs a **narrowed** bank to surface: the bank's
+    /// grid then starts at MIDI 36, RT-SWIPE's still at 12, and painting one on the other
+    /// lands the whole curve almost two octaves off (`ui::pianoroll::draw_heat`).
+    #[test]
+    fn the_salience_layer_carries_the_rtswipe_grid_not_the_banks() {
+        use crate::audio::dsp::analysis_math::{
+            NOTE_BUCKET_MIN_MIDI,
+            SPIRAL_BIN_COUNT,
+        };
+        use crate::core_types::pitch::PNote;
+
+        let sr = 48_000.0f32;
+        let mut rig = Rig::new(sr);
+        {
+            let mut s = rig.settings.lock().unwrap();
+            s.resonator.frontend = PitchFrontend::RtSwipe;
+            // Narrow the bank so its grid (min 36) cannot be mistaken for RT-SWIPE's (min 12).
+            s.resonator.min_midi = PNote::new(36).unwrap();
+            s.resonator.max_midi = PNote::new(96).unwrap();
+        }
+        rig.feed(&violin_tone(440.0, sr, (sr * 0.4) as usize), sr);
+
+        let salience = rig
+            .melody_since(None)
+            .into_iter()
+            .rev()
+            .find_map(|f| f.salience)
+            .expect("no scored salience frame under RT-SWIPE");
+
+        // The RT-SWIPE grid, verbatim — not the narrowed bank's (36, span 60 → 481 bins).
+        assert_eq!(
+            salience.min_midi, NOTE_BUCKET_MIN_MIDI as f32,
+            "salience layer took the bank's min_midi, not RT-SWIPE's — it is mirroring the \
+             wrong detector's grid"
+        );
+        assert_eq!(salience.bins_per_semitone, 8.0);
+        assert_eq!(
+            salience.data.len(),
+            SPIRAL_BIN_COUNT,
+            "salience length is the bank column's, not RT-SWIPE's fixed grid"
+        );
     }
 
     /// REGRESSION: the melody history is published on the **audio** clock, and a

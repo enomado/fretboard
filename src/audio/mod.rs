@@ -41,6 +41,7 @@ pub use types::{
     ReplayStatus,
     ResonatorReading,
     ResonatorSettings,
+    SalienceHeat,
     StaffNote,
     TakeOnDisk,
     TakeReport,

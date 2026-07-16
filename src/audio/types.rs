@@ -115,9 +115,15 @@ pub struct MelodyFrame {
     /// The bank's heat column for this instant, raw: normalized to its own max, no
     /// octave decision, no silence gate. The ground truth, passed through untouched.
     pub heat:     Vec<f32>,
-    /// What SWIPE′ *scored* that same column at, per bin — the evidence [`Self::pitch`] was
-    /// decoded from. Same grid and same length as [`Self::heat`], so a panel swaps one for
-    /// the other; `None` for a column with no energy at all.
+    /// What SWIPE′ *scored* the note from, per bin — the evidence [`Self::pitch`] was decoded
+    /// from, on **its own** grid ([`SalienceHeat`]). `None` for a column with no energy at all.
+    ///
+    /// It mirrors whichever frontend decided the note: the bank's own salience, or RT-SWIPE's
+    /// when that is the chosen detector. Those two live on *different* grids — the bank's span
+    /// is a user slider, RT-SWIPE's is fixed at the app's pitch domain — so unlike the old
+    /// design this no longer borrows `heat`'s grid; it carries its own, and a panel places it
+    /// by that ([`SalienceHeat::min_midi`] / [`SalienceHeat::bins_per_semitone`]). Without it a
+    /// narrowed bank would paint the RT-SWIPE curve at the wrong pitch.
     ///
     /// **It is not a second ground truth, and must not be offered as one.** `heat` is an
     /// independent witness — the physical spectrum, which disagreeing with the line is
@@ -129,7 +135,24 @@ pub struct MelodyFrame {
     /// partials. That is SWIPE′ being honest rather than the layer being broken: the h=1
     /// lobe alone spans 71 bins (~9 semitones at 8 bins/semitone), which is the same
     /// low-contrast curve that made `melody::SALIENCE_BETA` necessary in the first place.
-    pub salience: Option<Vec<f32>>,
+    pub salience: Option<SalienceHeat>,
+}
+
+/// The salience display layer of one [`MelodyFrame`]: the curve plus the grid it lives on.
+///
+/// The grid is not decoration — it is the difference between the RT-SWIPE curve landing on
+/// its note and landing an octave off. `data[b]` is the salience at pitch `min_midi + b /
+/// bins_per_semitone`; that is the *only* correct reading of it, and it is carried rather than
+/// assumed because the two frontends that fill it disagree about the grid (see
+/// [`MelodyFrame::salience`]).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct SalienceHeat {
+    /// Salience per bin, normalized for display (the same `gamma` the spectrum column gets).
+    pub data:              Vec<f32>,
+    /// MIDI of bin 0.
+    pub min_midi:          f32,
+    /// Bins per semitone on this grid.
+    pub bins_per_semitone: f32,
 }
 
 /// How much melody history the **engine** keeps for the panels, in seconds.

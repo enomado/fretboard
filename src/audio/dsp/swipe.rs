@@ -44,7 +44,10 @@
 
 use std::f32::consts::TAU;
 
-use super::analysis_math::parabolic_tau;
+use super::analysis_math::{
+    normalize_bars,
+    parabolic_tau,
+};
 use super::pitch::{
     TRACKED_MAX_MIDI,
     TRACKED_MIN_MIDI,
@@ -359,6 +362,30 @@ impl SalienceFrame {
 
     pub(crate) fn bins_per_semitone(&self) -> f32 {
         self.bins_per_semitone
+    }
+
+    /// The low MIDI edge of this frame's grid — bin 0. Together with
+    /// [`Self::bins_per_semitone`] it is the full bin→pitch mapping a display layer needs to
+    /// paint the curve at the right height. The bank and RT-SWIPE frames live on *different*
+    /// grids (the bank's span is a user slider, RT-SWIPE's is fixed at the app's pitch
+    /// domain), so a layer that assumed one grid for both would paint the other at the wrong
+    /// pitch — which is exactly why this is carried per frame rather than read off the bank.
+    pub(crate) fn min_midi(&self) -> f32 {
+        self.min_midi
+    }
+
+    /// This frame as a **display layer**: the salience curve alone, zeroed outside the tracked
+    /// domain (see [`Self::curve_over_tracked`]) and then normalized with the display `gamma`,
+    /// so the pitch roll can swap it for the spectrum column and be comparing like with like.
+    ///
+    /// The one transform, in one place, for either frontend — the bank's snapshot and
+    /// RT-SWIPE's melody frame both reach the roll through this, so the contrast rule cannot
+    /// drift into two copies. The grid it belongs on is [`Self::min_midi`] /
+    /// [`Self::bins_per_semitone`]; a caller must carry those alongside the curve.
+    pub(crate) fn display_heat(&self, gamma: f32) -> Vec<f32> {
+        let mut curve = self.curve_over_tracked();
+        normalize_bars(&mut curve, gamma);
+        curve
     }
 
     /// Salience at a bin of *this* grid.

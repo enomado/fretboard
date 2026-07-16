@@ -75,8 +75,24 @@ pub struct RollColumn<'a> {
     /// The melody line's pitch here, or `None` for silence *or* a rejected octave
     /// slip (the engine decides both; the renderer draws a gap for either).
     pub pitch: Option<PitchPoint>,
-    /// The bank's energy per bin. **Empty** = draw nothing (a rest).
+    /// The layer's energy per bin. **Empty** = draw nothing (a rest).
     pub heat:  &'a [f32],
+    /// The grid [`Self::heat`] is painted on, or `None` to take it from the plot's bank
+    /// span (the spectrum layer's case — it *is* the bank). The salience layer carries
+    /// `Some`, because the detector it mirrors may live on a different grid than the bank
+    /// (see [`crate::audio::types::SalienceHeat`]); mapping its bins with the bank's span
+    /// would land the whole curve at the wrong pitch when the bank is narrowed.
+    pub grid:  Option<HeatGrid>,
+}
+
+/// The bin→pitch mapping of one heat column: `bin b` is at MIDI `min_midi + b /
+/// bins_per_semitone`. Carried per column so a layer can paint on its own grid rather
+/// than borrow the plot's — the one thing that lets the salience and spectrum layers
+/// disagree about resolution without one of them drawing at the wrong height.
+#[derive(Clone, Copy)]
+pub struct HeatGrid {
+    pub min_midi:          f32,
+    pub bins_per_semitone: f32,
 }
 
 /// Which slice of time the plot shows, how its ruler counts, and whether the past
@@ -556,9 +572,13 @@ fn mean_gap_s(columns: &[RollColumn<'_>]) -> f32 {
 /// `rect_filled` shapes — the whole grid is visible here (unlike the staff, which
 /// clips to five lines), so the cell count is high.
 ///
-/// Bin → pitch: the bank spans `res_min_midi..=res_max_midi`; bins-per-semitone is
-/// derived from a column's length (it changes with the reassignment toggle, so we
-/// read it rather than assume it), the same way the staff's waterfall does.
+/// Bin → pitch: a column paints on its own [`RollColumn::grid`] when it has one (the
+/// salience layer, whose detector may not share the bank's span). The spectrum layer
+/// carries no grid and falls back to the bank: it spans `res_min_midi..=res_max_midi`,
+/// and bins-per-semitone is derived from a column's length (it changes with the
+/// reassignment toggle, so we read it rather than assume it), the same way the staff's
+/// waterfall does. A per-column grid is what keeps a mid-history frontend switch — old
+/// bank columns beside fresh RT-SWIPE ones, two grids in one draw — honest.
 fn draw_heat(
     painter: &Painter,
     map: RollMapping,
@@ -575,7 +595,11 @@ fn draw_heat(
     if bin_count < 2 || res_max_midi <= res_min_midi {
         return;
     }
-    let bins_per_semitone = (bin_count - 1) as f32 / (res_max_midi - res_min_midi) as f32;
+    // The bank fallback, for columns with no grid of their own (the spectrum layer).
+    let bank_grid = HeatGrid {
+        min_midi:          res_min_midi as f32,
+        bins_per_semitone: (bin_count - 1) as f32 / (res_max_midi - res_min_midi) as f32,
+    };
     // A cell is one *frame*, so it is as wide as the gap between frames — measured,
     // not assumed: the bank's cadence is a user setting (8..80 ms) and the publish
     // jitters around it anyway. The mean is robust enough here (a dropped frame moves
@@ -584,7 +608,6 @@ fn draw_heat(
     // width, instead of its neighbour smearing across the missing time. +0.6 closes
     // the hairline seams fractional sizes leave.
     let cell_w = mean_gap_s(columns) * map.px_per_second + 0.6;
-    let cell_h = (map.px_per_semitone() / bins_per_semitone + 0.6).max(1.5);
 
     let mut mesh = Mesh::default();
     let uv = egui::epaint::WHITE_UV;
@@ -592,6 +615,11 @@ fn draw_heat(
         if column.heat.is_empty() {
             continue; // silent frame → gap
         }
+        // Each column on its own grid — the spectrum's is the bank's, salience carries
+        // its detector's. `cell_h` follows the grid too, so a finer grid draws thinner
+        // cells rather than the coarse bank spacing stretched over them.
+        let grid = column.grid.unwrap_or(bank_grid);
+        let cell_h = (map.px_per_semitone() / grid.bins_per_semitone + 0.6).max(1.5);
         let cx = map.x_of(column.age_s);
         // Older columns fade toward the far edge — but only where there is a "now" to
         // fade away from (see [`RollMode`]). Keyed off time, so the fade is a real
@@ -605,7 +633,7 @@ fn draw_heat(
             if value < HEAT_GATE {
                 continue;
             }
-            let midi = res_min_midi as f32 + bin as f32 / bins_per_semitone;
+            let midi = grid.min_midi + bin as f32 / grid.bins_per_semitone;
             let cy = map.y_of(midi);
             if cy < plot.top() || cy > plot.bottom() {
                 continue; // off the visible pitch window
@@ -724,6 +752,7 @@ mod tests {
             age_s,
             pitch: None,
             heat: &[],
+            grid: None,
         }
     }
 

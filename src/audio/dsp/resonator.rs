@@ -70,8 +70,8 @@ pub(crate) struct ResonatorViewSettings {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ResonatorSnapshot {
-    pub(crate) spectrum:      Vec<f32>,
-    pub(crate) note_labels:   Vec<String>,
+    pub(crate) spectrum:    Vec<f32>,
+    pub(crate) note_labels: Vec<String>,
     /// Fast played-note prior for this snapshot: `(fractional_midi, strength)` of
     /// the harmonic fundamental, or `None` when the bank is quiet. Rides to the UI
     /// on `TunerReading::fast_pitch`.
@@ -80,35 +80,18 @@ pub(crate) struct ResonatorSnapshot {
     /// on purpose even though [`Self::salience`] now supports a better one: `dsp::melody`
     /// borrows pYIN's octave to *check* the bank, and a bank reading that had already been
     /// smoothed against its own past would be a worse witness, not a better one.
-    pub(crate) fundamental:   Option<(f32, f32)>,
+    pub(crate) fundamental: Option<(f32, f32)>,
     /// The evidence behind [`Self::fundamental`] — the whole salience curve, for the
     /// consumer that decodes a *path* rather than a frame. `None` for a column with no
     /// energy at all.
     ///
     /// Deliberately not stored in `SharedState`: it is one frame's working material for
     /// `dsp::melody` — the `magnitudes` it carries for [`SalienceFrame::refine_on_partials`]
-    /// double its weight, and none of that is a panel's business. What a panel may draw is
-    /// [`Self::salience_heat`], which is the curve alone.
-    pub(crate) salience:      Option<SalienceFrame>,
-    /// [`Self::salience`] as a **display layer**: the curve alone, zeroed outside the
-    /// tracked domain and normalized exactly like [`Self::spectrum`], so the pitch roll can
-    /// swap one for the other and be comparing like with like.
-    ///
-    /// Separate from `salience` rather than derived at the panel because the normalization
-    /// is `dsp`'s (`normalize_bars`, and the same `gamma` the column it replaces gets) and
-    /// `audio::dsp` is private — a panel re-deriving it would be that contrast rule
-    /// implemented twice and drifting.
-    pub(crate) salience_heat: Option<Vec<f32>>,
-}
-
-/// [`ResonatorSnapshot::salience_heat`] from a scored frame: zero outside the domain, *then*
-/// normalize — see [`SalienceFrame::curve_over_tracked`] for why that order is not a detail.
-fn salience_heat(salience: Option<&SalienceFrame>, gamma: f32) -> Option<Vec<f32>> {
-    salience.map(|frame| {
-        let mut curve = frame.curve_over_tracked();
-        normalize_bars(&mut curve, gamma);
-        curve
-    })
+    /// double its weight, and none of that is a panel's business. The display layer a panel
+    /// may draw is [`SalienceFrame::display_heat`] — built by the publisher from whichever
+    /// frame *decoded the note* (bank or RT-SWIPE), not always this one, which is why the
+    /// snapshot no longer carries a pre-baked heat of its own.
+    pub(crate) salience:    Option<SalienceFrame>,
 }
 
 #[derive(Debug)]
@@ -359,7 +342,6 @@ fn resonator_snapshot(
             spectrum,
             note_labels: settings.note_labels(style),
             fundamental,
-            salience_heat: salience_heat(salience.as_ref(), settings.gamma),
             salience,
         };
     }
@@ -410,7 +392,6 @@ fn resonator_snapshot(
         spectrum,
         note_labels: settings.note_labels(style),
         fundamental,
-        salience_heat: salience_heat(salience.as_ref(), settings.gamma),
         salience,
     }
 }

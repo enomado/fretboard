@@ -38,6 +38,7 @@ use crate::audio::{
 };
 use crate::ui::pianoroll::{
     self,
+    HeatGrid,
     PitchPoint,
     RollColumn,
     RollMode,
@@ -334,6 +335,38 @@ pub(super) fn columns_of<'a>(
 ) -> Vec<RollColumn<'a>> {
     frames
         .map(|frame| {
+            // Both layers are normalized to their own column's max upstream, so both need
+            // the same silence gate for the same reason — see [`HEAT_LEVEL_GATE`]. A quiet
+            // salience column is room noise scored and stretched to full scale, which paints
+            // the rests just as convincingly as a quiet spectrum does.
+            //
+            // The grid rides alongside the data: the spectrum layer *is* the bank, so it has
+            // none of its own and the renderer maps it on the plot's bank span; salience
+            // carries its detector's grid, which need not be the bank's (see `SalienceHeat`).
+            let (heat, grid): (&[f32], Option<HeatGrid>) = if frame.level >= HEAT_LEVEL_GATE {
+                match layer {
+                    RollLayer::Spectrum => (frame.heat.as_slice(), None),
+                    // `None` salience = a column with no energy to score at all, which is
+                    // the same picture as a gated one: a gap. Nothing is lost by folding
+                    // them together — neither has evidence in it.
+                    RollLayer::Salience => {
+                        match &frame.salience {
+                            Some(s) => {
+                                (
+                                    s.data.as_slice(),
+                                    Some(HeatGrid {
+                                        min_midi:          s.min_midi,
+                                        bins_per_semitone: s.bins_per_semitone,
+                                    }),
+                                )
+                            }
+                            None => (&[], None),
+                        }
+                    }
+                }
+            } else {
+                (&[], None)
+            };
             RollColumn {
                 age_s: (playhead_t - frame.t) as f32,
                 pitch: frame.pitch.map(|midi_f| {
@@ -342,22 +375,8 @@ pub(super) fn columns_of<'a>(
                         level: frame.level,
                     }
                 }),
-                // Both layers are normalized to their own column's max upstream, so
-                // both need the same silence gate for the same reason — see
-                // [`HEAT_LEVEL_GATE`]. A quiet salience column is room noise scored
-                // and stretched to full scale, which paints the rests just as
-                // convincingly as a quiet spectrum does.
-                heat:  if frame.level >= HEAT_LEVEL_GATE {
-                    match layer {
-                        RollLayer::Spectrum => frame.heat.as_slice(),
-                        // `None` = a column with no energy to score at all, which is
-                        // the same picture as a gated one: a gap. Nothing is lost by
-                        // folding them together — neither has evidence in it.
-                        RollLayer::Salience => frame.salience.as_deref().unwrap_or(&[]),
-                    }
-                } else {
-                    &[]
-                },
+                heat,
+                grid,
             }
         })
         .collect()
@@ -464,6 +483,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::SalienceHeat;
 
     /// The bank's default publish cadence (`ResonatorSettings::update_ms` = 16 ms).
     const BANK_CADENCE_S: f64 = 0.016;
@@ -506,15 +526,22 @@ mod tests {
 
     /// The toggle swaps the layer, and both layers obey the same silence gate.
     ///
-    /// Worth a test despite looking like a `match`: the two layers are the *same length on
-    /// the same grid* by design, so swapping them is invisible to the type system and a
-    /// crossed wire would paint a plausible field of the wrong quantity — the failure would
-    /// read as "SWIPE′ looks a lot like the spectrum", which is a conclusion, not a bug
-    /// report. The gate has to be repeated per layer for the same reason it exists at all:
-    /// both are normalized to their own column's max, so both turn room noise into a
-    /// full-scale wash across the rests.
+    /// Worth a test despite looking like a `match`: swapping the layers is invisible to the
+    /// type system and a crossed wire would paint a plausible field of the wrong quantity —
+    /// the failure would read as "SWIPE′ looks a lot like the spectrum", which is a
+    /// conclusion, not a bug report. The gate has to be repeated per layer for the same
+    /// reason it exists at all: both are normalized to their own column's max, so both turn
+    /// room noise into a full-scale wash across the rests. (The salience layer now carries
+    /// its own grid rather than borrowing the spectrum's — see `SalienceHeat`.)
     #[test]
     fn the_toggle_swaps_the_layer_and_both_obey_the_gate() {
+        let sh = |data: Vec<f32>| {
+            SalienceHeat {
+                data,
+                min_midi: 12.0,
+                bins_per_semitone: 8.0,
+            }
+        };
         let loud = |salience| {
             vec![MelodyFrame {
                 seq: 1,
@@ -527,7 +554,7 @@ mod tests {
         };
 
         let mut roll = PitchRoll::default();
-        roll.update(loud(Some(vec![0.0, 1.0])));
+        roll.update(loud(Some(sh(vec![0.0, 1.0]))));
         assert_eq!(
             roll.columns(0.0)[0].heat,
             [1.0, 0.0],
@@ -563,7 +590,7 @@ mod tests {
             pitch:    None,
             level:    HEAT_LEVEL_GATE * 0.5,
             heat:     vec![1.0, 0.0],
-            salience: Some(vec![0.0, 1.0]),
+            salience: Some(sh(vec![0.0, 1.0])),
         }]);
         assert!(
             quiet.columns(0.0)[0].heat.is_empty(),
