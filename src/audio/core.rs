@@ -911,6 +911,36 @@ mod tests {
         );
     }
 
+    /// REPRO: a **real** violin take through the whole engine on the RT-SWIPE frontend, at
+    /// real-time cadence — the exact path the app runs, to catch a freeze/stall that the
+    /// synthetic-tone test cannot. Reported live: switching to RT-SWIPE froze the pitch roll,
+    /// produced a little, then stopped. A dead audio thread (a panic in `frame()` on real
+    /// input, or a stall) looks exactly like that.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn rtswipe_real_violin_through_the_whole_engine() {
+        let path = format!("{}/testdata/g_open_fast_strokes.wav", env!("CARGO_MANIFEST_DIR"));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let sr = reader.spec().sample_rate as f32;
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
+
+        let mut rig = Rig::new(sr);
+        rig.settings.lock().unwrap().resonator.frontend = PitchFrontend::RtSwipe;
+        rig.feed(&samples, sr);
+
+        let frames = rig.melody_since(None);
+        let voiced = frames.iter().filter(|f| f.pitch.is_some()).count();
+        println!("\n=== g_open_fast_strokes · RT-SWIPE · through the real engine ===");
+        println!("  audio fed          : {:.1} s", samples.len() as f32 / sr);
+        println!("  frames (last ~2 s) : {}", frames.len());
+        println!("  ...with a pitch    : {voiced}");
+        assert!(!frames.is_empty(), "no frames — the pipeline stalled or the thread died");
+        assert!(voiced > 0, "RT-SWIPE decided no pitch on a real violin, ever");
+    }
+
     /// REGRESSION: selecting the **RT-SWIPE** frontend routes its frame through the real
     /// engine wiring to the melody line — and the bank keeps driving the display alongside it.
     ///
