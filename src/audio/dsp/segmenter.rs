@@ -274,7 +274,12 @@ mod tests {
                     // also what the melody's Viterbi measures its frame length off.
                     let now = now_samples as f64 / sr as f64;
                     let snapshot = bank.snapshot(true, AccidentalStyle::Sharps);
-                    let melody_pitch = melody.update(snapshot.salience.as_ref(), anchor, now);
+                    let melody_pitch = melody.update(
+                        snapshot.salience.as_ref(),
+                        anchor,
+                        now,
+                        crate::audio::types::PitchFrontend::ResonatorBank,
+                    );
                     let line = segmenter.update(melody_pitch.map(|(m, _)| m), NO_ONSET, now);
                     if current(&line).map(|(m, _)| m) == Some(target_midi) {
                         return t_ms - change_ms;

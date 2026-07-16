@@ -428,6 +428,28 @@ pub struct AnalysisSettings {
     pub accidental:         AccidentalStyle,
 }
 
+/// Which frontend produces the salience the melody line is decoded from — the same
+/// `SalienceFrame` either way, so `dsp::melody` cannot tell them apart (that is the whole
+/// point of `dsp::rtswipe` being a *frontend*, not a second detector).
+///
+/// A user choice, not an internal one: both are honest, and which is better depends on the
+/// instrument and register — the resonator bank has a flat 8–29 ms delay and reads intonation
+/// a shade finer; RT-SWIPE halves the octave errors and is cheaper to run, at a
+/// pitch-dependent delay. The corpus numbers behind that are in
+/// `memory/kickstart_rtswipe_and_swiftf0_oracle.md` (track R).
+///
+/// The bank keeps running in **either** mode — it also drives the spectrum waterfall, the
+/// reassigned spiral and the salience-heat layer, none of which RT-SWIPE produces. This enum
+/// only redirects the *note decision*.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum PitchFrontend {
+    /// The resonator bank (`dsp::resonator`). The shipped detector, and the default.
+    #[default]
+    ResonatorBank,
+    /// SWIPE′ over windowed FFTs (`dsp::rtswipe`).
+    RtSwipe,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResonatorSettings {
     pub min_midi:  PNote,
@@ -449,6 +471,10 @@ pub struct ResonatorSettings {
     /// load with reassignment on (the intended default), not `bool`'s `false`.
     #[serde(default = "default_reassign")]
     pub reassign:  bool,
+    /// Which frontend decides the melody's note — see [`PitchFrontend`]. `serde(default)`
+    /// loads pre-existing configs on the bank, the shipped behaviour.
+    #[serde(default)]
+    pub frontend:  PitchFrontend,
 }
 
 fn default_reassign() -> bool {
@@ -510,6 +536,7 @@ impl Default for ResonatorSettings {
             update_ms: 16,
             power:     false,
             reassign:  true,
+            frontend:  PitchFrontend::ResonatorBank,
         }
     }
 }
@@ -723,6 +750,7 @@ mod tests {
                 update_ms: 1,
                 power:     false,
                 reassign:  true,
+                frontend:  PitchFrontend::RtSwipe,
             },
             accidental:         AccidentalStyle::Sharps,
         }

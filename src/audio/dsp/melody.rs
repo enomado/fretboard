@@ -68,6 +68,7 @@ use super::trellis::{
     PitchState,
     PitchTrellis,
 };
+use crate::audio::types::PitchFrontend;
 
 /// Frame length assumed for the very first frame of a phrase, when there is no predecessor
 /// to measure against (`ResonatorSettings::update_ms`'s default).
@@ -99,7 +100,37 @@ const NOMINAL_FRAME_DT: f32 = 0.016;
 ///
 /// The value is the sweep's, not a guess — see [`beta_sweep::salience_beta_sweep`], which prints
 /// both edges of the trade across the whole corpus.
-const SALIENCE_BETA: f32 = 40.0;
+///
+/// Named `_BANK` because it is calibrated to the **bank's** salience scale, and that scale is
+/// not shared: the bank stores a *raw* salience curve (`SalienceFrame::score` scores an
+/// un-normalized column), whereas `dsp::rtswipe` divides each rung by its own `spectrum_norm`
+/// before blending, so an RT-SWIPE curve is a 0..1 confidence. `exp(β·(s−s_max))` is
+/// shift-invariant but **not** scale-invariant, so the two frontends need two βs — see
+/// [`SALIENCE_BETA_RTSWIPE`] and [`emission-scale-does-not-transfer`] in the swipe design doc.
+const SALIENCE_BETA_BANK: f32 = 40.0;
+
+/// [`SALIENCE_BETA_BANK`]'s counterpart for the RT-SWIPE frontend, whose curve is on a
+/// different (already-normalized, 0..1) scale — see that constant for why one number cannot
+/// serve both.
+///
+/// **Half the bank's, and swept the same way** — [`beta_sweep::rtswipe_beta_sweep`] (octave
+/// edge) and [`beta_sweep::rtswipe_beta_latency_sweep`] (latency edge), on the violin takes.
+/// It is the smallest β that reaches the full note-change latency plateau (a flat 24 ms;
+/// β=10 still costs 40 ms on some intervals, β=5 costs 40–88), while the phantom octave is at
+/// its achievable floor there (fast strokes 0.0 %, slow 0.4 %). The bank's own 40 is *too
+/// large* on this scale — it brings the fast-strokes octave back to 3.0 %. Lower buys almost
+/// nothing on the octave (the trills' ~5–6 % is the structural two-notes-in-one-column limit,
+/// not β's to fix) and pays for it in latency, which is the exact trade the two sweeps price.
+const SALIENCE_BETA_RTSWIPE: f32 = 20.0;
+
+/// The exchange rate for a given frontend — the one place the two βs are chosen between, so a
+/// caller passes *which frontend*, never a bare number it might pick wrong.
+pub(crate) fn salience_beta(frontend: PitchFrontend) -> f32 {
+    match frontend {
+        PitchFrontend::ResonatorBank => SALIENCE_BETA_BANK,
+        PitchFrontend::RtSwipe => SALIENCE_BETA_RTSWIPE,
+    }
+}
 
 /// SWIPE′'s salience curve, decoded into a played note by continuity rather than by argmax.
 ///
@@ -143,7 +174,7 @@ pub(crate) struct SalienceDecoder {
     last_t:  Option<f64>,
     /// Salience→nats exchange rate. A field rather than a constant only so
     /// [`beta_sweep::salience_beta_sweep`] can measure the trade it makes; production uses
-    /// [`SALIENCE_BETA`].
+    /// [`SALIENCE_BETA_BANK`].
     beta:    f32,
 }
 
@@ -152,18 +183,31 @@ impl Default for SalienceDecoder {
         Self {
             trellis: None,
             last_t:  None,
-            beta:    SALIENCE_BETA,
+            beta:    SALIENCE_BETA_BANK,
         }
     }
 }
 
 impl SalienceDecoder {
-    /// A decoder at a chosen exchange rate — for the sweep that sets [`SALIENCE_BETA`].
+    /// A decoder at a chosen exchange rate — for the sweep that sets [`SALIENCE_BETA_BANK`].
     #[cfg(test)]
     fn with_beta(beta: f32) -> Self {
         Self {
             beta,
             ..Default::default()
+        }
+    }
+
+    /// Adopt a new exchange rate, ending the current phrase if it actually changed.
+    ///
+    /// A no-op frame-to-frame within one frontend (the β is constant), so the common path
+    /// pays a float compare. It moves only when the user switches frontend, and there the
+    /// reset is the point: the two scales are incommensurable, so the path so far cannot carry
+    /// across, and the honest thing is a phrase boundary at the switch.
+    fn set_beta(&mut self, beta: f32) {
+        if self.beta != beta {
+            self.beta = beta;
+            self.reset();
         }
     }
 
@@ -417,7 +461,14 @@ impl MelodyTracker {
         frame: Option<&SalienceFrame>,
         anchor: Option<(f32, f32)>,
         now_seconds: f64,
+        frontend: PitchFrontend,
     ) -> Option<(f32, f32)> {
+        // The β travels with the frontend, because it is a property of that frontend's
+        // salience scale (`salience_beta`). Setting it here rather than at construction is
+        // what lets the user flip the toggle live: a change starts a fresh phrase, since the
+        // trellis's accumulated path costs were measured against the old scale and a note
+        // decided under one exchange rate cannot go on being weighed under another.
+        self.decoder.set_beta(salience_beta(frontend));
         let Some(frame) = frame else {
             self.decoder.reset();
             return self.pin_and_gate(None, anchor);
@@ -491,9 +542,9 @@ impl MelodyTracker {
     }
 }
 
-/// The sweep that sets [`SALIENCE_BETA`], on the real violin.
+/// The sweep that sets [`SALIENCE_BETA_BANK`], on the real violin.
 ///
-/// [`SALIENCE_BETA`] is a single number that trades two properties against each other, and
+/// [`SALIENCE_BETA_BANK`] is a single number that trades two properties against each other, and
 /// neither of them can be reasoned out — they are both facts about a bowed string. So the
 /// sweep drives the **whole corpus** through the production decoder at each candidate rate
 /// and prints both edges at once:
@@ -611,6 +662,127 @@ mod beta_sweep {
             }
         }
         verdicts
+    }
+
+    /// [`decode_take`]'s twin on the RT-SWIPE frontend: its frame through the production
+    /// [`SalienceDecoder`] at a chosen β. This is what [`rtswipe_beta_sweep`] drives to set
+    /// [`SALIENCE_BETA_RTSWIPE`], exactly as `decode_take` sets the bank's.
+    fn rtswipe_decode_take(name: &str, beta: f32) -> Vec<Option<f32>> {
+        let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
+        let mut reader = hound::WavReader::open(&path).unwrap();
+        let sample_rate = reader.spec().sample_rate as f32;
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
+
+        let mut rtswipe = RtSwipe::new(sample_rate, 440.0);
+        let mut decoder = SalienceDecoder::with_beta(beta);
+        let hop = (sample_rate * 0.016) as usize;
+        let mut verdicts = Vec::new();
+        let mut fed = 0usize;
+        while fed + hop <= samples.len() {
+            rtswipe.process_samples(&samples[fed..fed + hop]);
+            fed += hop;
+            let now = fed as f64 / sample_rate as f64;
+            let decoded = rtswipe.frame().and_then(|frame| decoder.decode(&frame, now));
+            if now >= 1.0 {
+                verdicts.push(decoded.map(|(midi, _)| midi));
+            }
+        }
+        verdicts
+    }
+
+    /// The sweep that sets [`SALIENCE_BETA_RTSWIPE`], the twin of [`salience_beta_sweep`].
+    ///
+    /// It has to be its own run, not a re-read of the bank's: the RT-SWIPE curve is a 0..1
+    /// confidence where the bank's is raw salience, so the β that trades continuity against
+    /// latency sits at a *different* number, and guessing it from the bank's would put the
+    /// wrong exchange rate in production. Same takes, same two edges (phantom octave wants β
+    /// small, note-change latency wants it large), read off the real instrument.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn rtswipe_beta_sweep() {
+        println!("\n=== RT-SWIPE · SALIENCE_BETA sweep — % on a real note / an octave off ===");
+        for (name, lo, hi, must_remain) in TAKES {
+            let band = lo..=hi;
+            println!("\n--- {name}  (truth: MIDI {lo}..={hi}) ---");
+            let report = |label: String, verdicts: &[Option<f32>]| {
+                let (inside, octave) = tally(verdicts, band.clone());
+                print!("  {label:<20}: in {inside:>5.1}%   octave-off {octave:>5.1}%");
+                for (note_label, midi) in must_remain {
+                    print!("   {note_label} {:>5.1}%", on_note(verdicts, *midi));
+                }
+                println!();
+            };
+            report("argmax (no Viterbi)".to_string(), &rtswipe_take(name));
+            for beta in CANDIDATES {
+                report(format!("beta {beta:.1}"), &rtswipe_decode_take(name, beta));
+            }
+        }
+        println!("\nNOTE: read against the same corrected truth as the bank sweep — see TAKES.");
+    }
+
+    /// The RT-SWIPE analogue of [`salience_beta_latency_sweep`]: note-change latency vs β on
+    /// the FFT frontend, the *other* edge of the trade the sweep above only sees the octave
+    /// side of. A β that never lets a note arrive scores a perfect (and useless) octave record.
+    #[test]
+    fn rtswipe_beta_latency_sweep() {
+        println!("\n=== RT-SWIPE · SALIENCE_BETA vs note-change latency (ms) ===");
+        println!("(a stuck needle reads `inf` here and 100% on a take whose note never moves)");
+        let cases = [
+            ("A4->B4 (2nd) ", 440.0f32, 493.88f32),
+            ("A4->E5 (5th) ", 440.0, 659.25),
+            ("A4->A5 (8ve) ", 440.0, 880.0),
+            ("G3->D4 (low) ", 196.0, 293.66),
+        ];
+        print!("{:<16}", "beta");
+        for (name, _, _) in cases {
+            print!("{name:>16}");
+        }
+        println!();
+        for beta in CANDIDATES {
+            print!("{beta:<16.1}");
+            for (_, from, to) in cases {
+                let ms = rtswipe_change_latency_ms(from, to, beta);
+                if ms.is_finite() {
+                    print!("{ms:>16.0}");
+                } else {
+                    print!("{:>16}", "never");
+                }
+            }
+            println!();
+        }
+    }
+
+    /// [`change_latency_ms`] on the RT-SWIPE frontend: ms from a note change until the decoder
+    /// reports the new note, at `beta`.
+    fn rtswipe_change_latency_ms(from_hz: f32, to_hz: f32, beta: f32) -> f32 {
+        let sample_rate = 48_000.0f32;
+        let hold = (sample_rate * 0.6) as usize;
+        let mut signal = violin_tone(from_hz, sample_rate, hold);
+        signal.extend(violin_tone(to_hz, sample_rate, hold));
+
+        let target_midi = 69.0 + 12.0 * (to_hz / 440.0).log2();
+        let mut rtswipe = RtSwipe::new(sample_rate, 440.0);
+        let mut decoder = SalienceDecoder::with_beta(beta);
+        let hop = (sample_rate * 0.016) as usize;
+        let mut fed = 0usize;
+        while fed + hop <= signal.len() {
+            rtswipe.process_samples(&signal[fed..fed + hop]);
+            fed += hop;
+            let now = fed as f64 / sample_rate as f64;
+            let decoded = rtswipe.frame().and_then(|frame| decoder.decode(&frame, now));
+            if fed <= hold {
+                continue;
+            }
+            if let Some((midi, _)) = decoded {
+                if (midi - target_midi).abs() < 0.5 {
+                    return (fed - hold) as f32 / sample_rate * 1000.0;
+                }
+            }
+        }
+        f32::INFINITY
     }
 
     /// **R2's other half.** The corpus says which frontend *scores* better; this asks whether

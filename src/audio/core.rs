@@ -44,14 +44,17 @@ use crate::audio::dsp::resonator::{
     ResonatorSnapshot,
     ResonatorViewSettings,
 };
+use crate::audio::dsp::rtswipe::RtSwipe;
 use crate::audio::dsp::segmenter::NoteSegmenter;
 use crate::audio::dsp::spectrum::spectrum_bars_for_window;
+use crate::audio::dsp::swipe::SalienceFrame;
 use crate::audio::types::{
     AnalysisSettings,
     AudioStatus,
     MelodyFrame,
     MelodyHistory,
     NoteLine,
+    PitchFrontend,
     TunerReading,
 };
 use crate::core_types::note::AccidentalStyle;
@@ -220,6 +223,15 @@ pub(crate) fn set_shared_error(shared: &Arc<Mutex<SharedState>>, msg: &str) {
 // ------------------------------------------------------------------
 pub(crate) struct ResonatorPipeline {
     analyzer:     ResonatorAnalyzer,
+    /// The alternative note frontend (`PitchFrontend::RtSwipe`). Fed the **same** samples as
+    /// the bank on every push so its rolling history stays warm and a switch is instant, but
+    /// only *scored* (`frame()` runs eight FFTs) at publish time when it is the active
+    /// frontend — so the parallel run costs a memcpy per push while the bank is selected.
+    rtswipe:      RtSwipe,
+    /// The A4 `rtswipe` was built against. Its ladder and grid are cut from the concert
+    /// pitch, so a retune has to rebuild it — see [`Self::sync_settings`], which mirrors the
+    /// bank's own rebuild-on-settings-change.
+    rtswipe_ref:  f32,
     last_publish: Instant,
     /// The **audio clock**: samples this pipeline has actually processed, and the rate
     /// to read them at. `samples_seen / sample_rate` is the timestamp handed to the
@@ -274,8 +286,14 @@ struct AnalysisFrame {
 
 impl ResonatorPipeline {
     pub(crate) fn new(sample_rate: f32) -> Self {
+        // A4 = 440 until the first settings sync tells us the user's concert pitch; the bank
+        // starts the same way (`ResonatorViewSettings::default`), and `sync_settings` rebuilds
+        // both the instant a real value arrives.
+        let rtswipe_ref = 440.0;
         Self {
             analyzer: ResonatorAnalyzer::new(sample_rate),
+            rtswipe: RtSwipe::new(sample_rate, rtswipe_ref),
+            rtswipe_ref,
             last_publish: Instant::now() - Duration::from_millis(16),
             sample_rate,
             samples_seen: 0,
@@ -298,12 +316,23 @@ impl ResonatorPipeline {
         self.samples_seen += samples.len() as u64;
         self.analyzer
             .process_samples(&samples, analysis_settings.resonator.reassign);
+        // Keep RT-SWIPE's rolling history warm on every push, whichever frontend is active:
+        // a switch must be able to score the very next frame, and this is only a memcpy. The
+        // eight FFTs of `frame()` are deferred to publish, and only when it is the frontend.
+        self.rtswipe.process_samples(&samples);
 
         let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
         if self.last_publish.elapsed() < publish_interval {
             return;
         }
         self.last_publish = Instant::now();
+        let frontend = analysis_settings.resonator.frontend;
+        // The note frontend RT-SWIPE offers this frame — scored only when it is the one that
+        // will decide the note, so the bank path pays nothing for it. The bank's own snapshot
+        // still drives every display layer regardless (the parallel-run the user chose).
+        let rtswipe_frame = (frontend == PitchFrontend::RtSwipe)
+            .then(|| self.rtswipe.frame())
+            .flatten();
         // The level the 40 ms analysis plane last measured. Up to one analysis hop
         // stale, which is exactly what the panels' own gate read before it moved here
         // — same atomic, same staleness, one copy of the rule instead of two.
@@ -312,6 +341,8 @@ impl ResonatorPipeline {
             shared,
             self.analyzer
                 .snapshot(analysis_settings.resonator.reassign, analysis_settings.accidental),
+            rtswipe_frame,
+            frontend,
             analysis_settings.resonator.history,
             level,
             self.samples_seen as f64 / self.sample_rate as f64,
@@ -322,6 +353,15 @@ impl ResonatorPipeline {
         let requested = ResonatorViewSettings::from(settings);
         if !self.analyzer.sync_settings(requested) {
             return;
+        }
+        // A retune reaches RT-SWIPE the same way it reaches the bank: its ladder and grid are
+        // cut from A4, so a new concert pitch means a new analyser. The bank only reports a
+        // change (returns true above) when a `ResonatorViewSettings` field moved, and the
+        // concert pitch is one of them, so this rides the same gate — and toggling the
+        // *frontend* alone never gets here, which is right: no grid changed.
+        if settings.concert_pitch_hz != self.rtswipe_ref {
+            self.rtswipe = RtSwipe::new(self.sample_rate, settings.concert_pitch_hz);
+            self.rtswipe_ref = settings.concert_pitch_hz;
         }
         if let Ok(mut state) = shared.lock() {
             state.resonator_spectrum.clear();
@@ -587,9 +627,15 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
 /// `now_seconds` is the **audio** clock, off the sample count. This is the only place
 /// allowed to drive `melody`/`segmenter`, because both count their timescales in the
 /// bank frames this function publishes.
+// `melody_override`: the RT-SWIPE frame to decode the note from, or `None` to use the bank's
+// own (`snapshot.salience`). `Some` only when `frontend` is `RtSwipe`. The frontend tag rides
+// alongside because it is what selects the β (`melody::salience_beta`), not inferable from the
+// frame — the two frontends' curves are on different scales (see `dsp::rtswipe`).
 fn publish_resonator_snapshot(
     shared: &Arc<Mutex<SharedState>>,
     snapshot: ResonatorSnapshot,
+    melody_override: Option<SalienceFrame>,
+    frontend: PitchFrontend,
     history_len: usize,
     level: f32,
     now_seconds: f64,
@@ -609,9 +655,12 @@ fn publish_resonator_snapshot(
         // the errors left on a real violin are 4–6% near-ties, and a scalar cannot express a
         // tie for continuity to break. See `dsp::melody::SalienceDecoder`.
         let fast_pitch = state.fast_pitch;
-        let bank = (level >= MELODY_LEVEL_GATE)
-            .then_some(snapshot.salience.as_ref())
-            .flatten();
+        // The salience the note is decoded from: RT-SWIPE's frame when it is the chosen
+        // frontend, the bank's own otherwise. `fast_pitch` above stays the bank's raw argmax
+        // regardless — it is the bank's reading for the tuner and the octave cross-check, not
+        // the melody's decision.
+        let melody_source = melody_override.as_ref().or(snapshot.salience.as_ref());
+        let bank = (level >= MELODY_LEVEL_GATE).then_some(melody_source).flatten();
         // The melody line's whole latency win happens here: the bank publishes every
         // ~16 ms, so the played note is refreshed at the bank's cadence instead of
         // waiting for the 40 ms pYIN rebuild (which is itself ~128 ms behind). This
@@ -623,7 +672,7 @@ fn publish_resonator_snapshot(
         // per-frame costs would hand that slider the detector's smoothing — see
         // `dsp::trellis`.
         let octave_anchor = state.octave_anchor;
-        let melody_pitch = state.melody.update(bank, octave_anchor, now_seconds);
+        let melody_pitch = state.melody.update(bank, octave_anchor, now_seconds, frontend);
         state.melody_pitch = melody_pitch;
         // …and the note the melody line is sounding is cut into written notes right
         // here too, on the sample clock. `None` covers silence and a rejected slip
@@ -860,6 +909,43 @@ mod tests {
             "A4 should have been written to the line; history = {:?}",
             line.history
         );
+    }
+
+    /// REGRESSION: selecting the **RT-SWIPE** frontend routes its frame through the real
+    /// engine wiring to the melody line — and the bank keeps driving the display alongside it.
+    ///
+    /// The twin of [`engine_writes_a_played_note_end_to_end`] with one field flipped, because
+    /// the setting has a whole path to travel that no dsp test sees: `push_samples` reads
+    /// `resonator.frontend`, scores `RtSwipe::frame()` in parallel with the bank, hands *that*
+    /// frame to `melody.update` with the RT-SWIPE β, and still publishes the bank's snapshot
+    /// for the waterfall. A break anywhere on that path is invisible below `core` and total to
+    /// a user who picked RT-SWIPE — the staff would stay empty while the spectrum still moved.
+    #[test]
+    fn engine_decodes_with_the_rtswipe_frontend() {
+        let sr = 48_000.0f32;
+        let mut rig = Rig::new(sr);
+        rig.settings.lock().unwrap().resonator.frontend = PitchFrontend::RtSwipe;
+
+        // Same A4 as the bank twin. RT-SWIPE reads A4 in ~9 ms, so 0.4 s is ample.
+        rig.feed(&violin_tone(440.0, sr, (sr * 0.4) as usize), sr);
+        let line = rig.note_line();
+        assert_eq!(
+            line.current.map(|n| n.midi),
+            Some(69),
+            "the RT-SWIPE frontend should be holding A4; note_line = {line:?}"
+        );
+
+        // The bank runs in parallel and still feeds the display: the waterfall is the bank's
+        // even while the note is RT-SWIPE's. If this is empty the parallel run is not
+        // happening, i.e. picking RT-SWIPE silently killed the spectrum.
+        let has_display = rig
+            .shared
+            .lock()
+            .unwrap()
+            .reading
+            .as_ref()
+            .is_some_and(|r| !r.resonator_spectrum.is_empty());
+        assert!(has_display, "the bank stopped driving the display under RT-SWIPE");
     }
 
     /// REGRESSION: the melody history is published on the **audio** clock, and a

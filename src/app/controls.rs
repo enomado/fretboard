@@ -28,6 +28,7 @@ use super::{
 use crate::audio::{
     AnalysisSettings,
     AudioInputKind,
+    PitchFrontend,
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
@@ -820,6 +821,39 @@ impl App {
                     .color(color::TEXT_VALUE)
                     .monospace(),
             );
+        });
+
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.add(RowCaption::new("Detector"));
+            // Which frontend decides the played note. The bank keeps running either way (it
+            // draws the waterfall, the spiral and the salience heat); this only redirects the
+            // note decision. See `audio::types::PitchFrontend`.
+            for (label, frontend) in [
+                ("Resonators", PitchFrontend::ResonatorBank),
+                ("RT-SWIPE", PitchFrontend::RtSwipe),
+            ] {
+                let selected = settings.resonator.frontend == frontend;
+                let button = SegmentedButton::new(label, selected).min_width(82.0);
+                if ui
+                    .add(button)
+                    .on_hover_text(match frontend {
+                        PitchFrontend::ResonatorBank => {
+                            "Per-sample IIR resonator bank: flat 8–29 ms delay, finest \
+                             intonation. The shipped detector."
+                        }
+                        PitchFrontend::RtSwipe => {
+                            "SWIPE′ over windowed FFTs: halves octave errors, cheaper to run, \
+                             at a pitch-dependent delay (≈4 periods). Same kernel as the bank."
+                        }
+                    })
+                    .clicked()
+                    && settings.resonator.frontend != frontend
+                {
+                    settings.resonator.frontend = frontend;
+                    *changed = true;
+                }
+            }
         });
 
         ui.add_space(10.0);

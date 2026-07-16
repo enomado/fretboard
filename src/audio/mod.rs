@@ -36,6 +36,7 @@ pub use types::{
     MelodyFrame,
     MelodyHistory,
     NoteLine,
+    PitchFrontend,
     RecorderStatus,
     ReplayStatus,
     ResonatorReading,
