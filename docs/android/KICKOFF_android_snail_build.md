@@ -80,6 +80,32 @@ re-kick пересобрал захват → снейл-спираль гори
 выполняются, пока экран не проснётся. MIUI блокирует `adb input keyevent`
 (INJECT_EVENTS) → будить экран надо физически.
 
+## Контриб в upstream (2026-07-21)
+
+Разбор запощен в [rust-mobile/android-activity#174](https://github.com/rust-mobile/android-activity/issues/174#issuecomment-5035860576)
+(аккаунт `enomado`): две **независимые** стены — (1) `ndk_context` = Application, не
+Activity ⇒ `MethodNotFound` на `requestPermissions`, читается как опечатка в JNI-сигнатуре;
+(2) колбэка `onRequestPermissionsResult` под NativeActivity нет вообще ⇒ только polling.
+Issue открыт, без ассайни. В конце предложен docs-PR («Runtime permissions» в README) —
+**NEXT = реакция мейнтейнера**; при тишине разумно открыть PR без приглашения.
+
+Перепроверено 07-21: android-activity **0.6.1 всё ещё актуальна** (релиз 04.07.2026),
+`get_application` → `initialize_android_context` на месте — разбор не устарел.
+
+Крейт [`android-permissions`](https://crates.io/crates/android-permissions) 0.1.2 эту
+дыру НЕ закрывает: требует `ndk_glue::native_activity()` (ndk_glue мёртв, вытеснен
+android-activity), docs.rs его не собрал. Плодить свой крейт смысла нет — ценность в
+знании, какой объект брать, а не в 170 строках.
+
+### ⚠️ Известная мина: повторный `android_main()`
+Доки `AndroidApp::activity_as_ptr()` явно предупреждают, что указатель **не `'static`**:
+`android_main()` может запуститься повторно с новым `AndroidApp` (мы же в комментарии к
+`ACTIVITY` писали «валиден на весь процесс» — это неточность). Сам указатель мы
+переустанавливаем корректно (`init_activity` зовётся из `android_main` каждый раз), но
+`REQUESTED`/`KICKED` в [`android_perm.rs`](../../src/android_perm.rs) — **процессные**
+статики: на втором прогоне `android_main` диалог повторно не покажется. На устройстве
+этого не ловили; фикс = сбрасывать оба флага в `init_activity`.
+
 ### (исторически) формулировка блокера до фикса
 Рантайм-запрос исполнялся (`requesting RECORD_AUDIO via Activity.requestPermissions`),
 но падал `JNI call failed: MethodNotFound { name: "requestPermissions", sig:
