@@ -1,0 +1,45 @@
+[package]
+name = "lifecycle_probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone workspace ON PURPOSE: this probe is meant to be copy-pasteable out of
+# the fretboard repo by anyone who wants to reproduce the measurement (it is
+# attached to rust-mobile/android-activity#174). Inheriting fretboard's workspace
+# would drag in workspace.dependencies that a stranger cannot resolve.
+[workspace]
+
+# NativeActivity dlopen's this .so — an rlib would silently produce nothing.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+android-activity = { version = "0.6.1", features = ["native-activity"] }
+# The permission call itself; versions pinned to what the measurement was taken
+# with, since the whole point is a reproducible observation.
+jni = "0.22"
+ndk-context = "0.1"
+
+[package.metadata.android]
+# Distinct from com.fretboard.snail so the probe installs ALONGSIDE the real app
+# and its permission state is independent (a fresh install = not yet granted,
+# which is the precondition the measurement needs).
+package = "com.fretboard.lifecycleprobe"
+build_targets = ["aarch64-linux-android"]
+strip = "strip"
+
+[package.metadata.android.application]
+label = "Lifecycle Probe"
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 34
+
+# The permission we provoke the dialog with. Nothing is recorded — RECORD_AUDIO is
+# simply a convenient `dangerous` permission that always shows a system dialog.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.RECORD_AUDIO"
+
+[package.metadata.android.application.activity]
+exported = true

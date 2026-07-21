@@ -1,0 +1,4 @@
+# Own workspace ⇒ own target dir (the repo root's `/target` rule is anchored and
+# doesn't reach here). Nested on purpose: it travels with the folder if someone
+# copies the probe out to reproduce the measurement.
+/target
