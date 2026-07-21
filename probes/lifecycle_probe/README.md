@@ -73,3 +73,57 @@ adb uninstall com.fretboard.lifecycleprobe
 Отдельно стоит заметить, **приходит ли `Resume` вообще без нажатия** — если юзер уводит
 диалог в шторку/настройки. Ровно этот край и заставил [nusb#150](https://github.com/kevinmehall/nusb/pull/150)
 завести `ActivityLifecycleCallbacks`: там диалог мог исчезнуть без интента.
+
+---
+
+# РЕЗУЛЬТАТ (2026-07-21)
+
+Redmi Note 10 Pro (`sweet`, M2101K6G), Android 13 / MIUI, SDK 33, arm64-v8a.
+Сырой лог чистого прогона — [`measurement_miui_a13.log`](measurement_miui_a13.log).
+
+## Сценарий 1 — юзер нажал «Разрешить»
+
+```
+[  2091 ms] FIRING requestPermissions
+[  2119 ms] returned ok=true
+[  2121 ms] MainEvent::Pause          ← +2 мс после возврата из вызова
+[  2152 ms] MainEvent::LostFocus
+              ... нажатие ...
+[  9930 ms] checkSelfPermission FLIPPED → granted=true
+[  9946 ms] MainEvent::Resume
+[  9975 ms] MainEvent::GainedFocus
+```
+
+**Первая строка таблицы выше: прилетает полный `Pause`/`Resume`**, а не только смена
+фокуса. Опасение про translucent-активити чужого процесса не подтвердилось. К моменту
+`Resume` `checkSelfPermission` уже отдаёт `true` ⇒ «перечек на resume» даёт верный ответ,
+гонки нет.
+
+⚠️ **`Pause` приходит через 2 мс после возврата из `requestPermissions`.** Слушателя
+lifecycle надо регистрировать **ДО** вызова — иначе реально пропустить.
+
+## Сценарий 2 — юзер ушёл, не ответив, и вернулся
+
+```
+[  2086 ms] Pause / [2134 ms] LostFocus
+              ... ушёл в Настройки ...
+[ 26864 ms] TerminateWindow → Stop → SaveState
+              ... вернулся в приложение ...
+[ 41644 ms] Start → InitWindow → WindowResized → RedrawNeeded
+              ... и ВСЁ: Resume НЕ пришёл (ждали +8 с) ...
+```
+
+При возврате диалог восстанавливается **поверх** таска, активити оказывается
+started-but-not-resumed. Ложного «диалог закрылся» не возникает — запрос честно остаётся
+pending, это в пользу lifecycle-дизайна. Но следствие: **цикл `Stop`→`Start` посреди
+запроса реален**, и арминг/разарминг на `Start` сломается. Держаться строго `Resume`.
+
+## Ограничения замера (честно)
+
+- **MIUI убила процесс в фоне** в одном из ранних прогонов; в чистом — не убила. Смерть
+  процесса посреди запроса на этом OEM **недетерминирована**.
+- **Буфер logcat прокручивается быстро** под системным спамом MIUI: дамп постфактум
+  (`logcat -d`) терял строки. Писать надо непрерывно в файл, иначе намеряешь пустоту.
+- `adb shell input keyevent` заблокирован (`SecurityException: INJECT_EVENTS`) ⇒ «увести
+  диалог кнопкой назад» на этом устройстве не проверить; уход эмулировался `am start`.
+- Одно устройство, один OEM, один API level. Это **точка**, а не полоса.

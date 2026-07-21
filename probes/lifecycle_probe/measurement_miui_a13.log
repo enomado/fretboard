@@ -1,0 +1,21 @@
+--------- beginning of main
+07-22 01:19:38.743 12588  9573 E probe   : [     0 ms] probe start — waiting for first Resume before provoking the dialog
+07-22 01:19:38.746 12588  9573 E probe   : [     2 ms] initial checkSelfPermission granted=false
+07-22 01:19:38.760 12588  9573 E probe   : [    15 ms] MainEvent::Start
+07-22 01:19:38.767 12588  9573 E probe   : [    23 ms] MainEvent::Resume { ..payload elided.. }
+07-22 01:19:38.856 12588  9573 E probe   : [   112 ms] MainEvent::InitWindow
+07-22 01:19:38.857 12588  9573 E probe   : [   113 ms] MainEvent::WindowResized
+07-22 01:19:38.862 12588  9573 E probe   : [   118 ms] MainEvent::ContentRectChanged
+07-22 01:19:38.864 12588  9573 E probe   : [   120 ms] MainEvent::RedrawNeeded
+07-22 01:19:38.903 12588  9573 E probe   : [   160 ms] MainEvent::GainedFocus
+07-22 01:19:40.812 12588  9573 E probe   : [  2068 ms] === FIRING requestPermissions — dialog should appear now ===
+07-22 01:19:40.825 12588  9573 E probe   : [  2082 ms] === requestPermissions returned ok=true ===
+07-22 01:19:40.830 12588  9573 E probe   : [  2086 ms] MainEvent::Pause
+07-22 01:19:40.878 12588  9573 E probe   : [  2134 ms] MainEvent::LostFocus
+07-22 01:20:05.607 12588  9573 E probe   : [ 26864 ms] MainEvent::TerminateWindow
+07-22 01:20:05.611 12588  9573 E probe   : [ 26867 ms] MainEvent::Stop
+07-22 01:20:05.613 12588  9573 E probe   : [ 26869 ms] MainEvent::SaveState { ..payload elided.. }
+07-22 01:20:20.388 12588  9573 E probe   : [ 41644 ms] MainEvent::Start
+07-22 01:20:20.415 12588  9573 E probe   : [ 41671 ms] MainEvent::InitWindow
+07-22 01:20:20.416 12588  9573 E probe   : [ 41672 ms] MainEvent::WindowResized
+07-22 01:20:20.417 12588  9573 E probe   : [ 41673 ms] MainEvent::RedrawNeeded
