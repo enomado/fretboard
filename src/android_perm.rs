@@ -72,8 +72,21 @@ static ACTIVITY: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
 
 /// Stash the `NativeActivity` jobject (from `AndroidApp::activity_as_ptr()`).
 /// Must be called from `android_main` before any permission call.
+///
+/// Also resets the one-shot latches. `android_main` can run **again** in the same
+/// process with a fresh `AndroidApp` (the pointer is explicitly not `'static`, see
+/// `AndroidApp::activity_as_ptr()` docs), and `REQUESTED`/`KICKED` are process-wide.
+/// Without this reset the second run would see them already set: the dialog would
+/// never be shown, and the rising edge that re-opens capture would never fire — i.e.
+/// silence with no way for the user to fix it. Resetting is safe in both directions:
+/// if the permission is already granted, `request_record_audio` sees that and only
+/// logs, while `newly_granted` fires once more and re-kicks capture, which is exactly
+/// what a new activity needs anyway.
 pub fn init_activity(activity: *mut c_void) {
     ACTIVITY.store(activity, Ordering::Relaxed);
+    REQUESTED.store(false, Ordering::Relaxed);
+    KICKED.store(false, Ordering::Relaxed);
+    alog("init_activity: activity stashed, permission latches reset");
 }
 
 /// Attach the current thread to the JVM that android-activity published in

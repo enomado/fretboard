@@ -67,6 +67,23 @@ pub(super) mod imp {
     mod recorder;
     mod replay;
 
+    /// Диагностика аудио-пути на Android.
+    ///
+    /// Зачем отдельный канал: на устройстве `eprintln!` уходит в никуда (stdout/stderr
+    /// приложения не попадают в logcat без `log.redirect-stdio`), а крейт `log` тут
+    /// молчит — какая-то зависимость вырезает его через `log/max_level_*`. Поэтому
+    /// единственный способ узнать, почему захват не поднялся, — liblog напрямую, тем же
+    /// тегом `snail`, что и пермишен-драйвер: `adb logcat -s snail`.
+    ///
+    /// На остальных платформах — no-op: там ошибка и так видна в UI (`AudioStatus::Error`)
+    /// и в терминале.
+    #[cfg(target_os = "android")]
+    fn audio_alog(msg: &str) {
+        crate::android_perm::alog(msg);
+    }
+    #[cfg(not(target_os = "android"))]
+    fn audio_alog(_msg: &str) {}
+
     use devices::{
         cpal_device_display_name,
         enumerate_input_options,
@@ -619,6 +636,9 @@ pub(super) mod imp {
 
     impl AudioContext {
         fn set_error(&self, msg: &str) {
+            // Единственная воронка всех отказов аудио-треда ⇒ единственное место, где
+            // нужен лог: на Android причина иначе не наблюдаема вообще (см. `audio_alog`).
+            audio_alog(&format!("audio error: {msg}"));
             if let Ok(mut s) = self.shared.lock() {
                 s.status = AudioStatus::Error(msg.to_owned());
             }
@@ -859,7 +879,13 @@ pub(super) mod imp {
             )
         }
 
+        /// Общий хвост всех трёх путей захвата ⇒ единственная точка, где виден факт
+        /// «вход поднялся, и вот на чём». Без этой строки в логе «звука нет» неотличимо
+        /// от «звук идёт, но тишина в микрофоне» — а это разные баги.
         fn finish_capture_start(&self, sample_rate: u32, output_rate: u32, selected_id: &str) {
+            audio_alog(&format!(
+                "capture started: id={selected_id} rate={sample_rate} monitor_out={output_rate}"
+            ));
             self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
             self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
             self.reset_shared_state();
