@@ -111,6 +111,55 @@ android-activity), docs.rs его не собрал. Плодить свой к�
 но падал `JNI call failed: MethodNotFound { name: "requestPermissions", sig:
 "([Ljava/lang/String;I)V" }`, хотя `checkSelfPermission` работал.
 
+## Апстрим-сага mic-permission (полная хронология на 2026-07-25)
+
+Три площадки, все связаны. Точка входа для новой сессии.
+
+1. **[rust-mobile/android-activity#174](https://github.com/rust-mobile/android-activity/issues/174)** —
+   тред-первоисточник. Наши 4 комментария (аккаунт `enomado`): разбор двух стен →
+   уточнение после ответа автора (Стена 1 = **регрессия 0.6.1**, [PR #229](https://github.com/rust-mobile/android-activity/pull/229),
+   раньше в ndk_context лежала Activity) → замер lifecycle → линк на PR.
+2. **[enomado/android-permission-lifecycle-probe](https://github.com/enomado/android-permission-lifecycle-probe)** —
+   публичный probe-репо. Замер на Redmi Note 10 Pro / A13 / MIUI: диалог даёт настоящий
+   `Pause`/`Resume` (премиса дизайна ВЕРНА); уход-возврат = `Start` БЕЗ `Resume` (запрос
+   честно висит pending). Локальная копия — `probes/lifecycle_probe/`.
+3. **[uglyoldbob/jni-min-helper#3](https://github.com/uglyoldbob/jni-min-helper/pull/3)** —
+   наш **draft PR**: dex-free `PermissionRequestLifecycle` через `ActivityLifecycleCallbacks`
+   (register на Application, `requestPermissions` на Activity юзера, резолв на
+   `onActivityResumed`). Компилится под aarch64, рантаймом в крейте НЕ тестирован. Форк
+   `enomado/jni-min-helper`, ветка `lifecycle-permission-request`, клон `/home/sc/t/jni-min-helper`.
+
+### ⛔ ГДЕ ЗАСТРЯЛИ (2026-07-24): soundness `jni`, НЕ наш код
+Мейнтейнер (`wuwbobo2021`) PR не отклонил, но переключился на баг в самом `jni` и просит
+помочь в диалоге с мейнтейнерами jni-rs:
+[**jni-rs/jni-rs#833**](https://github.com/jni-rs/jni-rs/issues/833) (cc `@ColonelThirtyTwo`,
+мейнтейнер jni-rs).
+
+**Суть #833:** `jni` 0.22.4 продвигает *динамическую регистрацию* native-методов.
+Класслоадер A (загрузил нативную библиотеку с обработчиками) ≠ класслоадер B класса C
+(объявляет native-методы). GC уносит A → библиотека выгружается → живые инстансы C
+остаются → вызов native-метода C = висячий указатель = **UB**. Воспроизводимый тест-кейс
+на PC (URLClassLoader) есть в теле issue.
+
+🔑 **КЛЮЧЕВОЙ НЮАНС для нас:** по его же анализу `android-activity`/Tauri **НЕ затронуты** —
+все крейты собраны в ОДНУ `.so`, живущую до смерти процесса; выгрузка dylib на Android —
+экзотика. Наш `DynamicProxy`/`InvocHdl` (PR #3) использует ту же механику native-методов,
+но нашего сценария (NativeActivity, единая .so) баг **не касается**. То есть для НАШЕЙ цели
+блокера нет; мейнтейнер держит паузу ради общей корректности крейта.
+
+### NEXT SESSION (свежий бюджет — это тонкий разбор, наспех НЕ отвечать)
+- Прочитать #833 целиком + референс [#526 comment](https://github.com/jni-rs/jni-rs/issues/526#issuecomment-5066800787),
+  понять позицию мейнтейнеров jni-rs. Прогнать PC-репро (Java+cargo, есть в issue) —
+  подтвердить UB своими глазами перед любым высказыванием.
+- Полезный вклад в #833: (а) подтвердить/уточнить рассуждение «single sustained .so ⇒
+  Android/NativeActivity вне зоны риска» — это снимает страх ИМЕННО для мобильного юзкейса;
+  (б) обсудить, реалистичен ли `JNI_Unload`-хук для авто-разрегистрации (сам автор зовёт
+  идею «probably bad»); (в) есть ли у jni-rs план документировать контракт вместо кода.
+- Цель — разморозить PR #3. Если #833 уйдёт в долгую — можно предложить мейнтейнеру мёржить
+  lifecycle-путь с оговоркой в доке (для Android он sound), не дожидаясь общего решения.
+- Параллельно всё ещё открыт **docs-PR в android-activity** (секция «Runtime permissions»),
+  его можно двигать независимо.
+
 ## ПЛАН на следующую сессию
 1. **Подтвердить тип объекта** (в `request_record_audio`, разово через `alog`):
    - `env.is_instance_of(activity, jni_str!("android/app/Activity"))?` → bool;
