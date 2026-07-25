@@ -153,7 +153,9 @@ target_sdk_version = 34
 # оптимизированный (release-profile) APK без заведения отдельного релизного ключа;
 # для публикации в стор нужен настоящий ключ — заменить path/пароль здесь.
 [package.metadata.android.signing.release]
-path = "~/.android/debug.keystore"
+# ⚠ cargo-apk НЕ раскрывает `~` — путь с тильдой он склеивает с manifest dir
+# (`<repo>/~/.android/...`) и apksigner падает на FileNotFound. Только абсолютный.
+path = "/home/sc/.android/debug.keystore"
 keystore_password = "android"
 
 # Снейл питается с микрофона → без RECORD_AUDIO банк резонаторов молчит.
