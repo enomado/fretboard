@@ -368,7 +368,16 @@ fn is_cpal_audio_server_proxy(id: &str, name: &str) -> bool {
         || lowered == format!("{CPAL_INPUT_ID_PREFIX}pipewire pipewire")
 }
 
+/// Есть ли на этой машине рабочий pulse-путь захвата.
+///
+/// Гейт `cfg!(target_os = "linux")` стоит ПЕРЕД спавном: pulse-путь — это процесс
+/// `parec` (см. комментарий к [`enumerate_input_options`]), т.е. Linux-only по
+/// построению. Без гейта каждое перечисление устройств на Android/macOS/Windows
+/// заводило заведомо провальный процесс.
 fn pulse_input_available() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
     ProcessCommand::new("parec")
         .arg("--version")
         .stdout(Stdio::null())
@@ -377,10 +386,94 @@ fn pulse_input_available() -> bool {
         .is_ok()
 }
 
+/// Маршрут входа, которого на этой платформе быть не может, деградирует в дефолтный вход.
+///
+/// Зачем: `selected_input_id` персистится между запусками (`app::persist`), а pulse-id
+/// уводит захват в процесс `parec`, которого вне Linux нет. Доехав до `build_capture`
+/// на Android, такой id не открыл бы поток вообще и AAudio не сказал бы ни слова —
+/// ровно та подпись отказа, которую мы наблюдали на устройстве.
+///
+/// Почему `None`, а не проброс дальше: `None` = вход по умолчанию, поэтому худшее
+/// последствие деградации — «не тот микрофон», а не тишина. Проброс дал бы
+/// `Err("Input device not found: …")` из [`select_input_device`], т.е. отказ вместо
+/// работающего звука.
+///
+/// Гейт — рантайм-`cfg!`, а не `#[cfg]`-блок: компилится и тестируется на всех
+/// таргетах, не плодит платформенных веток кода.
+pub(super) fn route_id_for_this_platform(id: Option<String>) -> Option<String> {
+    let kept = keep_route_id(id.as_deref(), cfg!(target_os = "linux"));
+    if kept.is_none()
+        && let Some(dropped) = id.as_deref()
+    {
+        // Молчаливая подмена входа хуже отказа ⇒ обязательно оставить след.
+        super::audio_alog(&format!(
+            "input route {dropped} is unavailable on this platform, falling back to the default \
+             input"
+        ));
+    }
+    kept.map(str::to_owned)
+}
+
+/// Чистое ядро [`route_id_for_this_platform`] — платформа передана параметром,
+/// поэтому тестируются обе ветки независимо от таргета сборки.
+///
+/// Все pulse-маршруты (включая `PULSE_DEFAULT_SOURCE_ID`/`PULSE_DEFAULT_MONITOR_ID`)
+/// имеют общий префикс `pulse::` ⇒ хватает одной проверки префикса.
+fn keep_route_id(id: Option<&str>, pulse_supported: bool) -> Option<&str> {
+    match id {
+        Some(id) if id.starts_with(PULSE_INPUT_ID_PREFIX) && !pulse_supported => None,
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_pulse_source_input_options;
+    use super::{
+        keep_route_id,
+        parse_pulse_source_input_options,
+    };
     use crate::audio::AudioInputKind;
+    use crate::audio::native::imp::{
+        PULSE_DEFAULT_MONITOR_ID,
+        PULSE_DEFAULT_SOURCE_ID,
+    };
+
+    // Персистнутый pulse-маршрут вне Linux обязан деградировать в дефолтный вход:
+    // без этого захват не открывается вообще и отказ ничем себя не проявляет.
+    #[test]
+    fn pulse_route_degrades_to_default_input_where_pulse_cannot_exist() {
+        assert_eq!(keep_route_id(Some(PULSE_DEFAULT_SOURCE_ID), false), None);
+        assert_eq!(keep_route_id(Some(PULSE_DEFAULT_MONITOR_ID), false), None);
+        assert_eq!(
+            keep_route_id(Some("pulse::alsa_input.usb-Focusrite"), false),
+            None
+        );
+    }
+
+    #[test]
+    fn pulse_route_survives_on_linux() {
+        assert_eq!(
+            keep_route_id(Some(PULSE_DEFAULT_SOURCE_ID), true),
+            Some(PULSE_DEFAULT_SOURCE_ID)
+        );
+        assert_eq!(
+            keep_route_id(Some("pulse::alsa_input.usb-Focusrite"), true),
+            Some("pulse::alsa_input.usb-Focusrite")
+        );
+    }
+
+    // cpal-маршрут платформенно нейтрален (cpal есть везде) ⇒ его не трогаем никогда,
+    // иначе выбор устройства терялся бы на ровном месте.
+    #[test]
+    fn cpal_route_is_never_dropped() {
+        for pulse_supported in [false, true] {
+            assert_eq!(
+                keep_route_id(Some("cpal::hw:CARD=Solo"), pulse_supported),
+                Some("cpal::hw:CARD=Solo")
+            );
+            assert_eq!(keep_route_id(None, pulse_supported), None);
+        }
+    }
 
     #[test]
     fn pulse_source_parser_keeps_mics_and_monitors_classified() {

@@ -84,11 +84,23 @@ pub(super) mod imp {
     #[cfg(not(target_os = "android"))]
     fn audio_alog(_msg: &str) {}
 
+    /// Единственный канал для ошибок, приходящих ИЗ колбэка драйвера.
+    ///
+    /// Такую ошибку некуда вернуть (`Result` у колбэка нет), а на устройстве
+    /// `eprintln!` уходит в никуда — см. [`audio_alog`]. При этом отвал устройства
+    /// на телефоне самый частый случай: свернули приложение → AAudio закрыл вход.
+    /// На десктопе поведение прежнее: `audio_alog` там no-op, остаётся stderr.
+    fn report_stream_error(what: &str, err: &cpal::Error) {
+        audio_alog(&format!("{what} error: {err}"));
+        eprintln!("{what} error: {err}");
+    }
+
     use devices::{
         cpal_device_display_name,
         enumerate_input_options,
         low_latency_monitor_ring_len,
         preferred_low_latency_buffer,
+        route_id_for_this_platform,
         select_cpal_capture,
     };
     use recorder::{
@@ -712,7 +724,7 @@ pub(super) mod imp {
                             }
                         }
                     },
-                    |err| eprintln!("Drone output error: {err}"),
+                    |err| report_stream_error("Drone output", &err),
                     None,
                 )
                 .map_err(|e| format!("Failed to build drone output: {e}"))?;
@@ -726,6 +738,11 @@ pub(super) mod imp {
         // Поднимает входной stream, кольцевые буферы, анализ-воркер и
         // (опционально) монитор-выход. Возвращает собранный ActiveCapture.
         fn build_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
+            // Единственная точка развилки pulse/cpal ⇒ здесь же отсекаем маршрут,
+            // которого на этой платформе быть не может (персистнутый pulse-id на
+            // Android). Подробности — в `route_id_for_this_platform`.
+            let id = route_id_for_this_platform(id);
+
             if let Some(requested) = id.as_deref()
                 && requested.starts_with(PULSE_INPUT_ID_PREFIX)
             {
@@ -1219,7 +1236,7 @@ pub(super) mod imp {
                         }
                     }
                 },
-                |err| eprintln!("Input stream error: {err}"),
+                |err| report_stream_error("Input stream", &err),
                 None,
             )
             .map_err(|e| format!("Failed to build input stream: {e}"))
@@ -1377,7 +1394,7 @@ pub(super) mod imp {
                         }
                     }
                 },
-                |err| eprintln!("Monitor output error: {err}"),
+                |err| report_stream_error("Monitor output", &err),
                 None,
             )
             .map_err(|e| format!("Failed to build monitor output: {e}"))?;
@@ -1430,7 +1447,7 @@ pub(super) mod imp {
                         }
                     }
                 },
-                |err| eprintln!("Test note output error: {err}"),
+                |err| report_stream_error("Test note output", &err),
                 None,
             )
             .map_err(|e| format!("Failed to build test note output: {e}"))?;
