@@ -354,6 +354,11 @@ impl RtSwipe {
     /// ⚠ Read it as a delay, not as a lag-sweep prediction: a sweep's peak is
     /// `delay + envelope`, and the envelope's share is a property of the *note*, not of this
     /// module (`docs/pitch_benchmark.md`, "A lag-sweep peak is not a group delay").
+    ///
+    /// `#[cfg(test)]` because the only caller today is the lag sweep in `pitch_bench` — the
+    /// frontend is not wired into an engine yet, so nothing shipping has a frame to place in
+    /// time. Ungate it the moment a consumer appears; the math is not test scaffolding.
+    #[cfg(test)]
     pub(crate) fn delay_seconds(&self, hz: f32) -> f32 {
         let taps = &self.lambda[self.bin_of(hz)];
         // The blend's own weights: a candidate scored half from a 2048-window and half from a
@@ -366,6 +371,9 @@ impl RtSwipe {
 
     /// The grid bin nearest `hz`, clamped to the grid. Private: bins are this module's
     /// internal coordinate, and the ones that leave it do so inside a [`SalienceFrame`].
+    ///
+    /// `#[cfg(test)]` follows its callers — [`Self::delay_seconds`] and the tests.
+    #[cfg(test)]
     fn bin_of(&self, hz: f32) -> usize {
         let midi = 69.0 + 12.0 * (hz / self.reference_hz).log2();
         (((midi - MIN_MIDI) * BINS_PER_SEMITONE).round().max(0.0) as usize).min(SPIRAL_BIN_COUNT - 1)

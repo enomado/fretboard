@@ -171,6 +171,7 @@ pub(crate) fn resonator_note_labels(min_midi: usize, max_midi: usize, style: Acc
 /// How many harmonics [`resonator_fundamental`] sums when scoring a candidate as a
 /// fundamental. 5 is enough to out-vote a single loud overtone without dragging in
 /// noise from the far end of the bank.
+#[cfg(test)]
 pub(crate) const RESONATOR_HARMONICS: usize = 5;
 
 /// Harmonic-aware fundamental from one reassigned resonator column — the *fast*
@@ -195,6 +196,12 @@ pub(crate) const RESONATOR_HARMONICS: usize = 5;
 /// Returns `(fractional_midi, strength)` where `strength` is the fundamental bin's
 /// own normalized magnitude (for a downstream silence gate), or `None` if nothing
 /// crosses `floor`.
+///
+/// `#[cfg(test)]`: `swipe`'s kernel replaced this on the shipping path, and what keeps
+/// the code here is that it is the **oracle** the replacement is argued against — the
+/// old comb fed exactly what production fed it (`swipe`'s violin-G probe). It goes when
+/// that probe does, not before.
+#[cfg(test)]
 pub(crate) fn resonator_fundamental(
     column: &[f32],
     min_midi: f32,
