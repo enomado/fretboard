@@ -1,22 +1,15 @@
+# shared-rustfmt-policy: 2026-08-31
 max_width = 110
-# imports_granularity="Crate"
-imports_granularity = "Module"
+style_edition = "2024"
 
-# imports_layout = "HorizontalVertical"
+imports_granularity = "Module"
 imports_layout = "Vertical"
+group_imports = "StdExternalCrate"
 
 struct_field_align_threshold = 16
 force_multiline_blocks = true
+empty_item_single_line = false
 blank_lines_lower_bound = 0
 
-empty_item_single_line = false
-# format_strings= true
-
-style_edition = "2024"
-
-# ломает закомменченный код
+# Formatting commented-out code can silently change examples and recovery notes.
 wrap_comments = false
-
-group_imports = "StdExternalCrate"
-
-# blank_lines_upper_bound = 1
