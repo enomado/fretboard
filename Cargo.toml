@@ -19,24 +19,24 @@ path = "src/main.rs"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-egui_tiles = "*"
-itertools = { version = "*" }
+egui_tiles = "0.17.1"
+itertools = { version = "0.15.0" }
 serde_json.workspace = true
 serde.workspace = true
-nom = { version = "*" }
+nom = { version = "8.0.0" }
 # `Instant` that works on every target: re-exports std on native/Android, and
 # uses `performance.now()` on wasm — std::time::Instant panics ("time not
 # implemented on this platform") on wasm32-unknown-unknown.
-web-time = "*"
+web-time = "1.1.0"
 
 # DSP core (FFT spectrum + resonator bank) — shared by the native and wasm audio
 # engines (`audio::dsp`/`audio::core`), so these are all-target deps. cpal/ringbuf
 # stay native-only: the browser captures via Web Audio, not cpal.
-rustfft = "*"
+rustfft = "6.4.1"
 # Real-input FFT for the RT-SWIPE frontend (`audio::dsp::rtswipe`): half the
 # butterflies of a full complex FFT on a real signal, same output bins. Wraps the
 # same `rustfft` (^6, unifies with the pin above → one `num_complex`, one `Complex32`).
-realfft = "*"
+realfft = "3.5.0"
 # Fork (PR jhartquist/resonators#6): adds OnePoleBank — the phasor-free, self-
 # stabilizing core (~1.4–1.7× faster) plus an f64 de-rotation fix that keeps
 # phase()/complex() accurate over a long session. We drive the snail's Δφ
@@ -48,15 +48,15 @@ eframe.workspace = true
 
 [dev-dependencies]
 # Direct handle on the same RON used by eframe storage, for the persistence round-trip test.
-ron = "*"
+ron = "0.12.2"
 # Renders widgets offscreen through the real egui/epaint/wgpu stack, so the pill's
 # text centring can be asserted on actual pixels instead of on font metrics.
-egui_kittest = { version = "0.35", features = ["wgpu"] }
+egui_kittest = { version = "0.36", features = ["wgpu"] }
 image = "0.25"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-cpal = "*"
-ringbuf = "*"
+cpal = "0.18.2"
+ringbuf = "0.5.1"
 # WAV, both directions, and every end is about the same corpus:
 #   - `audio::native::imp::recorder` WRITES takes straight off the capture ring,
 #     which is what makes a take *be* the signal the detector saw rather than a
@@ -80,18 +80,18 @@ dioxus-cli-config.workspace = true
 tungstenite.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-android-activity = { version = "*", features = ["native-activity"] }
+android-activity = { version = "0.6.1", features = ["native-activity"] }
 eframe = { workspace = true, features = ["android-native-activity", "wgpu"] }
 # Runtime RECORD_AUDIO request (see src/android_perm.rs). jni/ndk-context are
 # already in the tree transitively via cpal/android-activity.
-jni = "*"
-ndk-context = "*"
+jni = "0.22.4"
+ndk-context = "0.1.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 eframe = { workspace = true, features = ["glow", "persistence"] }
-wasm-bindgen = "*"
-wasm-bindgen-futures = "*"
-js-sys = "*"
+wasm-bindgen = "0.2.127"
+wasm-bindgen-futures = "0.4.77"
+js-sys = "0.3.104"
 # Wire format for main-thread ↔ DSP-worker messages (samples / settings out,
 # readings back). Compact binary, much cheaper than JSON for the f32 spectra.
 # Compact binary serde format for the wire protocol. postcard keeps payloads
@@ -103,7 +103,7 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 # Web Audio capture (mic via getUserMedia, system via getDisplayMedia) + the
 # audio graph (MediaStreamSource → ScriptProcessor) that ships samples to the
 # DSP web worker.
-web-sys = { version = "*", features = [
+web-sys = { version = "0.3.104", features = [
     "Document",
     "Window",
     "Element",
@@ -191,10 +191,10 @@ inherits = "dev"
 
 
 [workspace.dependencies]
-egui = "*"
-eframe = { version = "*", default-features = false, features = ["default_fonts", "persistence"] }
-subsecond = "*"
-dioxus-cli-config = "*"
-tungstenite = { version = "*", features = ["native-tls"] }
-serde_json = "*"
-serde = { version = "*", features = ["derive"] }
+egui = "0.36.1"
+eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "persistence"] }
+subsecond = "0.7.10"
+dioxus-cli-config = "0.7.10"
+tungstenite = { version = "0.30.0", features = ["native-tls"] }
+serde_json = "1.0.151"
+serde = { version = "1.0.229", features = ["derive"] }
