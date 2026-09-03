@@ -40,8 +40,10 @@ realfft = "3.5.0"
 # Fork (PR jhartquist/resonators#6): adds OnePoleBank — the phasor-free, self-
 # stabilizing core (~1.4–1.7× faster) plus an f64 de-rotation fix that keeps
 # phase()/complex() accurate over a long session. We drive the snail's Δφ
-# reassignment off phase(), so the f64 fix matters here. Pin to a rev so the
-# build is reproducible; bump to the crates.io release once the PR lands.
+# reassignment off phase(), so the f64 fix matters here. We follow the branch on
+# purpose — the fork is ours and its fixes should arrive without a manifest edit,
+# so the exact commit is held by Cargo.lock alone and moves on `cargo update`.
+# Switch to the crates.io release once the PR lands.
 resonators = { git = "https://github.com/enomado/resonators.git", branch = "onepole-bank" }
 
 eframe.workspace = true
