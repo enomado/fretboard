@@ -17,7 +17,7 @@ use eframe::egui::{
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PNote;
 use crate::core_types::scale::Scale;
-use crate::ui::fretboard::Fretboard;
+use crate::ui::fretboard::geometry::Fretboard;
 
 pub trait Mark {
     fn mark(&self, note: &PNote) -> Color32;

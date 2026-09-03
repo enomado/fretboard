@@ -4,7 +4,7 @@
 //!   • УСТОЙЧИВОСТЬ во времени — тоника возвращается из кадра в кадр.
 //! Смесь этих улик на pitch-класс и говорит, какой класс похож на тонику.
 
-use super::{
+use super::chroma::{
     Chroma,
     PITCH_CLASS_COUNT,
     fold_chroma_with,

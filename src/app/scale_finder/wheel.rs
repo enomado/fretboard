@@ -11,13 +11,13 @@ use eframe::egui::{
     vec2,
 };
 
-use super::{
+use super::ranking::{
     COLOR_SPIRAL,
     Ranking,
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PCNote;
-use crate::core_types::scale_detect::PITCH_CLASS_COUNT;
+use crate::core_types::scale_detect::chroma::PITCH_CLASS_COUNT;
 use crate::ui::snail::{
     pitch_class_angle,
     pitch_class_color,

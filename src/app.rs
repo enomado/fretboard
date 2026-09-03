@@ -52,7 +52,7 @@ use crate::core_types::scale::{
     Degree,
     Scale,
 };
-use crate::core_types::scale_detect::ScaleFinderConfig;
+use crate::core_types::scale_detect::ensemble::ScaleFinderConfig;
 use crate::core_types::tuning::{
     Fret,
     GString,

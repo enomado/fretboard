@@ -10,13 +10,13 @@ use eframe::egui::{
 };
 
 use super::super::App;
-use super::{
+use super::ranking::{
     COLOR_PROFILE,
     COLOR_ROOT,
     COLOR_SET,
     COLOR_SPIRAL,
 };
-use crate::core_types::scale_detect::MethodWeights;
+use crate::core_types::scale_detect::ensemble::MethodWeights;
 use crate::ui::tokens::color;
 
 impl App {

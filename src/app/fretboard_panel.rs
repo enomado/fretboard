@@ -40,11 +40,11 @@ use crate::ui::fretboard::draw::{
     draw_fretboard_scale,
     draw_string_lines_scale,
 };
-use crate::ui::fretboard::positions::draw_positions;
-use crate::ui::fretboard::{
+use crate::ui::fretboard::geometry::{
     FretConfig,
     Fretboard,
 };
+use crate::ui::fretboard::positions::draw_positions;
 use crate::ui::theme::fretboard_fill;
 use crate::ui::tokens::color;
 

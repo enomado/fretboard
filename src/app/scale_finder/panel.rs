@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 
 use super::super::ScaleKind;
-use super::{
+use super::ranking::{
     COLOR_PROFILE,
     COLOR_ROOT,
     COLOR_SET,
@@ -23,7 +23,7 @@ use super::{
     top_indices,
 };
 use crate::core_types::note::AccidentalStyle;
-use crate::core_types::scale_detect::PITCH_CLASS_COUNT;
+use crate::core_types::scale_detect::chroma::PITCH_CLASS_COUNT;
 use crate::ui::snail::pitch_class_color;
 use crate::ui::tokens::color;
 

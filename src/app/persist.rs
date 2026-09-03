@@ -26,7 +26,7 @@ use crate::audio::{
 };
 use crate::core_types::note::Note;
 use crate::core_types::pitch::PNote;
-use crate::core_types::scale_detect::ScaleFinderConfig;
+use crate::core_types::scale_detect::ensemble::ScaleFinderConfig;
 
 /// Everything we carry across sessions. Owns a snapshot of the audio engine's
 /// settings (the engine itself is rebuilt fresh each launch) plus the UI
@@ -127,6 +127,7 @@ mod tests {
     use crate::app::workspace::default_workspace_tree;
     use crate::audio::AnalysisSettings;
     use crate::core_types::note::Note;
+    use crate::core_types::scale_detect::ensemble::ScaleFinderConfig;
 
     // Guards the RON wire contract: every persisted field (incl. the
     // egui_tiles tree and the audio settings) must round-trip. If a field
@@ -139,7 +140,7 @@ mod tests {
             root_note:         Note::G,
             live_chart:        super::LiveChartKind::Fft,
             test_note_midi:    37,
-            scale_finder:      crate::core_types::scale_detect::ScaleFinderConfig::default(),
+            scale_finder:      ScaleFinderConfig::default(),
             analysis_settings: AnalysisSettings::default(),
             input_gain:        1.5,
             monitor_enabled:   true,

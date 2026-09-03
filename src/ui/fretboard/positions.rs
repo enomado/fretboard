@@ -12,7 +12,7 @@ use eframe::egui::{
 };
 
 use crate::core_types::tuning::Fret;
-use crate::ui::fretboard::Fretboard;
+use crate::ui::fretboard::geometry::Fretboard;
 
 struct Position {
     name:      &'static str,

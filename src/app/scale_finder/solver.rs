@@ -19,11 +19,11 @@ use crate::audio::{
     AnalysisSettings,
     TunerReading,
 };
-use crate::core_types::scale_detect::method_root::fold_bass_chroma;
-use crate::core_types::scale_detect::{
+use crate::core_types::scale_detect::chroma::{
     Chroma,
     fold_chroma,
 };
+use crate::core_types::scale_detect::method_root::fold_bass_chroma;
 
 /// Потолок хранения: 20 c окно + запас. Кадры старше — отбрасываются.
 const HISTORY_MAX_AGE_SECS: f32 = 22.0;
