@@ -74,8 +74,10 @@ broken, confidently (`strength = 1.000` on the wrong answer).
   alone is **64 ms of the octave's 120 ms**, guarding against a bank slip that no longer
   happens (0/612). Not removed because the evidence is **two strings**. Retiring it on that
   basis is this plan's own recurring mistake. **Record D and E first.**
-- **`note_detection.md` says nothing about SWIPE′.** Its §3/§4 still describe the old
-  arrangement. It is the canon; it is now stale. Update it when the Viterbi lands.
+- ~~**`note_detection.md` says nothing about SWIPE′.**~~ **Closed** by
+  *docs(pitch): the canon catches up — SWIPE' and the Viterbi, and the fourth knob*:
+  §3's Stage 1B and Stage 2 now describe SWIPE′ and the `SalienceDecoder`, and §4 is the
+  two clocks. Checked 2026-09-03 — 14 mentions of SWIPE′/Viterbi in the canon.
 - Phases **1.8 / 1.9 / 1.10** remain unverified — see the table below. The violin takes
   exercise the octave decision, nothing else.
 
@@ -89,8 +91,18 @@ were candidates (`35db82e`). Look for the fourth.
 
 ### Where it stands
 
-**Read [`note_detection.md`](note_detection.md) before touching any of this** — with the
-caveat above that it predates SWIPE′.
+**Read [`note_detection.md`](note_detection.md) before touching any of this** — it has
+since caught up with SWIPE′ and the Viterbi (see the bullet above).
+
+> **⚠ Every commit SHA quoted on this page is dead.** Checked 2026-09-03: `35db82e`,
+> `9985bce`, `9faa799`, `1a8c6e1`, `f987de9`, `dc7b0b7`, `dca9832` — none of them resolve
+> (`git log` says *unknown revision*), and the same holds for the SHAs in `memory/`. The
+> history was rewritten around 2026-07-16 when `memory/` and `testdata/*.wav` were purged
+> from it (`fbde2d3`), which re-hashed everything before that point. The work is all still
+> there under new hashes — **look it up by the commit subject**, which survived: `dca9832`
+> is now *perf(rtswipe): real-FFT фронтенд — 1.30× на лестнице*, `4f2e75b` (the Viterbi) is
+> *feat(pitch): the fast channel gets a Viterbi, and the octave gets faster*. Cite subjects,
+> not hashes, in anything written from here on.
 
 | commit | what | live-verified? |
 |---|---|---|
@@ -241,14 +253,17 @@ end-to-end octave 152 → 104 ms, and the layer stays whole until the gate opens
 
 1. **Answer the ghost question with the instrument** (see above), then fix or drop it.
    It is the only thing here that is *known* to write wrong notes.
-2. **The pitch roll's time axis** — the half of §4 that 1.9 deliberately left. Its
-   history is still sampled per UI frame ("~10 s at 60 fps, ~20 s at 30 fps"), so the
-   axis is the wrong ruler. This is *display fidelity*, not a decision: the line's
-   values are decided upstream and merely sampled late. Not done with the segmenter
-   because it needs its own design — an engine-side history the panel drains **by
-   sequence** rather than per frame, plus a decision about the heat, which must stay
-   aligned 1:1 with the line and costs ~70 MB/s if 600 columns × ~480 bins ride every
-   reading. The staff's trail has the same shape and the same excuse.
+2. ~~**The pitch roll's time axis**~~ — **done in Phase 1.10**, which is described in this
+   same file; the entry survived here by accident and was read as open work on 2026-09-03.
+   Every claim it made is now false: the roll takes the engine's history by cursor
+   (`AudioEngine::melody_since`, `MelodyHistory::with_retention`) and places each frame at
+   `MelodyFrame::t`, the staff reads the same frames through its own cursor, and the heat
+   rides the same `MelodyFrame` as the line. The feared ~70 MB/s never happened — a cursor
+   delta is 1–2 columns ≈ 0.23 MB/s. Pinned by
+   `pitch_roll_panel::the_visible_span_is_seconds_not_frames` and
+   `::history_is_paced_by_the_audio_not_the_frame_rate` (13 panel tests, all green).
+   **Still ⚠ not live-verified** — that is what remains, and it belongs to the checklist
+   above, not to this list.
 3. ~~`LOWEST_TRACKED_FREQUENCY = 16 Hz`~~ and ~~the inert `BANK_WEIGHT` fusion~~ —
    **both done in Phase 1.12.** Neither was quite the debt it was written up as; the
    fusion in particular was not inert. Read 1.12 before trusting anything this file
