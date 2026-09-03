@@ -1,1830 +1,1828 @@
-pub(super) mod imp {
-    use std::io::Read;
-    use std::path::PathBuf;
-    use std::process::{
-        Child,
-        Command as ProcessCommand,
-        Stdio,
-    };
-    use std::sync::atomic::{
-        AtomicBool,
-        AtomicU32,
-        Ordering,
-    };
-    use std::sync::mpsc::{
-        self,
-        Receiver,
-        Sender,
-    };
-    use std::sync::{
-        Arc,
-        Mutex,
-    };
-    use std::thread::{
-        self,
-        JoinHandle,
-    };
-    use std::time::{
-        Duration,
-        Instant,
-    };
+use std::io::Read;
+use std::path::PathBuf;
+use std::process::{
+    Child,
+    Command as ProcessCommand,
+    Stdio,
+};
+use std::sync::atomic::{
+    AtomicBool,
+    AtomicU32,
+    Ordering,
+};
+use std::sync::mpsc::{
+    self,
+    Receiver,
+    Sender,
+};
+use std::sync::{
+    Arc,
+    Mutex,
+};
+use std::thread::{
+    self,
+    JoinHandle,
+};
+use std::time::{
+    Duration,
+    Instant,
+};
 
-    use cpal::traits::{
-        DeviceTrait,
-        HostTrait,
-        StreamTrait,
-    };
-    use cpal::{
-        FromSample,
-        Sample,
-    };
-    use resonators::midi_to_hz;
-    use ringbuf::HeapRb;
-    use ringbuf::traits::{
-        Consumer,
-        Producer,
-        Split,
-    };
+use cpal::traits::{
+    DeviceTrait,
+    HostTrait,
+    StreamTrait,
+};
+use cpal::{
+    FromSample,
+    Sample,
+};
+use resonators::midi_to_hz;
+use ringbuf::HeapRb;
+use ringbuf::traits::{
+    Consumer,
+    Producer,
+    Split,
+};
 
-    use super::super::types::{
-        AnalysisSettings,
-        ArpPattern,
-        AudioInputOption,
-        AudioStatus,
-        DroneMode,
-        DroneState,
-        MelodyFrame,
-        RecorderStatus,
-        ReplayStatus,
-        ResonatorReading,
-        TakeOnDisk,
-        Timbre,
-        TunerReading,
-    };
-    use crate::core_types::pitch::PNote;
+use super::super::types::{
+    AnalysisSettings,
+    ArpPattern,
+    AudioInputOption,
+    AudioStatus,
+    DroneMode,
+    DroneState,
+    MelodyFrame,
+    RecorderStatus,
+    ReplayStatus,
+    ResonatorReading,
+    TakeOnDisk,
+    Timbre,
+    TunerReading,
+};
+use crate::core_types::pitch::PNote;
 
-    mod devices;
-    mod recorder;
-    mod replay;
+mod devices;
+mod recorder;
+mod replay;
 
-    /// Диагностика аудио-пути на Android.
-    ///
-    /// Зачем отдельный канал: на устройстве `eprintln!` уходит в никуда (stdout/stderr
-    /// приложения не попадают в logcat без `log.redirect-stdio`), а крейт `log` тут
-    /// молчит — какая-то зависимость вырезает его через `log/max_level_*`. Поэтому
-    /// единственный способ узнать, почему захват не поднялся, — liblog напрямую, тем же
-    /// тегом `snail`, что и пермишен-драйвер: `adb logcat -s snail`.
-    ///
-    /// На остальных платформах — no-op: там ошибка и так видна в UI (`AudioStatus::Error`)
-    /// и в терминале.
-    #[cfg(target_os = "android")]
-    fn audio_alog(msg: &str) {
-        crate::android_perm::alog(msg);
+/// Диагностика аудио-пути на Android.
+///
+/// Зачем отдельный канал: на устройстве `eprintln!` уходит в никуда (stdout/stderr
+/// приложения не попадают в logcat без `log.redirect-stdio`), а крейт `log` тут
+/// молчит — какая-то зависимость вырезает его через `log/max_level_*`. Поэтому
+/// единственный способ узнать, почему захват не поднялся, — liblog напрямую, тем же
+/// тегом `snail`, что и пермишен-драйвер: `adb logcat -s snail`.
+///
+/// На остальных платформах — no-op: там ошибка и так видна в UI (`AudioStatus::Error`)
+/// и в терминале.
+#[cfg(target_os = "android")]
+fn audio_alog(msg: &str) {
+    crate::android_perm::alog(msg);
+}
+#[cfg(not(target_os = "android"))]
+fn audio_alog(_msg: &str) {
+}
+
+/// Единственный канал для ошибок, приходящих ИЗ колбэка драйвера.
+///
+/// Такую ошибку некуда вернуть (`Result` у колбэка нет), а на устройстве
+/// `eprintln!` уходит в никуда — см. [`audio_alog`]. При этом отвал устройства
+/// на телефоне самый частый случай: свернули приложение → AAudio закрыл вход.
+/// На десктопе поведение прежнее: `audio_alog` там no-op, остаётся stderr.
+fn report_stream_error(what: &str, err: &cpal::Error) {
+    audio_alog(&format!("{what} error: {err}"));
+    eprintln!("{what} error: {err}");
+}
+
+use devices::{
+    cpal_device_display_name,
+    enumerate_input_options,
+    low_latency_monitor_ring_len,
+    preferred_low_latency_buffer,
+    route_id_for_this_platform,
+    select_cpal_capture,
+};
+use recorder::{
+    RecorderHandle,
+    RecorderTap,
+    recorder_ring,
+    start_recorder_worker,
+};
+use replay::{
+    ReplayHandle,
+    list_takes,
+    load_take,
+    start_replay_source,
+};
+
+// The analysis (FFT/YIN/resonator) and the pipelines that drive it live in
+// the target-agnostic `audio::core`/`audio::dsp` so the wasm engine reuses
+// exactly the same code. Native owns only capture + threading below.
+use crate::audio::core::{
+    AnalysisPipeline,
+    ResonatorPipeline,
+    SharedState,
+    set_shared_error,
+};
+use crate::audio::dsp::analysis_math::{
+    NOTE_BUCKET_MAX_MIDI,
+    NOTE_BUCKET_MIN_MIDI,
+};
+
+const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
+#[cfg(target_os = "windows")]
+const CPAL_DEFAULT_OUTPUT_LOOPBACK_ID: &str = "cpal-loopback::@DEFAULT_OUTPUT@";
+const PULSE_INPUT_ID_PREFIX: &str = "pulse::";
+const PULSE_DEFAULT_SOURCE_ID: &str = "pulse::@DEFAULT_SOURCE@";
+const PULSE_DEFAULT_MONITOR_ID: &str = "pulse::@DEFAULT_MONITOR@";
+const PULSE_CAPTURE_RATE: u32 = 48_000;
+const PULSE_CAPTURE_LATENCY_MS: u32 = 20;
+const PULSE_CAPTURE_PROCESS_MS: u32 = 10;
+const LOW_LATENCY_TARGET_FRAMES: u32 = 256;
+
+// Analysis tuning constants (window/waterfall/interval) live in `audio::core`.
+
+// Gain
+const DEFAULT_INPUT_GAIN: f32 = 1.0;
+const MIN_INPUT_GAIN: f32 = 0.1;
+const MAX_INPUT_GAIN: f32 = 12.0;
+const MONITOR_DEFAULT_GAIN: f32 = 0.35;
+const TEST_TONE_GAIN: f32 = 0.28;
+const TEST_TONE_DURATION: Duration = Duration::from_millis(1_600);
+/// Общий потолок громкости дрона после суммирования голосов (до мастер-гейна
+/// из [`DroneState`]). Держит даже плотный аккорд в безопасном пределе.
+const DRONE_OUTPUT_GAIN: f32 = 0.5;
+/// Время сглаживания вкл/выкл голоса (атака/спад), сек. Убирает щелчки при
+/// смене нот, пульсе и шагах арпеджио, не размазывая ритм.
+const DRONE_RAMP_SECONDS: f32 = 0.006;
+/// Вибрато смычка ([`Timbre::Violin`]): частота LFO и глубина (доля частоты).
+/// Тонкое — для тепла, не для эффекта.
+const DRONE_VIBRATO_HZ: f32 = 5.5;
+const DRONE_VIBRATO_DEPTH: f32 = 0.004; // ±0.4 % высоты
+/// Перкуссивное затухание удара ([`Timbre::EPiano`]): e-fold за столько секунд.
+/// Зажатая клавиша затухает в тишину, как у настоящего пиано.
+const DRONE_PLUCK_DECAY_SECONDS: f32 = 2.2;
+
+// Время паузы воркера, когда в кольце нет свежих сэмплов
+const ANALYSIS_IDLE_SLEEP: Duration = Duration::from_millis(5);
+/// Сколько резонаторный банк ещё молотит после последнего запроса от UI.
+/// UI двигает дедлайн каждый кадр, пока панель-потребитель видна; когда панель
+/// закрылась и запросы прекратились, через этот грейс воркер паркуется.
+const RESONATOR_PARK_GRACE: Duration = Duration::from_millis(300);
+/// Сон запаркованного резонаторного воркера между сливами кольца.
+const RESONATOR_PARK_SLEEP: Duration = Duration::from_millis(20);
+
+type SampleProducer = <HeapRb<f32> as Split>::Prod;
+type SampleConsumer = <HeapRb<f32> as Split>::Cons;
+
+// `SharedState` (the UI-facing snapshot) is defined in `audio::core`.
+
+// ------------------------------------------------------------------
+// AudioEngine: тонкий фасад для UI. Всё живое в отдельном audio-треде,
+// UI общается с ним через mpsc-канал и набор атомиков/мутексов.
+// ------------------------------------------------------------------
+pub struct AudioEngine {
+    shared:              Arc<Mutex<SharedState>>,
+    settings:            Arc<Mutex<AnalysisSettings>>,
+    input_gain:          Arc<AtomicU32>,
+    input_level:         Arc<AtomicU32>,
+    monitor_enabled:     Arc<AtomicBool>,
+    monitor_gain:        Arc<AtomicU32>,
+    input_sample_rate:   Arc<AtomicU32>,
+    monitor_output_rate: Arc<AtomicU32>, // 0 = output не запущен
+    selected_input_id:   Arc<Mutex<Option<String>>>,
+    resonator_wanted:    Arc<Mutex<Instant>>, // дедлайн «банк нужен до» (гейт)
+    // Живое состояние дрона: UI пишет его целиком (lock+write), реалтайм-
+    // колбэк дрон-стрима читает try_lock каждый блок. Источник истины для
+    // персиста, поэтому копии на App нет.
+    drone:               Arc<Mutex<DroneState>>,
+    // true, пока дрон-стрим поднят. Ставит/снимает audio-тред.
+    drone_playing:       Arc<AtomicBool>,
+    // Состояние записи дублей. Живёт НАД capture: смена устройства
+    // пересоздаёт весь capture, и писатель нового подхватывает то же
+    // намерение вместо того, чтобы потерять его.
+    recorder:            RecorderHandle,
+    /// Состояние реплея. Живёт НАД capture по той же причине, что и рекордер:
+    /// статус должен пережить capture, который его произвёл — UI спрашивает
+    /// «что там с дублем, который я проиграл» уже после того, как источник
+    /// отработал и встал.
+    replay:              ReplayHandle,
+    command_tx:          Option<Sender<Command>>,
+    audio_thread:        Option<JoinHandle<()>>,
+}
+
+enum Command {
+    SwitchInput(Option<String>),
+    SetMonitorEnabled(bool),
+    PlayTestNote(PNote),
+    StartDrone,
+    StopDrone,
+    /// Проиграть дубль через движок вместо живого входа.
+    StartReplay(PathBuf),
+    /// Вернуть живой вход. Отдельная команда, а не `SwitchInput`: вернуться
+    /// надо на ТО ЖЕ устройство, которое было выбрано до реплея, и знает его
+    /// audio-тред (capture'а), а не UI.
+    StopReplay,
+}
+
+impl Default for AudioEngine {
+    fn default() -> Self {
+        Self::new()
     }
-    #[cfg(not(target_os = "android"))]
-    fn audio_alog(_msg: &str) {}
+}
 
-    /// Единственный канал для ошибок, приходящих ИЗ колбэка драйвера.
-    ///
-    /// Такую ошибку некуда вернуть (`Result` у колбэка нет), а на устройстве
-    /// `eprintln!` уходит в никуда — см. [`audio_alog`]. При этом отвал устройства
-    /// на телефоне самый частый случай: свернули приложение → AAudio закрыл вход.
-    /// На десктопе поведение прежнее: `audio_alog` там no-op, остаётся stderr.
-    fn report_stream_error(what: &str, err: &cpal::Error) {
-        audio_alog(&format!("{what} error: {err}"));
-        eprintln!("{what} error: {err}");
-    }
+impl AudioEngine {
+    pub fn new() -> Self {
+        let shared = Arc::new(Mutex::new(SharedState::new()));
+        let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
+        let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
+        let input_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let monitor_enabled = Arc::new(AtomicBool::new(false));
+        let monitor_gain = Arc::new(AtomicU32::new(MONITOR_DEFAULT_GAIN.to_bits()));
+        let input_sample_rate = Arc::new(AtomicU32::new(0));
+        let monitor_output_rate = Arc::new(AtomicU32::new(0));
+        let selected_input_id = Arc::new(Mutex::new(None));
+        // Гейт резонатора: дедлайн в прошлом → пока никто не просит, банк не молотит.
+        let resonator_wanted = Arc::new(Mutex::new(Instant::now()));
+        let drone = Arc::new(Mutex::new(DroneState::default()));
+        let drone_playing = Arc::new(AtomicBool::new(false));
+        let recorder = RecorderHandle::new();
+        let replay = ReplayHandle::new();
 
-    use devices::{
-        cpal_device_display_name,
-        enumerate_input_options,
-        low_latency_monitor_ring_len,
-        preferred_low_latency_buffer,
-        route_id_for_this_platform,
-        select_cpal_capture,
-    };
-    use recorder::{
-        RecorderHandle,
-        RecorderTap,
-        recorder_ring,
-        start_recorder_worker,
-    };
-    use replay::{
-        ReplayHandle,
-        list_takes,
-        load_take,
-        start_replay_source,
-    };
+        let (command_tx, command_rx) = mpsc::channel::<Command>();
 
-    // The analysis (FFT/YIN/resonator) and the pipelines that drive it live in
-    // the target-agnostic `audio::core`/`audio::dsp` so the wasm engine reuses
-    // exactly the same code. Native owns only capture + threading below.
-    use crate::audio::core::{
-        AnalysisPipeline,
-        ResonatorPipeline,
-        SharedState,
-        set_shared_error,
-    };
-    use crate::audio::dsp::analysis_math::{
-        NOTE_BUCKET_MAX_MIDI,
-        NOTE_BUCKET_MIN_MIDI,
-    };
+        // Запускаем audio-тред: он единственный владеет cpal::Stream.
+        // UI шлёт команды через канал и мгновенно возвращается.
+        let audio_thread = thread::spawn({
+            let ctx = AudioContext {
+                shared:              shared.clone(),
+                settings:            settings.clone(),
+                input_gain:          input_gain.clone(),
+                input_level:         input_level.clone(),
+                monitor_enabled:     monitor_enabled.clone(),
+                monitor_gain:        monitor_gain.clone(),
+                input_sample_rate:   input_sample_rate.clone(),
+                monitor_output_rate: monitor_output_rate.clone(),
+                selected_input_id:   selected_input_id.clone(),
+                resonator_wanted:    resonator_wanted.clone(),
+                drone:               drone.clone(),
+                drone_playing:       drone_playing.clone(),
+                recorder:            recorder.clone(),
+                replay:              replay.clone(),
+            };
+            move || {
+                audio_thread_main(command_rx, ctx);
+            }
+        });
 
-    const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
-    #[cfg(target_os = "windows")]
-    const CPAL_DEFAULT_OUTPUT_LOOPBACK_ID: &str = "cpal-loopback::@DEFAULT_OUTPUT@";
-    const PULSE_INPUT_ID_PREFIX: &str = "pulse::";
-    const PULSE_DEFAULT_SOURCE_ID: &str = "pulse::@DEFAULT_SOURCE@";
-    const PULSE_DEFAULT_MONITOR_ID: &str = "pulse::@DEFAULT_MONITOR@";
-    const PULSE_CAPTURE_RATE: u32 = 48_000;
-    const PULSE_CAPTURE_LATENCY_MS: u32 = 20;
-    const PULSE_CAPTURE_PROCESS_MS: u32 = 10;
-    const LOW_LATENCY_TARGET_FRAMES: u32 = 256;
-
-    // Analysis tuning constants (window/waterfall/interval) live in `audio::core`.
-
-    // Gain
-    const DEFAULT_INPUT_GAIN: f32 = 1.0;
-    const MIN_INPUT_GAIN: f32 = 0.1;
-    const MAX_INPUT_GAIN: f32 = 12.0;
-    const MONITOR_DEFAULT_GAIN: f32 = 0.35;
-    const TEST_TONE_GAIN: f32 = 0.28;
-    const TEST_TONE_DURATION: Duration = Duration::from_millis(1_600);
-    /// Общий потолок громкости дрона после суммирования голосов (до мастер-гейна
-    /// из [`DroneState`]). Держит даже плотный аккорд в безопасном пределе.
-    const DRONE_OUTPUT_GAIN: f32 = 0.5;
-    /// Время сглаживания вкл/выкл голоса (атака/спад), сек. Убирает щелчки при
-    /// смене нот, пульсе и шагах арпеджио, не размазывая ритм.
-    const DRONE_RAMP_SECONDS: f32 = 0.006;
-    /// Вибрато смычка ([`Timbre::Violin`]): частота LFO и глубина (доля частоты).
-    /// Тонкое — для тепла, не для эффекта.
-    const DRONE_VIBRATO_HZ: f32 = 5.5;
-    const DRONE_VIBRATO_DEPTH: f32 = 0.004; // ±0.4 % высоты
-    /// Перкуссивное затухание удара ([`Timbre::EPiano`]): e-fold за столько секунд.
-    /// Зажатая клавиша затухает в тишину, как у настоящего пиано.
-    const DRONE_PLUCK_DECAY_SECONDS: f32 = 2.2;
-
-    // Время паузы воркера, когда в кольце нет свежих сэмплов
-    const ANALYSIS_IDLE_SLEEP: Duration = Duration::from_millis(5);
-    /// Сколько резонаторный банк ещё молотит после последнего запроса от UI.
-    /// UI двигает дедлайн каждый кадр, пока панель-потребитель видна; когда панель
-    /// закрылась и запросы прекратились, через этот грейс воркер паркуется.
-    const RESONATOR_PARK_GRACE: Duration = Duration::from_millis(300);
-    /// Сон запаркованного резонаторного воркера между сливами кольца.
-    const RESONATOR_PARK_SLEEP: Duration = Duration::from_millis(20);
-
-    type SampleProducer = <HeapRb<f32> as Split>::Prod;
-    type SampleConsumer = <HeapRb<f32> as Split>::Cons;
-
-    // `SharedState` (the UI-facing snapshot) is defined in `audio::core`.
-
-    // ------------------------------------------------------------------
-    // AudioEngine: тонкий фасад для UI. Всё живое в отдельном audio-треде,
-    // UI общается с ним через mpsc-канал и набор атомиков/мутексов.
-    // ------------------------------------------------------------------
-    pub struct AudioEngine {
-        shared:              Arc<Mutex<SharedState>>,
-        settings:            Arc<Mutex<AnalysisSettings>>,
-        input_gain:          Arc<AtomicU32>,
-        input_level:         Arc<AtomicU32>,
-        monitor_enabled:     Arc<AtomicBool>,
-        monitor_gain:        Arc<AtomicU32>,
-        input_sample_rate:   Arc<AtomicU32>,
-        monitor_output_rate: Arc<AtomicU32>, // 0 = output не запущен
-        selected_input_id:   Arc<Mutex<Option<String>>>,
-        resonator_wanted:    Arc<Mutex<Instant>>, // дедлайн «банк нужен до» (гейт)
-        // Живое состояние дрона: UI пишет его целиком (lock+write), реалтайм-
-        // колбэк дрон-стрима читает try_lock каждый блок. Источник истины для
-        // персиста, поэтому копии на App нет.
-        drone:               Arc<Mutex<DroneState>>,
-        // true, пока дрон-стрим поднят. Ставит/снимает audio-тред.
-        drone_playing:       Arc<AtomicBool>,
-        // Состояние записи дублей. Живёт НАД capture: смена устройства
-        // пересоздаёт весь capture, и писатель нового подхватывает то же
-        // намерение вместо того, чтобы потерять его.
-        recorder:            RecorderHandle,
-        /// Состояние реплея. Живёт НАД capture по той же причине, что и рекордер:
-        /// статус должен пережить capture, который его произвёл — UI спрашивает
-        /// «что там с дублем, который я проиграл» уже после того, как источник
-        /// отработал и встал.
-        replay:              ReplayHandle,
-        command_tx:          Option<Sender<Command>>,
-        audio_thread:        Option<JoinHandle<()>>,
-    }
-
-    enum Command {
-        SwitchInput(Option<String>),
-        SetMonitorEnabled(bool),
-        PlayTestNote(PNote),
-        StartDrone,
-        StopDrone,
-        /// Проиграть дубль через движок вместо живого входа.
-        StartReplay(PathBuf),
-        /// Вернуть живой вход. Отдельная команда, а не `SwitchInput`: вернуться
-        /// надо на ТО ЖЕ устройство, которое было выбрано до реплея, и знает его
-        /// audio-тред (capture'а), а не UI.
-        StopReplay,
-    }
-
-    impl Default for AudioEngine {
-        fn default() -> Self {
-            Self::new()
+        Self {
+            shared,
+            settings,
+            input_gain,
+            input_level,
+            monitor_enabled,
+            monitor_gain,
+            input_sample_rate,
+            monitor_output_rate,
+            selected_input_id,
+            resonator_wanted,
+            drone,
+            drone_playing,
+            recorder,
+            replay,
+            command_tx: Some(command_tx),
+            audio_thread: Some(audio_thread),
         }
     }
 
-    impl AudioEngine {
-        pub fn new() -> Self {
-            let shared = Arc::new(Mutex::new(SharedState::new()));
-            let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
-            let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
-            let input_level = Arc::new(AtomicU32::new(0.0f32.to_bits()));
-            let monitor_enabled = Arc::new(AtomicBool::new(false));
-            let monitor_gain = Arc::new(AtomicU32::new(MONITOR_DEFAULT_GAIN.to_bits()));
-            let input_sample_rate = Arc::new(AtomicU32::new(0));
-            let monitor_output_rate = Arc::new(AtomicU32::new(0));
-            let selected_input_id = Arc::new(Mutex::new(None));
-            // Гейт резонатора: дедлайн в прошлом → пока никто не просит, банк не молотит.
-            let resonator_wanted = Arc::new(Mutex::new(Instant::now()));
-            let drone = Arc::new(Mutex::new(DroneState::default()));
-            let drone_playing = Arc::new(AtomicBool::new(false));
-            let recorder = RecorderHandle::new();
-            let replay = ReplayHandle::new();
+    pub fn status(&self) -> AudioStatus {
+        self.shared
+            .lock()
+            .map(|g| g.status.clone())
+            .unwrap_or_else(|_| AudioStatus::Error("Audio state lock poisoned".to_owned()))
+    }
 
-            let (command_tx, command_rx) = mpsc::channel::<Command>();
+    pub fn reading(&self) -> Option<TunerReading> {
+        self.shared.lock().ok().and_then(|g| g.reading.clone())
+    }
 
-            // Запускаем audio-тред: он единственный владеет cpal::Stream.
-            // UI шлёт команды через канал и мгновенно возвращается.
-            let audio_thread = thread::spawn({
-                let ctx = AudioContext {
-                    shared:              shared.clone(),
-                    settings:            settings.clone(),
-                    input_gain:          input_gain.clone(),
-                    input_level:         input_level.clone(),
-                    monitor_enabled:     monitor_enabled.clone(),
-                    monitor_gain:        monitor_gain.clone(),
-                    input_sample_rate:   input_sample_rate.clone(),
-                    monitor_output_rate: monitor_output_rate.clone(),
-                    selected_input_id:   selected_input_id.clone(),
-                    resonator_wanted:    resonator_wanted.clone(),
-                    drone:               drone.clone(),
-                    drone_playing:       drone_playing.clone(),
-                    recorder:            recorder.clone(),
-                    replay:              replay.clone(),
-                };
-                move || {
-                    audio_thread_main(command_rx, ctx);
+    /// The melody line's recent history: every bank frame newer than `after`,
+    /// oldest → newest. `None` for a cold start.
+    ///
+    /// `after` is the **caller's own** cursor (the `seq` of the last frame it took),
+    /// not a mark the engine keeps — so any number of panels can each read the whole
+    /// history without stealing frames from one another. See [`MelodyFrame`].
+    ///
+    /// This is how a panel draws the melody without decimating it: `reading()` is
+    /// the instant, and sampling *that* per UI frame drops bank frames on the floor
+    /// (half of them at 30 fps). Like every consumer of the bank, the caller must be
+    /// calling [`Self::request_resonator`] or the history simply stops growing.
+    pub fn melody_since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
+        self.shared
+            .lock()
+            .map(|g| g.melody_since(after))
+            .unwrap_or_default()
+    }
+
+    pub fn resonator_reading(&self) -> Option<ResonatorReading> {
+        self.shared.lock().ok().and_then(|g| {
+            (!g.resonator_spectrum.is_empty()).then(|| {
+                ResonatorReading {
+                    spectrum:    g.resonator_spectrum.clone(),
+                    waterfall:   g.resonator_waterfall.iter().cloned().collect(),
+                    note_labels: g.resonator_labels.clone(),
                 }
-            });
-
-            Self {
-                shared,
-                settings,
-                input_gain,
-                input_level,
-                monitor_enabled,
-                monitor_gain,
-                input_sample_rate,
-                monitor_output_rate,
-                selected_input_id,
-                resonator_wanted,
-                drone,
-                drone_playing,
-                recorder,
-                replay,
-                command_tx: Some(command_tx),
-                audio_thread: Some(audio_thread),
-            }
-        }
-
-        pub fn status(&self) -> AudioStatus {
-            self.shared
-                .lock()
-                .map(|g| g.status.clone())
-                .unwrap_or_else(|_| AudioStatus::Error("Audio state lock poisoned".to_owned()))
-        }
-
-        pub fn reading(&self) -> Option<TunerReading> {
-            self.shared.lock().ok().and_then(|g| g.reading.clone())
-        }
-
-        /// The melody line's recent history: every bank frame newer than `after`,
-        /// oldest → newest. `None` for a cold start.
-        ///
-        /// `after` is the **caller's own** cursor (the `seq` of the last frame it took),
-        /// not a mark the engine keeps — so any number of panels can each read the whole
-        /// history without stealing frames from one another. See [`MelodyFrame`].
-        ///
-        /// This is how a panel draws the melody without decimating it: `reading()` is
-        /// the instant, and sampling *that* per UI frame drops bank frames on the floor
-        /// (half of them at 30 fps). Like every consumer of the bank, the caller must be
-        /// calling [`Self::request_resonator`] or the history simply stops growing.
-        pub fn melody_since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
-            self.shared
-                .lock()
-                .map(|g| g.melody_since(after))
-                .unwrap_or_default()
-        }
-
-        pub fn resonator_reading(&self) -> Option<ResonatorReading> {
-            self.shared.lock().ok().and_then(|g| {
-                (!g.resonator_spectrum.is_empty()).then(|| {
-                    ResonatorReading {
-                        spectrum:    g.resonator_spectrum.clone(),
-                        waterfall:   g.resonator_waterfall.iter().cloned().collect(),
-                        note_labels: g.resonator_labels.clone(),
-                    }
-                })
             })
-        }
+        })
+    }
 
-        pub fn analysis_settings(&self) -> AnalysisSettings {
-            self.settings.lock().map(|g| g.clone()).unwrap_or_default()
-        }
+    pub fn analysis_settings(&self) -> AnalysisSettings {
+        self.settings.lock().map(|g| g.clone()).unwrap_or_default()
+    }
 
-        pub fn set_analysis_settings(&self, settings: AnalysisSettings) {
-            if let Ok(mut guard) = self.settings.lock() {
-                *guard = settings.sanitized();
-            }
-        }
-
-        pub fn input_gain(&self) -> f32 {
-            f32::from_bits(self.input_gain.load(Ordering::Relaxed))
-        }
-
-        pub fn set_input_gain(&self, gain: f32) {
-            self.input_gain.store(
-                gain.clamp(MIN_INPUT_GAIN, MAX_INPUT_GAIN).to_bits(),
-                Ordering::Relaxed,
-            );
-        }
-
-        pub fn input_gain_range(&self) -> (f32, f32) {
-            (MIN_INPUT_GAIN, MAX_INPUT_GAIN)
-        }
-
-        pub fn input_level(&self) -> f32 {
-            f32::from_bits(self.input_level.load(Ordering::Relaxed))
-        }
-
-        pub fn input_waveform(&self) -> Vec<f32> {
-            self.shared
-                .lock()
-                .map(|g| g.input_waveform.iter().copied().collect())
-                .unwrap_or_default()
-        }
-
-        pub fn monitor_enabled(&self) -> bool {
-            self.monitor_enabled.load(Ordering::Relaxed)
-        }
-
-        pub fn set_monitor_enabled(&self, enabled: bool) {
-            if let Some(tx) = self.command_tx.as_ref() {
-                let _ = tx.send(Command::SetMonitorEnabled(enabled));
-            }
-        }
-
-        pub fn monitor_gain(&self) -> f32 {
-            f32::from_bits(self.monitor_gain.load(Ordering::Relaxed))
-        }
-
-        pub fn set_monitor_gain(&self, gain: f32) {
-            self.monitor_gain
-                .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
-        }
-
-        pub fn current_input_sample_rate(&self) -> u32 {
-            self.input_sample_rate.load(Ordering::Relaxed)
-        }
-
-        pub fn monitor_output_sample_rate(&self) -> Option<u32> {
-            let rate = self.monitor_output_rate.load(Ordering::Relaxed);
-            if rate == 0 { None } else { Some(rate) }
-        }
-
-        pub fn default_output_device_name(&self) -> Option<String> {
-            cpal::default_host()
-                .default_output_device()
-                .map(|d| cpal_device_display_name(&d))
-        }
-
-        pub fn available_inputs(&self) -> Vec<AudioInputOption> {
-            enumerate_input_options()
-        }
-
-        pub fn selected_input_id(&self) -> Option<String> {
-            self.selected_input_id.lock().ok().and_then(|g| g.clone())
-        }
-
-        pub fn set_selected_input_id(&self, input_id: Option<String>) {
-            if let Some(tx) = self.command_tx.as_ref() {
-                let _ = tx.send(Command::SwitchInput(input_id));
-            }
-        }
-
-        pub fn play_test_note(&self, midi: PNote) {
-            if let Some(tx) = self.command_tx.as_ref() {
-                let _ = tx.send(Command::PlayTestNote(midi));
-            }
-        }
-
-        /// Снимок текущего состояния дрона (для отрисовки/правки в UI).
-        pub fn drone_state(&self) -> DroneState {
-            self.drone.lock().map(|g| g.clone()).unwrap_or_default()
-        }
-
-        /// Заменить состояние дрона целиком. Реалтайм-колбэк подхватит его на
-        /// ближайшем блоке — менять ноты/темп/режим можно прямо во время игры,
-        /// перезапуск стрима не нужен.
-        pub fn set_drone_state(&self, state: DroneState) {
-            if let Ok(mut guard) = self.drone.lock() {
-                *guard = state.sanitized();
-            }
-        }
-
-        pub fn drone_playing(&self) -> bool {
-            self.drone_playing.load(Ordering::Relaxed)
-        }
-
-        pub fn start_drone(&self) {
-            if let Some(tx) = self.command_tx.as_ref() {
-                let _ = tx.send(Command::StartDrone);
-            }
-        }
-
-        pub fn stop_drone(&self) {
-            if let Some(tx) = self.command_tx.as_ref() {
-                let _ = tx.send(Command::StopDrone);
-            }
-        }
-
-        /// Запросить резонаторный банк на ближайший грейс. Панели-потребители
-        /// (Scale Finder, Resonator *) зовут это каждый кадр, пока видимы; пока
-        /// зовут — воркер молотит, перестали (панель закрылась) — паркуется.
-        pub fn request_resonator(&self) {
-            if let Ok(mut until) = self.resonator_wanted.lock() {
-                *until = Instant::now() + RESONATOR_PARK_GRACE;
-            }
-        }
-
-        /// Начать писать дубль в `path`. Идемпотентно по пути: повторный вызов с
-        /// тем же путём ничего не делает, с другим — закрывает текущий и открывает
-        /// новый. См. `recorder` — дубль пишется ДО `input_gain`.
-        pub fn start_take(&self, path: PathBuf) {
-            self.recorder.start(path);
-        }
-
-        pub fn stop_take(&self) {
-            self.recorder.stop();
-        }
-
-        pub fn recorder_status(&self) -> RecorderStatus {
-            self.recorder.status()
-        }
-
-        /// Проиграть записанный дубль через движок вместо живого входа.
-        ///
-        /// Линия, которая при этом рисуется, — БОЕВАЯ: её строит тот же код, что и
-        /// вживую, из тех же сэмплов, в реальном времени (см. `replay`). Живой вход
-        /// на время реплея уходит и возвращается по [`Self::stop_replay`].
-        pub fn start_replay(&self, path: PathBuf) {
-            if let Some(tx) = &self.command_tx {
-                let _ = tx.send(Command::StartReplay(path));
-            }
-        }
-
-        /// Вернуть живой вход.
-        ///
-        /// Реплей НЕ делает этого сам, дойдя до конца дубля: линия, которую он
-        /// только что нарисовал, — это то, что юзер собрался размечать, а живой
-        /// микрофон писал бы поверх неё свои кадры.
-        pub fn stop_replay(&self) {
-            if let Some(tx) = &self.command_tx {
-                let _ = tx.send(Command::StopReplay);
-            }
-        }
-
-        pub fn replay_status(&self) -> ReplayStatus {
-            self.replay.status()
-        }
-
-        /// Какие дубли лежат в `dir` и, значит, могут быть проиграны.
-        ///
-        /// Читает только заголовки WAV'ов — приговора «улика/не улика» тут НЕТ и
-        /// быть не может: он про запись, а не про файл (см. [`TakeOnDisk`]).
-        pub fn list_takes(&self, dir: &std::path::Path) -> Vec<TakeOnDisk> {
-            list_takes(dir)
+    pub fn set_analysis_settings(&self, settings: AnalysisSettings) {
+        if let Ok(mut guard) = self.settings.lock() {
+            *guard = settings.sanitized();
         }
     }
 
-    impl Drop for AudioEngine {
-        fn drop(&mut self) {
-            // Роняем sender → audio-тред получает Disconnected, чисто выходит.
-            drop(self.command_tx.take());
-            if let Some(handle) = self.audio_thread.take() {
-                let _ = handle.join();
-            }
+    pub fn input_gain(&self) -> f32 {
+        f32::from_bits(self.input_gain.load(Ordering::Relaxed))
+    }
+
+    pub fn set_input_gain(&self, gain: f32) {
+        self.input_gain.store(
+            gain.clamp(MIN_INPUT_GAIN, MAX_INPUT_GAIN).to_bits(),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn input_gain_range(&self) -> (f32, f32) {
+        (MIN_INPUT_GAIN, MAX_INPUT_GAIN)
+    }
+
+    pub fn input_level(&self) -> f32 {
+        f32::from_bits(self.input_level.load(Ordering::Relaxed))
+    }
+
+    pub fn input_waveform(&self) -> Vec<f32> {
+        self.shared
+            .lock()
+            .map(|g| g.input_waveform.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn monitor_enabled(&self) -> bool {
+        self.monitor_enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_monitor_enabled(&self, enabled: bool) {
+        if let Some(tx) = self.command_tx.as_ref() {
+            let _ = tx.send(Command::SetMonitorEnabled(enabled));
         }
     }
 
-    // ------------------------------------------------------------------
-    // Audio-тред: единственный владелец cpal::Stream.
-    // ------------------------------------------------------------------
-    fn audio_thread_main(rx: Receiver<Command>, ctx: AudioContext) {
-        // Стартовый capture: берём дефолтный input.
-        // Если не поднялся — оставляем в состоянии Error, UI покажет.
-        let mut current = ctx.build_capture(None).ok();
-        if current.is_none() {
-            ctx.set_error("Could not open default audio input");
+    pub fn monitor_gain(&self) -> f32 {
+        f32::from_bits(self.monitor_gain.load(Ordering::Relaxed))
+    }
+
+    pub fn set_monitor_gain(&self, gain: f32) {
+        self.monitor_gain
+            .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn current_input_sample_rate(&self) -> u32 {
+        self.input_sample_rate.load(Ordering::Relaxed)
+    }
+
+    pub fn monitor_output_sample_rate(&self) -> Option<u32> {
+        let rate = self.monitor_output_rate.load(Ordering::Relaxed);
+        if rate == 0 { None } else { Some(rate) }
+    }
+
+    pub fn default_output_device_name(&self) -> Option<String> {
+        cpal::default_host()
+            .default_output_device()
+            .map(|d| cpal_device_display_name(&d))
+    }
+
+    pub fn available_inputs(&self) -> Vec<AudioInputOption> {
+        enumerate_input_options()
+    }
+
+    pub fn selected_input_id(&self) -> Option<String> {
+        self.selected_input_id.lock().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set_selected_input_id(&self, input_id: Option<String>) {
+        if let Some(tx) = self.command_tx.as_ref() {
+            let _ = tx.send(Command::SwitchInput(input_id));
         }
+    }
 
-        // Дрон-стрим живёт параллельно capture: отдельный output, который audio-
-        // тред держит ровно пока дрон играет. Дроп = тишина и освобождение устройства.
-        let mut drone_stream: Option<cpal::Stream> = None;
+    pub fn play_test_note(&self, midi: PNote) {
+        if let Some(tx) = self.command_tx.as_ref() {
+            let _ = tx.send(Command::PlayTestNote(midi));
+        }
+    }
 
-        while let Ok(cmd) = rx.recv() {
-            match cmd {
-                Command::SwitchInput(id) => {
-                    if let Some(cap) = current.take() {
-                        cap.shutdown();
-                    }
-                    match ctx.build_capture(id.clone()) {
+    /// Снимок текущего состояния дрона (для отрисовки/правки в UI).
+    pub fn drone_state(&self) -> DroneState {
+        self.drone.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Заменить состояние дрона целиком. Реалтайм-колбэк подхватит его на
+    /// ближайшем блоке — менять ноты/темп/режим можно прямо во время игры,
+    /// перезапуск стрима не нужен.
+    pub fn set_drone_state(&self, state: DroneState) {
+        if let Ok(mut guard) = self.drone.lock() {
+            *guard = state.sanitized();
+        }
+    }
+
+    pub fn drone_playing(&self) -> bool {
+        self.drone_playing.load(Ordering::Relaxed)
+    }
+
+    pub fn start_drone(&self) {
+        if let Some(tx) = self.command_tx.as_ref() {
+            let _ = tx.send(Command::StartDrone);
+        }
+    }
+
+    pub fn stop_drone(&self) {
+        if let Some(tx) = self.command_tx.as_ref() {
+            let _ = tx.send(Command::StopDrone);
+        }
+    }
+
+    /// Запросить резонаторный банк на ближайший грейс. Панели-потребители
+    /// (Scale Finder, Resonator *) зовут это каждый кадр, пока видимы; пока
+    /// зовут — воркер молотит, перестали (панель закрылась) — паркуется.
+    pub fn request_resonator(&self) {
+        if let Ok(mut until) = self.resonator_wanted.lock() {
+            *until = Instant::now() + RESONATOR_PARK_GRACE;
+        }
+    }
+
+    /// Начать писать дубль в `path`. Идемпотентно по пути: повторный вызов с
+    /// тем же путём ничего не делает, с другим — закрывает текущий и открывает
+    /// новый. См. `recorder` — дубль пишется ДО `input_gain`.
+    pub fn start_take(&self, path: PathBuf) {
+        self.recorder.start(path);
+    }
+
+    pub fn stop_take(&self) {
+        self.recorder.stop();
+    }
+
+    pub fn recorder_status(&self) -> RecorderStatus {
+        self.recorder.status()
+    }
+
+    /// Проиграть записанный дубль через движок вместо живого входа.
+    ///
+    /// Линия, которая при этом рисуется, — БОЕВАЯ: её строит тот же код, что и
+    /// вживую, из тех же сэмплов, в реальном времени (см. `replay`). Живой вход
+    /// на время реплея уходит и возвращается по [`Self::stop_replay`].
+    pub fn start_replay(&self, path: PathBuf) {
+        if let Some(tx) = &self.command_tx {
+            let _ = tx.send(Command::StartReplay(path));
+        }
+    }
+
+    /// Вернуть живой вход.
+    ///
+    /// Реплей НЕ делает этого сам, дойдя до конца дубля: линия, которую он
+    /// только что нарисовал, — это то, что юзер собрался размечать, а живой
+    /// микрофон писал бы поверх неё свои кадры.
+    pub fn stop_replay(&self) {
+        if let Some(tx) = &self.command_tx {
+            let _ = tx.send(Command::StopReplay);
+        }
+    }
+
+    pub fn replay_status(&self) -> ReplayStatus {
+        self.replay.status()
+    }
+
+    /// Какие дубли лежат в `dir` и, значит, могут быть проиграны.
+    ///
+    /// Читает только заголовки WAV'ов — приговора «улика/не улика» тут НЕТ и
+    /// быть не может: он про запись, а не про файл (см. [`TakeOnDisk`]).
+    pub fn list_takes(&self, dir: &std::path::Path) -> Vec<TakeOnDisk> {
+        list_takes(dir)
+    }
+}
+
+impl Drop for AudioEngine {
+    fn drop(&mut self) {
+        // Роняем sender → audio-тред получает Disconnected, чисто выходит.
+        drop(self.command_tx.take());
+        if let Some(handle) = self.audio_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// Audio-тред: единственный владелец cpal::Stream.
+// ------------------------------------------------------------------
+fn audio_thread_main(rx: Receiver<Command>, ctx: AudioContext) {
+    // Стартовый capture: берём дефолтный input.
+    // Если не поднялся — оставляем в состоянии Error, UI покажет.
+    let mut current = ctx.build_capture(None).ok();
+    if current.is_none() {
+        ctx.set_error("Could not open default audio input");
+    }
+
+    // Дрон-стрим живёт параллельно capture: отдельный output, который audio-
+    // тред держит ровно пока дрон играет. Дроп = тишина и освобождение устройства.
+    let mut drone_stream: Option<cpal::Stream> = None;
+
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            Command::SwitchInput(id) => {
+                if let Some(cap) = current.take() {
+                    cap.shutdown();
+                }
+                match ctx.build_capture(id.clone()) {
+                    Ok(cap) => current = Some(cap),
+                    Err(msg) => ctx.set_error(&msg),
+                }
+            }
+            Command::SetMonitorEnabled(on) => {
+                ctx.monitor_enabled.store(on, Ordering::Relaxed);
+                // Монитор запускается/останавливается пересозданием capture,
+                // так мы без гонок привязываем output-stream к ring-буферу,
+                // который входной callback наполняет.
+                if let Some(cap) = current.take() {
+                    let id = Some(cap.selected_id.clone());
+                    cap.shutdown();
+                    match ctx.build_capture(id) {
                         Ok(cap) => current = Some(cap),
                         Err(msg) => ctx.set_error(&msg),
                     }
                 }
-                Command::SetMonitorEnabled(on) => {
-                    ctx.monitor_enabled.store(on, Ordering::Relaxed);
-                    // Монитор запускается/останавливается пересозданием capture,
-                    // так мы без гонок привязываем output-stream к ring-буферу,
-                    // который входной callback наполняет.
-                    if let Some(cap) = current.take() {
-                        let id = Some(cap.selected_id.clone());
-                        cap.shutdown();
-                        match ctx.build_capture(id) {
+            }
+            Command::PlayTestNote(midi) => {
+                ctx.play_test_note(midi);
+            }
+            Command::StartDrone => {
+                // Идемпотентно: если уже играет, оставляем текущий стрим.
+                if drone_stream.is_none() {
+                    match ctx.build_drone_stream() {
+                        Ok(stream) => {
+                            drone_stream = Some(stream);
+                            ctx.drone_playing.store(true, Ordering::Relaxed);
+                        }
+                        Err(msg) => ctx.set_error(&msg),
+                    }
+                }
+            }
+            Command::StopDrone => {
+                drone_stream = None; // дроп стрима = тишина
+                ctx.drone_playing.store(false, Ordering::Relaxed);
+            }
+            Command::StartReplay(path) => {
+                // Живой вход уходит целиком: два источника в одни кольца — это
+                // микрофон, подмешанный в дубль, то есть линия про сигнал,
+                // которого не существовало.
+                if let Some(cap) = current.take() {
+                    cap.shutdown();
+                }
+                match ctx.build_replay_capture(path) {
+                    Ok(cap) => current = Some(cap),
+                    Err(msg) => {
+                        // Дубль не открылся. Сказать об этом надо ИМЕННО в
+                        // статусе реплея (UI ждёт приговор там), а живой вход
+                        // вернуть — иначе неудачный клик оставил бы приложение
+                        // вообще без входа.
+                        ctx.replay.publish(ReplayStatus::Failed(msg));
+                        match ctx.build_capture(ctx.selected_input_id.lock().unwrap().clone()) {
                             Ok(cap) => current = Some(cap),
                             Err(msg) => ctx.set_error(&msg),
                         }
                     }
                 }
-                Command::PlayTestNote(midi) => {
-                    ctx.play_test_note(midi);
+            }
+            Command::StopReplay => {
+                if let Some(cap) = current.take() {
+                    cap.shutdown();
                 }
-                Command::StartDrone => {
-                    // Идемпотентно: если уже играет, оставляем текущий стрим.
-                    if drone_stream.is_none() {
-                        match ctx.build_drone_stream() {
-                            Ok(stream) => {
-                                drone_stream = Some(stream);
-                                ctx.drone_playing.store(true, Ordering::Relaxed);
-                            }
-                            Err(msg) => ctx.set_error(&msg),
-                        }
-                    }
+                ctx.replay.publish(ReplayStatus::Idle);
+                // Обратно на то устройство, что было выбрано до реплея:
+                // `build_replay_capture` намеренно не трогал этот выбор.
+                match ctx.build_capture(ctx.selected_input_id.lock().unwrap().clone()) {
+                    Ok(cap) => current = Some(cap),
+                    Err(msg) => ctx.set_error(&msg),
                 }
-                Command::StopDrone => {
-                    drone_stream = None; // дроп стрима = тишина
-                    ctx.drone_playing.store(false, Ordering::Relaxed);
-                }
-                Command::StartReplay(path) => {
-                    // Живой вход уходит целиком: два источника в одни кольца — это
-                    // микрофон, подмешанный в дубль, то есть линия про сигнал,
-                    // которого не существовало.
-                    if let Some(cap) = current.take() {
-                        cap.shutdown();
-                    }
-                    match ctx.build_replay_capture(path) {
-                        Ok(cap) => current = Some(cap),
-                        Err(msg) => {
-                            // Дубль не открылся. Сказать об этом надо ИМЕННО в
-                            // статусе реплея (UI ждёт приговор там), а живой вход
-                            // вернуть — иначе неудачный клик оставил бы приложение
-                            // вообще без входа.
-                            ctx.replay.publish(ReplayStatus::Failed(msg));
-                            match ctx.build_capture(ctx.selected_input_id.lock().unwrap().clone()) {
-                                Ok(cap) => current = Some(cap),
-                                Err(msg) => ctx.set_error(&msg),
-                            }
-                        }
-                    }
-                }
-                Command::StopReplay => {
-                    if let Some(cap) = current.take() {
-                        cap.shutdown();
-                    }
-                    ctx.replay.publish(ReplayStatus::Idle);
-                    // Обратно на то устройство, что было выбрано до реплея:
-                    // `build_replay_capture` намеренно не трогал этот выбор.
-                    match ctx.build_capture(ctx.selected_input_id.lock().unwrap().clone()) {
-                        Ok(cap) => current = Some(cap),
-                        Err(msg) => ctx.set_error(&msg),
-                    }
-                }
-            }
-        }
-
-        drop(drone_stream);
-        if let Some(cap) = current.take() {
-            cap.shutdown();
-        }
-    }
-
-    // Всё, что нужно audio-треду (клоны атомиков/мутексов).
-    struct AudioContext {
-        shared:              Arc<Mutex<SharedState>>,
-        settings:            Arc<Mutex<AnalysisSettings>>,
-        input_gain:          Arc<AtomicU32>,
-        input_level:         Arc<AtomicU32>,
-        monitor_enabled:     Arc<AtomicBool>,
-        monitor_gain:        Arc<AtomicU32>,
-        input_sample_rate:   Arc<AtomicU32>,
-        monitor_output_rate: Arc<AtomicU32>,
-        selected_input_id:   Arc<Mutex<Option<String>>>,
-        resonator_wanted:    Arc<Mutex<Instant>>,
-        drone:               Arc<Mutex<DroneState>>,
-        drone_playing:       Arc<AtomicBool>,
-        recorder:            RecorderHandle,
-        replay:              ReplayHandle,
-    }
-
-    impl AudioContext {
-        fn set_error(&self, msg: &str) {
-            // Единственная воронка всех отказов аудио-треда ⇒ единственное место, где
-            // нужен лог: на Android причина иначе не наблюдаема вообще (см. `audio_alog`).
-            audio_alog(&format!("audio error: {msg}"));
-            if let Ok(mut s) = self.shared.lock() {
-                s.status = AudioStatus::Error(msg.to_owned());
-            }
-        }
-
-        fn reset_shared_for_test_tone(&self) {
-            self.reset_shared_state();
-            self.input_level.store(0.0f32.to_bits(), Ordering::Relaxed);
-        }
-
-        fn reset_shared_state(&self) {
-            if let Ok(mut s) = self.shared.lock() {
-                s.reset();
-            }
-        }
-
-        fn play_test_note(&self, midi: PNote) {
-            // Restrict to the audible test-tone bucket range; both bounds are in
-            // 0..=127, so rebuilding the validated `PNote` can't fail.
-            let clamped = (midi.as_u8() as usize).clamp(NOTE_BUCKET_MIN_MIDI, NOTE_BUCKET_MAX_MIDI);
-            let midi = PNote::new(clamped as u8).unwrap();
-            self.reset_shared_for_test_tone();
-            let shared = self.shared.clone();
-            let settings = self.settings.clone();
-            let input_level = self.input_level.clone();
-
-            thread::spawn(move || {
-                if let Err(message) = play_test_note_thread(midi, shared.clone(), settings, input_level) {
-                    set_shared_error(&shared, &message);
-                }
-            });
-        }
-
-        /// Поднять непрерывный дрон-output. Колбэк синтезирует в реалтайме из
-        /// [`DroneState`] (try_lock каждый блок), голоса держат фазу между
-        /// блоками и сглаживаются по амплитуде → щелчков нет даже на пульсе/арпе.
-        fn build_drone_stream(&self) -> Result<cpal::Stream, String> {
-            let host = cpal::default_host();
-            let device = host
-                .default_output_device()
-                .ok_or_else(|| "No output device for drone".to_owned())?;
-            let mut supported = device
-                .supported_output_configs()
-                .map_err(|e| format!("Drone output configs error: {e}"))?;
-            let output_config = supported
-                .find(|config| config.sample_format() == cpal::SampleFormat::F32)
-                .ok_or_else(|| "No f32 output config for drone".to_owned())?;
-            let output_rate =
-                48_000_u32.clamp(output_config.min_sample_rate(), output_config.max_sample_rate());
-            let mut config = output_config.with_sample_rate(output_rate).config();
-            config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
-            let sample_rate = config.sample_rate as f32;
-            let channels = usize::from(config.channels);
-
-            let drone = self.drone.clone();
-            let mut synth = DroneSynth::new(sample_rate);
-
-            let stream = device
-                .build_output_stream(
-                    config,
-                    move |data: &mut [f32], _| {
-                        // try_lock: если UI прямо сейчас пишет состояние, держим
-                        // прошлый снимок — реалтайм-колбэк никогда не блокируется.
-                        if let Ok(guard) = drone.try_lock() {
-                            synth.adopt(&guard);
-                        }
-                        for frame in data.chunks_mut(channels) {
-                            let sample = synth.next_sample();
-                            for out in frame {
-                                *out = sample;
-                            }
-                        }
-                    },
-                    |err| report_stream_error("Drone output", &err),
-                    None,
-                )
-                .map_err(|e| format!("Failed to build drone output: {e}"))?;
-
-            stream
-                .play()
-                .map_err(|e| format!("Failed to start drone output: {e}"))?;
-            Ok(stream)
-        }
-
-        // Поднимает входной stream, кольцевые буферы, анализ-воркер и
-        // (опционально) монитор-выход. Возвращает собранный ActiveCapture.
-        fn build_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
-            // Единственная точка развилки pulse/cpal ⇒ здесь же отсекаем маршрут,
-            // которого на этой платформе быть не может (персистнутый pulse-id на
-            // Android). Подробности — в `route_id_for_this_platform`.
-            let id = route_id_for_this_platform(id);
-
-            if let Some(requested) = id.as_deref()
-                && requested.starts_with(PULSE_INPUT_ID_PREFIX)
-            {
-                return self.build_pulse_capture(requested);
-            }
-
-            self.build_cpal_capture(id)
-        }
-
-        fn build_cpal_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
-            let host = cpal::default_host();
-            let capture = select_cpal_capture(&host, id.as_deref())?;
-            let device = capture.device;
-            let selected_id = capture.selected_id;
-            let config = capture.config;
-            let sample_rate = config.sample_rate();
-            let channels = usize::from(config.channels());
-            let sample_format = config.sample_format();
-            let input_buffer_size = preferred_low_latency_buffer(config.buffer_size());
-            let mut stream_config: cpal::StreamConfig = config.into();
-            stream_config.buffer_size = input_buffer_size;
-
-            let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
-            let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
-            let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
-            let (recorder_prod, recorder_cons) = recorder_ring(sample_rate);
-            let fanout = InputFanout {
-                analysis:  analysis_prod,
-                resonator: resonator_prod,
-                monitor:   monitor_prod,
-                recorder:  Some(self.recorder.tap(recorder_prod)),
-            };
-
-            // Входной stream: callback тупо пушит в кольца, без блокировок и паник.
-            let input_stream = match sample_format {
-                cpal::SampleFormat::F32 => build_input::<f32>(&device, &stream_config, channels, fanout)?,
-                cpal::SampleFormat::I16 => build_input::<i16>(&device, &stream_config, channels, fanout)?,
-                cpal::SampleFormat::U16 => build_input::<u16>(&device, &stream_config, channels, fanout)?,
-                other => return Err(format!("Unsupported sample format: {other:?}")),
-            };
-            input_stream
-                .play()
-                .map_err(|e| format!("Failed to start input stream: {e}"))?;
-
-            let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
-            let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
-            let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
-            let recorder = Some(start_recorder_worker(
-                sample_rate,
-                recorder_cons,
-                self.recorder.clone(),
-            ));
-            self.finish_capture_start(sample_rate, output_rate, &selected_id);
-
-            Ok(ActiveCapture {
-                input: ActiveInput::Cpal(input_stream),
-                output_stream,
-                analysis,
-                resonator,
-                recorder,
-                selected_id,
-            })
-        }
-
-        fn build_pulse_capture(&self, id: &str) -> Result<ActiveCapture, String> {
-            let sample_rate = PULSE_CAPTURE_RATE;
-            let selected_id = id.to_owned();
-
-            let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
-            let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
-            let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
-            let (recorder_prod, recorder_cons) = recorder_ring(sample_rate);
-            let fanout = InputFanout {
-                analysis:  analysis_prod,
-                resonator: resonator_prod,
-                monitor:   monitor_prod,
-                recorder:  Some(self.recorder.tap(recorder_prod)),
-            };
-
-            let input = ActiveInput::Pulse(build_pulse_input(id, sample_rate, fanout, self.shared.clone())?);
-
-            let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
-            let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
-            let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
-            let recorder = Some(start_recorder_worker(
-                sample_rate,
-                recorder_cons,
-                self.recorder.clone(),
-            ));
-            self.finish_capture_start(sample_rate, output_rate, &selected_id);
-
-            Ok(ActiveCapture {
-                input,
-                output_stream,
-                analysis,
-                resonator,
-                recorder,
-                selected_id,
-            })
-        }
-
-        // Кольцевой буфер для монитора-вывода. Создаём только если monitor on.
-        // Держим запас небольшим, чтобы монитор не копил лишнюю задержку.
-        fn monitor_ring(&self, sample_rate: u32) -> (Option<SampleProducer>, Option<SampleConsumer>) {
-            if self.monitor_enabled.load(Ordering::Relaxed) {
-                let (prod, cons) = HeapRb::<f32>::new(low_latency_monitor_ring_len(sample_rate)).split();
-                (Some(prod), Some(cons))
-            } else {
-                (None, None)
-            }
-        }
-
-        // Ошибку запуска монитора не считаем фатальной: запись и анализ
-        // должны продолжать работать без playback monitoring.
-        fn start_monitor_output(
-            &self,
-            sample_rate: u32,
-            monitor_cons: Option<SampleConsumer>,
-        ) -> (Option<cpal::Stream>, u32) {
-            match monitor_cons {
-                Some(cons) => {
-                    match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
-                        Ok((stream, rate)) => (Some(stream), rate),
-                        Err(_) => (None, 0),
-                    }
-                }
-                None => (None, 0),
-            }
-        }
-
-        fn start_analysis_worker(&self, sample_rate: u32, analysis_cons: SampleConsumer) -> AnalysisWorker {
-            start_analysis_worker(
-                sample_rate as f32,
-                analysis_cons,
-                self.shared.clone(),
-                self.settings.clone(),
-                self.input_gain.clone(),
-                self.input_level.clone(),
-            )
-        }
-
-        fn start_resonator_worker(&self, sample_rate: u32, resonator_cons: SampleConsumer) -> AnalysisWorker {
-            start_resonator_worker(
-                sample_rate as f32,
-                resonator_cons,
-                self.shared.clone(),
-                self.settings.clone(),
-                self.input_gain.clone(),
-                self.input_level.clone(),
-                self.resonator_wanted.clone(),
-            )
-        }
-
-        /// Общий хвост всех трёх путей захвата ⇒ единственная точка, где виден факт
-        /// «вход поднялся, и вот на чём». Без этой строки в логе «звука нет» неотличимо
-        /// от «звук идёт, но тишина в микрофоне» — а это разные баги.
-        fn finish_capture_start(&self, sample_rate: u32, output_rate: u32, selected_id: &str) {
-            audio_alog(&format!(
-                "capture started: id={selected_id} rate={sample_rate} monitor_out={output_rate}"
-            ));
-            self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
-            self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
-            self.reset_shared_state();
-            if let Ok(mut sel) = self.selected_input_id.lock() {
-                *sel = Some(selected_id.to_owned());
-            }
-        }
-
-        /// Поднять capture, играющий дубль с диска вместо устройства.
-        ///
-        /// Форма — ровно как у двух остальных путей (кольца → фанаут → источник →
-        /// воркеры), и это не совпадение: линия реплея обязана быть боевой линией,
-        /// а она такая ровно постольку, поскольку её рисует тот же код, которому
-        /// всё равно, откуда приехал сэмпл.
-        ///
-        /// Отличий от живых путей три, и все три — следствия того, что источник
-        /// файл, а не устройство:
-        ///
-        /// - **Частота — файла.** Пайплайны строятся под capture, так что дубль
-        ///   44.1 кГц играет как 44.1 (см. `replay::load_take`). Ресемпла нет
-        ///   нигде: он был бы обработкой сигнала, который весь смысл иметь сырым.
-        /// - **Рекордера нет** (`InputFanout::recorder = None`), см. `replay`.
-        /// - **`selected_input_id` не трогаем.** Это выбор УСТРОЙСТВА, к которому
-        ///   реплей вернётся по стопу; реплей не устройство и не выбор. Отсюда же
-        ///   `selected_id` капчура — ID живого входа, а не путь дубля: смена
-        ///   монитора посреди реплея пересоберёт живой вход, что и правильно.
-        /// - **Монитор — есть.** Дубль надо СЛЫШАТЬ: разметка границ нот идёт по
-        ///   звуку, а не по картинке (это же и есть защита от зеркала).
-        fn build_replay_capture(&self, path: PathBuf) -> Result<ActiveCapture, String> {
-            let take = load_take(&path)?;
-            let sample_rate = take.sample_rate;
-
-            let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
-            let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
-            let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
-            let fanout = InputFanout {
-                analysis:  analysis_prod,
-                resonator: resonator_prod,
-                monitor:   monitor_prod,
-                recorder:  None,
-            };
-
-            let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
-            let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
-            let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
-
-            // Чистим состояние ДО первого сэмпла дубля: иначе линия дубля начнётся
-            // с хвоста того, что микрофон слышал секунду назад, и первые кадры
-            // реплея были бы про другой звук.
-            self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
-            self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
-            self.reset_shared_state();
-
-            let selected_id = self
-                .selected_input_id
-                .lock()
-                .ok()
-                .and_then(|sel| sel.clone())
-                .unwrap_or_default();
-
-            self.replay.publish(ReplayStatus::Playing {
-                path,
-                seconds: 0.0,
-                total_seconds: take.seconds(),
-            });
-            let source = start_replay_source(take, fanout, self.replay.clone());
-
-            Ok(ActiveCapture {
-                input: ActiveInput::Replay(source),
-                output_stream,
-                analysis,
-                resonator,
-                // Рекордер на этом пути не поднимается: писать нечего и незачем.
-                recorder: None,
-                selected_id,
-            })
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // ActiveCapture: текущая активная пара stream'ов + воркер.
-    // При смене устройства или монитора весь объект дропается целиком;
-    // все потоки останавливаются, кольца исчезают.
-    // ------------------------------------------------------------------
-    struct PulseInputCapture {
-        stop:   Arc<AtomicBool>,
-        child:  Child,
-        thread: JoinHandle<()>,
-    }
-
-    impl PulseInputCapture {
-        fn shutdown(mut self) {
-            self.stop.store(true, Ordering::Relaxed);
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-            let _ = self.thread.join();
-        }
-    }
-
-    enum ActiveInput {
-        Cpal(cpal::Stream),
-        Pulse(PulseInputCapture),
-        /// Дубль, проигрываемый с диска в те же кольца. Как и у рекордера,
-        /// `AnalysisWorker` тут — просто «поток со стоп-флагом».
-        Replay(AnalysisWorker),
-    }
-
-    struct ActiveCapture {
-        input:         ActiveInput,
-        output_stream: Option<cpal::Stream>,
-        analysis:      AnalysisWorker,
-        resonator:     AnalysisWorker,
-        /// Писатель дублей. `AnalysisWorker` здесь не про анализ — это просто
-        /// «поток со стоп-флагом», и рекордеру нужен ровно он (см. тип).
-        ///
-        /// `None` на replay-пути: писать нечего (см. `build_replay_capture`).
-        recorder:      Option<AnalysisWorker>,
-        selected_id:   String,
-    }
-
-    impl ActiveCapture {
-        fn shutdown(self) {
-            match self.input {
-                ActiveInput::Cpal(input_stream) => {
-                    // ALSA backend cpal может паниковать при drop'е, если callback
-                    // успел паникнуть — наш callback не паникует (try_push, без unwrap).
-                    // pause() перед drop корректно слайдит трекер-отправитель.
-                    let _ = input_stream.pause();
-                    drop(input_stream);
-                }
-                ActiveInput::Pulse(pulse) => pulse.shutdown(),
-                // Тред реплея проверяет стоп-флаг раз в чанк, так что join
-                // возвращается в пределах 10 мс — стоп посреди 35-секундного дубля
-                // не заставляет ждать его конца.
-                ActiveInput::Replay(source) => source.stop(),
-            }
-            if let Some(out) = &self.output_stream {
-                let _ = out.pause();
-            }
-            drop(self.output_stream);
-            // Анализ останавливаем после stream'а: callback больше не пишет
-            // в кольцо, воркер додренит остатки и выйдет.
-            self.analysis.stop();
-            self.resonator.stop();
-            // Рекордер последним: он закрывает WAV (дописывает длины в RIFF-хедер)
-            // и обязан успеть это сделать до того, как мы вернём управление.
-            if let Some(recorder) = self.recorder {
-                recorder.stop();
             }
         }
     }
 
-    // ------------------------------------------------------------------
-    // Анализ-воркер
-    // ------------------------------------------------------------------
-    struct AnalysisWorker {
-        stop:   Arc<AtomicBool>,
-        thread: JoinHandle<()>,
+    drop(drone_stream);
+    if let Some(cap) = current.take() {
+        cap.shutdown();
     }
+}
 
-    impl AnalysisWorker {
-        fn stop(self) {
-            self.stop.store(true, Ordering::Relaxed);
-            let _ = self.thread.join();
+// Всё, что нужно audio-треду (клоны атомиков/мутексов).
+struct AudioContext {
+    shared:              Arc<Mutex<SharedState>>,
+    settings:            Arc<Mutex<AnalysisSettings>>,
+    input_gain:          Arc<AtomicU32>,
+    input_level:         Arc<AtomicU32>,
+    monitor_enabled:     Arc<AtomicBool>,
+    monitor_gain:        Arc<AtomicU32>,
+    input_sample_rate:   Arc<AtomicU32>,
+    monitor_output_rate: Arc<AtomicU32>,
+    selected_input_id:   Arc<Mutex<Option<String>>>,
+    resonator_wanted:    Arc<Mutex<Instant>>,
+    drone:               Arc<Mutex<DroneState>>,
+    drone_playing:       Arc<AtomicBool>,
+    recorder:            RecorderHandle,
+    replay:              ReplayHandle,
+}
+
+impl AudioContext {
+    fn set_error(&self, msg: &str) {
+        // Единственная воронка всех отказов аудио-треда ⇒ единственное место, где
+        // нужен лог: на Android причина иначе не наблюдаема вообще (см. `audio_alog`).
+        audio_alog(&format!("audio error: {msg}"));
+        if let Ok(mut s) = self.shared.lock() {
+            s.status = AudioStatus::Error(msg.to_owned());
         }
     }
 
-    fn start_analysis_worker(
-        sample_rate: f32,
-        mut cons: SampleConsumer,
-        shared: Arc<Mutex<SharedState>>,
-        settings: Arc<Mutex<AnalysisSettings>>,
-        input_gain: Arc<AtomicU32>,
-        input_level: Arc<AtomicU32>,
-    ) -> AnalysisWorker {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_flag = stop.clone();
+    fn reset_shared_for_test_tone(&self) {
+        self.reset_shared_state();
+        self.input_level.store(0.0f32.to_bits(), Ordering::Relaxed);
+    }
 
-        let thread = thread::spawn(move || {
-            let mut pipeline = AnalysisPipeline::new(sample_rate);
-            let mut batch: Vec<f32> = Vec::with_capacity(4096);
+    fn reset_shared_state(&self) {
+        if let Ok(mut s) = self.shared.lock() {
+            s.reset();
+        }
+    }
 
-            while !stop_flag.load(Ordering::Relaxed) {
-                batch.clear();
-                // Дренируем сколько есть в кольце, не больше 4096 за раз,
-                // чтобы FFT-пауза не превышала одного сэмпл-окна.
-                for _ in 0..4096 {
-                    match cons.try_pop() {
-                        Some(s) => batch.push(s),
-                        None => break,
-                    }
-                }
-                if batch.is_empty() {
-                    thread::sleep(ANALYSIS_IDLE_SLEEP);
-                    continue;
-                }
-                pipeline.push_samples(batch.drain(..), &shared, &settings, &input_gain, &input_level);
+    fn play_test_note(&self, midi: PNote) {
+        // Restrict to the audible test-tone bucket range; both bounds are in
+        // 0..=127, so rebuilding the validated `PNote` can't fail.
+        let clamped = (midi.as_u8() as usize).clamp(NOTE_BUCKET_MIN_MIDI, NOTE_BUCKET_MAX_MIDI);
+        let midi = PNote::new(clamped as u8).unwrap();
+        self.reset_shared_for_test_tone();
+        let shared = self.shared.clone();
+        let settings = self.settings.clone();
+        let input_level = self.input_level.clone();
+
+        thread::spawn(move || {
+            if let Err(message) = play_test_note_thread(midi, shared.clone(), settings, input_level) {
+                set_shared_error(&shared, &message);
             }
         });
-
-        AnalysisWorker { stop, thread }
     }
 
-    fn start_resonator_worker(
-        sample_rate: f32,
-        mut cons: SampleConsumer,
-        shared: Arc<Mutex<SharedState>>,
-        settings: Arc<Mutex<AnalysisSettings>>,
-        input_gain: Arc<AtomicU32>,
-        // Written by the analysis worker, read here: the melody line's silence gate.
-        // The bank's own column is normalized and so cannot tell silence from noise —
-        // the absolute level is measured on the other plane and shared across.
-        input_level: Arc<AtomicU32>,
-        resonator_wanted: Arc<Mutex<Instant>>,
-    ) -> AnalysisWorker {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_flag = stop.clone();
-
-        let thread = thread::spawn(move || {
-            let mut pipeline = ResonatorPipeline::new(sample_rate);
-            let mut batch: Vec<f32> = Vec::with_capacity(4096);
-
-            while !stop_flag.load(Ordering::Relaxed) {
-                // Гейт: банк нужен, только пока UI двигает дедлайн. Замок не
-                // отравлен/в прошлом → считаем active=false (паркуемся). Если замок
-                // отравлен — на стороне безопасности молотим (lock().is_ok() == false
-                // ⇒ active=false здесь; но это практически недостижимо).
-                let active = resonator_wanted
-                    .lock()
-                    .map(|until| Instant::now() < *until)
-                    .unwrap_or(false);
-
-                batch.clear();
-                for _ in 0..4096 {
-                    match cons.try_pop() {
-                        Some(s) => batch.push(s),
-                        None => break,
-                    }
-                }
-
-                if !active {
-                    // Запаркованы: кольцо ВСЁ РАВНО дренируем (иначе переполнится и
-                    // при пробуждении выльется пачкой старого звука), но дорогой банк
-                    // не считаем — это и есть экономия CPU.
-                    thread::sleep(RESONATOR_PARK_SLEEP);
-                    continue;
-                }
-                if batch.is_empty() {
-                    thread::sleep(ANALYSIS_IDLE_SLEEP);
-                    continue;
-                }
-                pipeline.push_samples(batch.drain(..), &shared, &settings, &input_gain, &input_level);
-            }
-        });
-
-        AnalysisWorker { stop, thread }
-    }
-
-    // ------------------------------------------------------------------
-    // Построение cpal streams
-    // ------------------------------------------------------------------
-    // Кольцевой буфер для анализа. Размер — 0.5с при данном rate,
-    // с большим запасом на подёргивания планировщика.
-    fn analysis_ring(sample_rate: u32) -> (SampleProducer, SampleConsumer) {
-        HeapRb::<f32>::new((sample_rate as usize) / 2).split()
-    }
-
-    // ------------------------------------------------------------------
-    // InputFanout: куда расходится каждый захваченный сэмпл.
-    //
-    // Один тип на все пути захвата (cpal и Pulse). Раньше три строки try_push
-    // повторялись в каждом колбэке; теперь правило живёт в одном месте — и нового
-    // потребителя нельзя подключить к одному пути, забыв про другой.
-    // ------------------------------------------------------------------
-    struct InputFanout {
-        analysis:  SampleProducer,
-        resonator: SampleProducer,
-        monitor:   Option<SampleProducer>,
-        /// `None` на replay-пути: дубль — это то, что сыграла скрипка, а реплей
-        /// проигрывает уже записанный файл. Записать его значило бы сделать копию
-        /// с наклейкой «улика». Тапа тут нет физически, а не по договорённости —
-        /// и кнопка Record при реплее мертва (`take_panel`).
-        recorder:  Option<RecorderTap>,
-    }
-
-    impl InputFanout {
-        /// Реалтайм: вызывается из аудио-колбэка на каждый сэмпл. Не блокирует и
-        /// не аллоцирует.
-        ///
-        /// **Сэмпл здесь сырой.** `input_gain` применяется позже и в другом месте
-        /// — в воркерах, которые дренят эти кольца (`audio::core`). Поэтому дубль
-        /// рекордера физически не может увидеть ползунок: умножения ещё не было.
-        /// Это свойство конструкции, а не договорённость; не переносить обработку
-        /// сюда и не переносить отвод ниже по потоку.
-        fn push(&mut self, sample: f32) {
-            // try_push: если анализ отстал и кольцо забито, теряем сэмпл — не
-            // блокируем аудио-callback. Для анализа потеря безобидна: кадр устарел,
-            // следующий приедет через миллисекунды.
-            let _ = self.analysis.try_push(sample);
-            let _ = self.resonator.try_push(sample);
-            if let Some(monitor) = self.monitor.as_mut() {
-                let _ = monitor.try_push(sample);
-            }
-            // А здесь потеря НЕ безобидна: это дыра в улике. Считается — см.
-            // `RecorderTap::push`. При реплее тапа нет (см. поле).
-            if let Some(recorder) = self.recorder.as_mut() {
-                recorder.push(sample);
-            }
-        }
-    }
-
-    fn build_input<T>(
-        device: &cpal::Device,
-        config: &cpal::StreamConfig,
-        channels: usize,
-        mut fanout: InputFanout,
-    ) -> Result<cpal::Stream, String>
-    where
-        T: Sample + cpal::SizedSample,
-        f32: FromSample<T>,
-    {
-        device
-            .build_input_stream(
-                *config,
-                move |data: &[T], _| {
-                    // Даункаст в моно: первый канал каждого фрейма.
-                    // Нет unwrap/panic — при пустом фрейме просто пропускаем.
-                    for frame in data.chunks(channels) {
-                        if let Some(raw) = frame.first() {
-                            fanout.push(f32::from_sample(*raw));
-                        }
-                    }
-                },
-                |err| report_stream_error("Input stream", &err),
-                None,
-            )
-            .map_err(|e| format!("Failed to build input stream: {e}"))
-    }
-
-    fn build_pulse_input(
-        input_id: &str,
-        sample_rate: u32,
-        mut fanout: InputFanout,
-        shared: Arc<Mutex<SharedState>>,
-    ) -> Result<PulseInputCapture, String> {
-        let pulse_device = input_id.strip_prefix(PULSE_INPUT_ID_PREFIX).unwrap_or(input_id);
-        let rate = sample_rate.to_string();
-        let latency_ms = PULSE_CAPTURE_LATENCY_MS.to_string();
-        let process_ms = PULSE_CAPTURE_PROCESS_MS.to_string();
-
-        let mut child = ProcessCommand::new("parec")
-            .args([
-                "--record",
-                "--raw",
-                "--format=s16le",
-                "--channels=1",
-                "--rate",
-                &rate,
-                "--latency-msec",
-                &latency_ms,
-                "--process-time-msec",
-                &process_ms,
-                "--client-name=fretboard",
-                "--stream-name=fretboard-input",
-                "--device",
-                pulse_device,
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("Failed to start PulseAudio capture via parec: {e}"))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| "parec did not provide a readable stdout stream".to_owned())?;
-
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_flag = stop.clone();
-        let thread = thread::spawn(move || {
-            let mut reader = std::io::BufReader::new(stdout);
-            let mut buf = [0u8; 4096];
-            let mut carry: Option<u8> = None;
-
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => {
-                        if !stop_flag.load(Ordering::Relaxed) {
-                            set_shared_error(&shared, "PulseAudio capture stopped");
-                        }
-                        break;
-                    }
-                    Ok(n) => {
-                        let mut idx = 0usize;
-
-                        if let Some(lo) = carry.take() {
-                            if let Some(&hi) = buf.first() {
-                                fanout.push(pulse_i16_to_f32([lo, hi]));
-                                idx = 1;
-                            } else {
-                                carry = Some(lo);
-                                continue;
-                            }
-                        }
-
-                        while idx + 1 < n {
-                            fanout.push(pulse_i16_to_f32([buf[idx], buf[idx + 1]]));
-                            idx += 2;
-                        }
-
-                        if idx < n {
-                            carry = Some(buf[idx]);
-                        }
-                    }
-                    Err(err) => {
-                        if !stop_flag.load(Ordering::Relaxed) {
-                            set_shared_error(&shared, &format!("PulseAudio read error: {err}"));
-                        }
-                        break;
-                    }
-                }
-            }
-        });
-
-        Ok(PulseInputCapture { stop, child, thread })
-    }
-
-    fn build_monitor_output(
-        input_rate: u32,
-        mut cons: SampleConsumer,
-        monitor_gain: Arc<AtomicU32>,
-    ) -> Result<(cpal::Stream, u32), String> {
+    /// Поднять непрерывный дрон-output. Колбэк синтезирует в реалтайме из
+    /// [`DroneState`] (try_lock каждый блок), голоса держат фазу между
+    /// блоками и сглаживаются по амплитуде → щелчков нет даже на пульсе/арпе.
+    fn build_drone_stream(&self) -> Result<cpal::Stream, String> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
-            .ok_or_else(|| "No output device".to_owned())?;
-
-        // Ищем output-config, поддерживающий ровно наш input rate — тогда
-        // никакого ресемпла: step = 1.0, линейная интерполяция вырождается.
-        let matching = device
-            .supported_output_configs()
-            .map_err(|e| format!("Output configs error: {e}"))?
-            .find(|c| {
-                c.sample_format() == cpal::SampleFormat::F32
-                    && c.min_sample_rate() <= input_rate
-                    && c.max_sample_rate() >= input_rate
-            });
-
-        let (config, actual_rate) = match matching {
-            Some(c) => {
-                let mut config = c.with_sample_rate(input_rate).config();
-                config.buffer_size = preferred_low_latency_buffer(c.buffer_size());
-                (config, input_rate)
-            }
-            None => {
-                let default = device
-                    .default_output_config()
-                    .map_err(|e| format!("Default output config: {e}"))?;
-                let mut config = default.config();
-                config.buffer_size = preferred_low_latency_buffer(default.buffer_size());
-                (config, default.sample_rate())
-            }
-        };
-
-        let channels = usize::from(config.channels);
-        // Линейная интерполяция: если input_rate == actual_rate, step = 1.0 и
-        // мы читаем ровно по одному сэмплу на фрейм, без сглаживания.
-        let step = input_rate as f32 / actual_rate.max(1) as f32;
-        let mut a: f32 = 0.0;
-        let mut b: f32 = 0.0;
-        let mut phase: f32 = 0.0;
-
-        let stream = device
-            .build_output_stream(
-                config,
-                move |data: &mut [f32], _| {
-                    let gain = f32::from_bits(monitor_gain.load(Ordering::Relaxed)).clamp(0.0, 1.0);
-                    for frame in data.chunks_mut(channels) {
-                        while phase >= 1.0 {
-                            a = b;
-                            b = cons.try_pop().unwrap_or(a);
-                            phase -= 1.0;
-                        }
-                        let t = phase.clamp(0.0, 1.0);
-                        let sample = (a + (b - a) * t) * gain;
-                        phase += step;
-                        for out in frame {
-                            *out = sample;
-                        }
-                    }
-                },
-                |err| report_stream_error("Monitor output", &err),
-                None,
-            )
-            .map_err(|e| format!("Failed to build monitor output: {e}"))?;
-
-        stream
-            .play()
-            .map_err(|e| format!("Failed to start monitor output: {e}"))?;
-        Ok((stream, actual_rate))
-    }
-
-    fn play_test_note_thread(
-        midi: PNote,
-        shared: Arc<Mutex<SharedState>>,
-        settings: Arc<Mutex<AnalysisSettings>>,
-        input_level: Arc<AtomicU32>,
-    ) -> Result<(), String> {
-        let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or_else(|| "No output device".to_owned())?;
+            .ok_or_else(|| "No output device for drone".to_owned())?;
         let mut supported = device
             .supported_output_configs()
-            .map_err(|e| format!("Output configs error: {e}"))?;
+            .map_err(|e| format!("Drone output configs error: {e}"))?;
         let output_config = supported
             .find(|config| config.sample_format() == cpal::SampleFormat::F32)
-            .ok_or_else(|| "No f32 output config for test note".to_owned())?;
+            .ok_or_else(|| "No f32 output config for drone".to_owned())?;
         let output_rate = 48_000_u32.clamp(output_config.min_sample_rate(), output_config.max_sample_rate());
         let mut config = output_config.with_sample_rate(output_rate).config();
         config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
         let sample_rate = config.sample_rate as f32;
         let channels = usize::from(config.channels);
-        // Тест-нота звучит по текущему камертону, чтобы совпадать с анализом.
-        let reference_hz = settings.lock().map(|g| g.concert_pitch_hz).unwrap_or(440.0);
-        let frequency = midi_to_hz(midi.as_u8() as f32, reference_hz);
-        let total_samples = (sample_rate * TEST_TONE_DURATION.as_secs_f32()) as usize;
-        let samples = Arc::new(test_tone_samples(frequency, sample_rate, total_samples));
-        let playback_samples = samples.clone();
-        let playback_index = Arc::new(AtomicU32::new(0));
-        let playback_position = playback_index.clone();
+
+        let drone = self.drone.clone();
+        let mut synth = DroneSynth::new(sample_rate);
 
         let stream = device
             .build_output_stream(
                 config,
                 move |data: &mut [f32], _| {
+                    // try_lock: если UI прямо сейчас пишет состояние, держим
+                    // прошлый снимок — реалтайм-колбэк никогда не блокируется.
+                    if let Ok(guard) = drone.try_lock() {
+                        synth.adopt(&guard);
+                    }
                     for frame in data.chunks_mut(channels) {
-                        let index = playback_position.fetch_add(1, Ordering::Relaxed) as usize;
-                        let sample = playback_samples.get(index).copied().unwrap_or(0.0);
+                        let sample = synth.next_sample();
                         for out in frame {
                             *out = sample;
                         }
                     }
                 },
-                |err| report_stream_error("Test note output", &err),
+                |err| report_stream_error("Drone output", &err),
                 None,
             )
-            .map_err(|e| format!("Failed to build test note output: {e}"))?;
+            .map_err(|e| format!("Failed to build drone output: {e}"))?;
 
         stream
             .play()
-            .map_err(|e| format!("Failed to start test note output: {e}"))?;
+            .map_err(|e| format!("Failed to start drone output: {e}"))?;
+        Ok(stream)
+    }
 
-        let input_gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+    // Поднимает входной stream, кольцевые буферы, анализ-воркер и
+    // (опционально) монитор-выход. Возвращает собранный ActiveCapture.
+    fn build_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
+        // Единственная точка развилки pulse/cpal ⇒ здесь же отсекаем маршрут,
+        // которого на этой платформе быть не может (персистнутый pulse-id на
+        // Android). Подробности — в `route_id_for_this_platform`.
+        let id = route_id_for_this_platform(id);
+
+        if let Some(requested) = id.as_deref()
+            && requested.starts_with(PULSE_INPUT_ID_PREFIX)
+        {
+            return self.build_pulse_capture(requested);
+        }
+
+        self.build_cpal_capture(id)
+    }
+
+    fn build_cpal_capture(&self, id: Option<String>) -> Result<ActiveCapture, String> {
+        let host = cpal::default_host();
+        let capture = select_cpal_capture(&host, id.as_deref())?;
+        let device = capture.device;
+        let selected_id = capture.selected_id;
+        let config = capture.config;
+        let sample_rate = config.sample_rate();
+        let channels = usize::from(config.channels());
+        let sample_format = config.sample_format();
+        let input_buffer_size = preferred_low_latency_buffer(config.buffer_size());
+        let mut stream_config: cpal::StreamConfig = config.into();
+        stream_config.buffer_size = input_buffer_size;
+
+        let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
+        let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
+        let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
+        let (recorder_prod, recorder_cons) = recorder_ring(sample_rate);
+        let fanout = InputFanout {
+            analysis:  analysis_prod,
+            resonator: resonator_prod,
+            monitor:   monitor_prod,
+            recorder:  Some(self.recorder.tap(recorder_prod)),
+        };
+
+        // Входной stream: callback тупо пушит в кольца, без блокировок и паник.
+        let input_stream = match sample_format {
+            cpal::SampleFormat::F32 => build_input::<f32>(&device, &stream_config, channels, fanout)?,
+            cpal::SampleFormat::I16 => build_input::<i16>(&device, &stream_config, channels, fanout)?,
+            cpal::SampleFormat::U16 => build_input::<u16>(&device, &stream_config, channels, fanout)?,
+            other => return Err(format!("Unsupported sample format: {other:?}")),
+        };
+        input_stream
+            .play()
+            .map_err(|e| format!("Failed to start input stream: {e}"))?;
+
+        let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
+        let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
+        let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
+        let recorder = Some(start_recorder_worker(
+            sample_rate,
+            recorder_cons,
+            self.recorder.clone(),
+        ));
+        self.finish_capture_start(sample_rate, output_rate, &selected_id);
+
+        Ok(ActiveCapture {
+            input: ActiveInput::Cpal(input_stream),
+            output_stream,
+            analysis,
+            resonator,
+            recorder,
+            selected_id,
+        })
+    }
+
+    fn build_pulse_capture(&self, id: &str) -> Result<ActiveCapture, String> {
+        let sample_rate = PULSE_CAPTURE_RATE;
+        let selected_id = id.to_owned();
+
+        let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
+        let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
+        let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
+        let (recorder_prod, recorder_cons) = recorder_ring(sample_rate);
+        let fanout = InputFanout {
+            analysis:  analysis_prod,
+            resonator: resonator_prod,
+            monitor:   monitor_prod,
+            recorder:  Some(self.recorder.tap(recorder_prod)),
+        };
+
+        let input = ActiveInput::Pulse(build_pulse_input(id, sample_rate, fanout, self.shared.clone())?);
+
+        let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
+        let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
+        let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
+        let recorder = Some(start_recorder_worker(
+            sample_rate,
+            recorder_cons,
+            self.recorder.clone(),
+        ));
+        self.finish_capture_start(sample_rate, output_rate, &selected_id);
+
+        Ok(ActiveCapture {
+            input,
+            output_stream,
+            analysis,
+            resonator,
+            recorder,
+            selected_id,
+        })
+    }
+
+    // Кольцевой буфер для монитора-вывода. Создаём только если monitor on.
+    // Держим запас небольшим, чтобы монитор не копил лишнюю задержку.
+    fn monitor_ring(&self, sample_rate: u32) -> (Option<SampleProducer>, Option<SampleConsumer>) {
+        if self.monitor_enabled.load(Ordering::Relaxed) {
+            let (prod, cons) = HeapRb::<f32>::new(low_latency_monitor_ring_len(sample_rate)).split();
+            (Some(prod), Some(cons))
+        } else {
+            (None, None)
+        }
+    }
+
+    // Ошибку запуска монитора не считаем фатальной: запись и анализ
+    // должны продолжать работать без playback monitoring.
+    fn start_monitor_output(
+        &self,
+        sample_rate: u32,
+        monitor_cons: Option<SampleConsumer>,
+    ) -> (Option<cpal::Stream>, u32) {
+        match monitor_cons {
+            Some(cons) => {
+                match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
+                    Ok((stream, rate)) => (Some(stream), rate),
+                    Err(_) => (None, 0),
+                }
+            }
+            None => (None, 0),
+        }
+    }
+
+    fn start_analysis_worker(&self, sample_rate: u32, analysis_cons: SampleConsumer) -> AnalysisWorker {
+        start_analysis_worker(
+            sample_rate as f32,
+            analysis_cons,
+            self.shared.clone(),
+            self.settings.clone(),
+            self.input_gain.clone(),
+            self.input_level.clone(),
+        )
+    }
+
+    fn start_resonator_worker(&self, sample_rate: u32, resonator_cons: SampleConsumer) -> AnalysisWorker {
+        start_resonator_worker(
+            sample_rate as f32,
+            resonator_cons,
+            self.shared.clone(),
+            self.settings.clone(),
+            self.input_gain.clone(),
+            self.input_level.clone(),
+            self.resonator_wanted.clone(),
+        )
+    }
+
+    /// Общий хвост всех трёх путей захвата ⇒ единственная точка, где виден факт
+    /// «вход поднялся, и вот на чём». Без этой строки в логе «звука нет» неотличимо
+    /// от «звук идёт, но тишина в микрофоне» — а это разные баги.
+    fn finish_capture_start(&self, sample_rate: u32, output_rate: u32, selected_id: &str) {
+        audio_alog(&format!(
+            "capture started: id={selected_id} rate={sample_rate} monitor_out={output_rate}"
+        ));
+        self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
+        self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
+        self.reset_shared_state();
+        if let Ok(mut sel) = self.selected_input_id.lock() {
+            *sel = Some(selected_id.to_owned());
+        }
+    }
+
+    /// Поднять capture, играющий дубль с диска вместо устройства.
+    ///
+    /// Форма — ровно как у двух остальных путей (кольца → фанаут → источник →
+    /// воркеры), и это не совпадение: линия реплея обязана быть боевой линией,
+    /// а она такая ровно постольку, поскольку её рисует тот же код, которому
+    /// всё равно, откуда приехал сэмпл.
+    ///
+    /// Отличий от живых путей три, и все три — следствия того, что источник
+    /// файл, а не устройство:
+    ///
+    /// - **Частота — файла.** Пайплайны строятся под capture, так что дубль
+    ///   44.1 кГц играет как 44.1 (см. `replay::load_take`). Ресемпла нет
+    ///   нигде: он был бы обработкой сигнала, который весь смысл иметь сырым.
+    /// - **Рекордера нет** (`InputFanout::recorder = None`), см. `replay`.
+    /// - **`selected_input_id` не трогаем.** Это выбор УСТРОЙСТВА, к которому
+    ///   реплей вернётся по стопу; реплей не устройство и не выбор. Отсюда же
+    ///   `selected_id` капчура — ID живого входа, а не путь дубля: смена
+    ///   монитора посреди реплея пересоберёт живой вход, что и правильно.
+    /// - **Монитор — есть.** Дубль надо СЛЫШАТЬ: разметка границ нот идёт по
+    ///   звуку, а не по картинке (это же и есть защита от зеркала).
+    fn build_replay_capture(&self, path: PathBuf) -> Result<ActiveCapture, String> {
+        let take = load_take(&path)?;
+        let sample_rate = take.sample_rate;
+
+        let (analysis_prod, analysis_cons) = analysis_ring(sample_rate);
+        let (resonator_prod, resonator_cons) = analysis_ring(sample_rate);
+        let (monitor_prod, monitor_cons) = self.monitor_ring(sample_rate);
+        let fanout = InputFanout {
+            analysis:  analysis_prod,
+            resonator: resonator_prod,
+            monitor:   monitor_prod,
+            recorder:  None,
+        };
+
+        let (output_stream, output_rate) = self.start_monitor_output(sample_rate, monitor_cons);
+        let analysis = self.start_analysis_worker(sample_rate, analysis_cons);
+        let resonator = self.start_resonator_worker(sample_rate, resonator_cons);
+
+        // Чистим состояние ДО первого сэмпла дубля: иначе линия дубля начнётся
+        // с хвоста того, что микрофон слышал секунду назад, и первые кадры
+        // реплея были бы про другой звук.
+        self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
+        self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
+        self.reset_shared_state();
+
+        let selected_id = self
+            .selected_input_id
+            .lock()
+            .ok()
+            .and_then(|sel| sel.clone())
+            .unwrap_or_default();
+
+        self.replay.publish(ReplayStatus::Playing {
+            path,
+            seconds: 0.0,
+            total_seconds: take.seconds(),
+        });
+        let source = start_replay_source(take, fanout, self.replay.clone());
+
+        Ok(ActiveCapture {
+            input: ActiveInput::Replay(source),
+            output_stream,
+            analysis,
+            resonator,
+            // Рекордер на этом пути не поднимается: писать нечего и незачем.
+            recorder: None,
+            selected_id,
+        })
+    }
+}
+
+// ------------------------------------------------------------------
+// ActiveCapture: текущая активная пара stream'ов + воркер.
+// При смене устройства или монитора весь объект дропается целиком;
+// все потоки останавливаются, кольца исчезают.
+// ------------------------------------------------------------------
+struct PulseInputCapture {
+    stop:   Arc<AtomicBool>,
+    child:  Child,
+    thread: JoinHandle<()>,
+}
+
+impl PulseInputCapture {
+    fn shutdown(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = self.thread.join();
+    }
+}
+
+enum ActiveInput {
+    Cpal(cpal::Stream),
+    Pulse(PulseInputCapture),
+    /// Дубль, проигрываемый с диска в те же кольца. Как и у рекордера,
+    /// `AnalysisWorker` тут — просто «поток со стоп-флагом».
+    Replay(AnalysisWorker),
+}
+
+struct ActiveCapture {
+    input:         ActiveInput,
+    output_stream: Option<cpal::Stream>,
+    analysis:      AnalysisWorker,
+    resonator:     AnalysisWorker,
+    /// Писатель дублей. `AnalysisWorker` здесь не про анализ — это просто
+    /// «поток со стоп-флагом», и рекордеру нужен ровно он (см. тип).
+    ///
+    /// `None` на replay-пути: писать нечего (см. `build_replay_capture`).
+    recorder:      Option<AnalysisWorker>,
+    selected_id:   String,
+}
+
+impl ActiveCapture {
+    fn shutdown(self) {
+        match self.input {
+            ActiveInput::Cpal(input_stream) => {
+                // ALSA backend cpal может паниковать при drop'е, если callback
+                // успел паникнуть — наш callback не паникует (try_push, без unwrap).
+                // pause() перед drop корректно слайдит трекер-отправитель.
+                let _ = input_stream.pause();
+                drop(input_stream);
+            }
+            ActiveInput::Pulse(pulse) => pulse.shutdown(),
+            // Тред реплея проверяет стоп-флаг раз в чанк, так что join
+            // возвращается в пределах 10 мс — стоп посреди 35-секундного дубля
+            // не заставляет ждать его конца.
+            ActiveInput::Replay(source) => source.stop(),
+        }
+        if let Some(out) = &self.output_stream {
+            let _ = out.pause();
+        }
+        drop(self.output_stream);
+        // Анализ останавливаем после stream'а: callback больше не пишет
+        // в кольцо, воркер додренит остатки и выйдет.
+        self.analysis.stop();
+        self.resonator.stop();
+        // Рекордер последним: он закрывает WAV (дописывает длины в RIFF-хедер)
+        // и обязан успеть это сделать до того, как мы вернём управление.
+        if let Some(recorder) = self.recorder {
+            recorder.stop();
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// Анализ-воркер
+// ------------------------------------------------------------------
+struct AnalysisWorker {
+    stop:   Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+impl AnalysisWorker {
+    fn stop(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.thread.join();
+    }
+}
+
+fn start_analysis_worker(
+    sample_rate: f32,
+    mut cons: SampleConsumer,
+    shared: Arc<Mutex<SharedState>>,
+    settings: Arc<Mutex<AnalysisSettings>>,
+    input_gain: Arc<AtomicU32>,
+    input_level: Arc<AtomicU32>,
+) -> AnalysisWorker {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = stop.clone();
+
+    let thread = thread::spawn(move || {
         let mut pipeline = AnalysisPipeline::new(sample_rate);
-        let chunk_len = (sample_rate / 50.0).max(1.0) as usize;
-        for chunk in samples.chunks(chunk_len) {
-            pipeline.push_samples(
-                chunk.iter().copied(),
-                &shared,
-                &settings,
-                &input_gain,
-                &input_level,
-            );
-            thread::sleep(Duration::from_secs_f32(chunk.len() as f32 / sample_rate));
+        let mut batch: Vec<f32> = Vec::with_capacity(4096);
+
+        while !stop_flag.load(Ordering::Relaxed) {
+            batch.clear();
+            // Дренируем сколько есть в кольце, не больше 4096 за раз,
+            // чтобы FFT-пауза не превышала одного сэмпл-окна.
+            for _ in 0..4096 {
+                match cons.try_pop() {
+                    Some(s) => batch.push(s),
+                    None => break,
+                }
+            }
+            if batch.is_empty() {
+                thread::sleep(ANALYSIS_IDLE_SLEEP);
+                continue;
+            }
+            pipeline.push_samples(batch.drain(..), &shared, &settings, &input_gain, &input_level);
         }
+    });
 
-        thread::sleep(Duration::from_millis(120));
-        drop(stream);
-        Ok(())
-    }
+    AnalysisWorker { stop, thread }
+}
 
-    fn test_tone_samples(frequency: f32, sample_rate: f32, len: usize) -> Vec<f32> {
-        (0..len)
-            .map(|i| {
-                let t = i as f32 / sample_rate;
-                let attack = (i as f32 / (sample_rate * 0.025)).clamp(0.0, 1.0);
-                let release = ((len.saturating_sub(i) as f32) / (sample_rate * 0.08)).clamp(0.0, 1.0);
-                let envelope = attack.min(release);
-                let phase = std::f32::consts::TAU * frequency * t;
-                let sample = 0.55 * phase.sin() + 0.18 * (phase * 2.0).sin() + 0.07 * (phase * 3.0).sin();
-                sample * envelope * TEST_TONE_GAIN
-            })
-            .collect()
-    }
+fn start_resonator_worker(
+    sample_rate: f32,
+    mut cons: SampleConsumer,
+    shared: Arc<Mutex<SharedState>>,
+    settings: Arc<Mutex<AnalysisSettings>>,
+    input_gain: Arc<AtomicU32>,
+    // Written by the analysis worker, read here: the melody line's silence gate.
+    // The bank's own column is normalized and so cannot tell silence from noise —
+    // the absolute level is measured on the other plane and shared across.
+    input_level: Arc<AtomicU32>,
+    resonator_wanted: Arc<Mutex<Instant>>,
+) -> AnalysisWorker {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = stop.clone();
 
-    fn pulse_i16_to_f32(bytes: [u8; 2]) -> f32 {
-        f32::from(i16::from_le_bytes(bytes)) / 32768.0
-    }
+    let thread = thread::spawn(move || {
+        let mut pipeline = ResonatorPipeline::new(sample_rate);
+        let mut batch: Vec<f32> = Vec::with_capacity(4096);
 
-    // ------------------------------------------------------------------
-    // DroneSynth: реалтайм-синтез дрона. Живёт внутри колбэка дрон-стрима,
-    // держит фазу/амплитуду каждого голоса между блоками. Параметры берёт из
-    // снимка [`DroneState`] через `adopt`; ничего не аллоцирует на горячем пути,
-    // кроме `notes` (обновляется только в `adopt`).
-    // ------------------------------------------------------------------
-    struct DroneSynth {
-        sample_rate:      f32,
-        // Параметры (снимок DroneState, по одному полю чтобы не лочить в колбэке).
-        notes:            Vec<u8>, // отсортированы по высоте (инвариант DroneState)
-        gain:             f32,
-        mode:             DroneMode,
-        samples_per_step: f32, // длина удара в сэмплах = sr*60/bpm
-        pulse_duty:       f32,
-        arp_gate:         f32,
-        arp_pattern:      ArpPattern,
-        brightness:       f32,
-        timbre:           Timbre,
-        // Частота каждой MIDI-ноты при текущем камертоне (пересчёт в `adopt`).
-        freq:             [f32; 128],
-        // Живое состояние голосов.
-        phase:            [f32; 128],  // фаза в циклах, 0..1
-        amp:              [f32; 128],  // сглаженный гейт голоса (атака/спад), 0..1
-        env:              [f32; 128],  // перкуссивная огибающая удара (EPiano), 0..1
-        was_on:           [bool; 128], // гейт на прошлом сэмпле — для детекта удара
-        clock:            f64,         // счётчик сэмплов для секвенсора
-        lfo_phase:        f32,         // фаза LFO вибрато, 0..1
-        ramp_k:           f32,         // шаг сглаживания гейта за сэмпл
-        pluck_decay:      f32,         // множитель затухания env за сэмпл (EPiano)
-    }
+        while !stop_flag.load(Ordering::Relaxed) {
+            // Гейт: банк нужен, только пока UI двигает дедлайн. Замок не
+            // отравлен/в прошлом → считаем active=false (паркуемся). Если замок
+            // отравлен — на стороне безопасности молотим (lock().is_ok() == false
+            // ⇒ active=false здесь; но это практически недостижимо).
+            let active = resonator_wanted
+                .lock()
+                .map(|until| Instant::now() < *until)
+                .unwrap_or(false);
 
-    impl DroneSynth {
-        fn new(sample_rate: f32) -> Self {
-            let mut synth = Self {
-                sample_rate,
-                notes: Vec::new(),
-                gain: 0.0,
-                mode: DroneMode::Sustained,
-                samples_per_step: sample_rate, // = 60 bpm до первого adopt
-                pulse_duty: 0.5,
-                arp_gate: 0.6,
-                arp_pattern: ArpPattern::Up,
-                brightness: 0.4,
-                timbre: Timbre::Sine,
-                freq: [0.0; 128],
-                phase: [0.0; 128],
-                amp: [0.0; 128],
-                env: [0.0; 128],
-                was_on: [false; 128],
-                clock: 0.0,
-                lfo_phase: 0.0,
-                // Экспоненциальное сглаживание с постоянной времени DRONE_RAMP_SECONDS.
-                ramp_k: (1.0 / (DRONE_RAMP_SECONDS * sample_rate)).clamp(0.0, 1.0),
-                // Экспонента затухания удара: amp *= e^(-1/(τ·sr)) каждый сэмпл.
-                pluck_decay: (-1.0 / (DRONE_PLUCK_DECAY_SECONDS * sample_rate)).exp(),
-            };
-            synth.adopt(&DroneState::default());
-            synth
+            batch.clear();
+            for _ in 0..4096 {
+                match cons.try_pop() {
+                    Some(s) => batch.push(s),
+                    None => break,
+                }
+            }
+
+            if !active {
+                // Запаркованы: кольцо ВСЁ РАВНО дренируем (иначе переполнится и
+                // при пробуждении выльется пачкой старого звука), но дорогой банк
+                // не считаем — это и есть экономия CPU.
+                thread::sleep(RESONATOR_PARK_SLEEP);
+                continue;
+            }
+            if batch.is_empty() {
+                thread::sleep(ANALYSIS_IDLE_SLEEP);
+                continue;
+            }
+            pipeline.push_samples(batch.drain(..), &shared, &settings, &input_gain, &input_level);
         }
+    });
 
-        /// Подхватить новый снимок состояния. Фаза/амплитуда/часы НЕ сбрасываются
-        /// — параметры можно крутить во время игры без щелчков и сбоя ритма.
-        fn adopt(&mut self, state: &DroneState) {
-            self.notes.clear();
-            self.notes.extend(state.notes.iter().map(|n| n.as_u8()));
-            self.gain = state.gain;
-            self.mode = state.mode;
-            self.samples_per_step = (self.sample_rate * 60.0 / state.bpm).max(1.0);
-            self.pulse_duty = state.pulse_duty;
-            self.arp_gate = state.arp_gate;
-            self.arp_pattern = state.arp_pattern;
-            self.brightness = state.brightness;
-            self.timbre = state.timbre;
-            // Частоты по текущему камертону: midi_to_hz(m, A4) = A4 * 2^((m-69)/12).
-            for (m, slot) in self.freq.iter_mut().enumerate() {
-                *slot = midi_to_hz(m as f32, state.reference_hz);
+    AnalysisWorker { stop, thread }
+}
+
+// ------------------------------------------------------------------
+// Построение cpal streams
+// ------------------------------------------------------------------
+// Кольцевой буфер для анализа. Размер — 0.5с при данном rate,
+// с большим запасом на подёргивания планировщика.
+fn analysis_ring(sample_rate: u32) -> (SampleProducer, SampleConsumer) {
+    HeapRb::<f32>::new((sample_rate as usize) / 2).split()
+}
+
+// ------------------------------------------------------------------
+// InputFanout: куда расходится каждый захваченный сэмпл.
+//
+// Один тип на все пути захвата (cpal и Pulse). Раньше три строки try_push
+// повторялись в каждом колбэке; теперь правило живёт в одном месте — и нового
+// потребителя нельзя подключить к одному пути, забыв про другой.
+// ------------------------------------------------------------------
+struct InputFanout {
+    analysis:  SampleProducer,
+    resonator: SampleProducer,
+    monitor:   Option<SampleProducer>,
+    /// `None` на replay-пути: дубль — это то, что сыграла скрипка, а реплей
+    /// проигрывает уже записанный файл. Записать его значило бы сделать копию
+    /// с наклейкой «улика». Тапа тут нет физически, а не по договорённости —
+    /// и кнопка Record при реплее мертва (`take_panel`).
+    recorder:  Option<RecorderTap>,
+}
+
+impl InputFanout {
+    /// Реалтайм: вызывается из аудио-колбэка на каждый сэмпл. Не блокирует и
+    /// не аллоцирует.
+    ///
+    /// **Сэмпл здесь сырой.** `input_gain` применяется позже и в другом месте
+    /// — в воркерах, которые дренят эти кольца (`audio::core`). Поэтому дубль
+    /// рекордера физически не может увидеть ползунок: умножения ещё не было.
+    /// Это свойство конструкции, а не договорённость; не переносить обработку
+    /// сюда и не переносить отвод ниже по потоку.
+    fn push(&mut self, sample: f32) {
+        // try_push: если анализ отстал и кольцо забито, теряем сэмпл — не
+        // блокируем аудио-callback. Для анализа потеря безобидна: кадр устарел,
+        // следующий приедет через миллисекунды.
+        let _ = self.analysis.try_push(sample);
+        let _ = self.resonator.try_push(sample);
+        if let Some(monitor) = self.monitor.as_mut() {
+            let _ = monitor.try_push(sample);
+        }
+        // А здесь потеря НЕ безобидна: это дыра в улике. Считается — см.
+        // `RecorderTap::push`. При реплее тапа нет (см. поле).
+        if let Some(recorder) = self.recorder.as_mut() {
+            recorder.push(sample);
+        }
+    }
+}
+
+fn build_input<T>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    channels: usize,
+    mut fanout: InputFanout,
+) -> Result<cpal::Stream, String>
+where
+    T: Sample + cpal::SizedSample,
+    f32: FromSample<T>,
+{
+    device
+        .build_input_stream(
+            *config,
+            move |data: &[T], _| {
+                // Даункаст в моно: первый канал каждого фрейма.
+                // Нет unwrap/panic — при пустом фрейме просто пропускаем.
+                for frame in data.chunks(channels) {
+                    if let Some(raw) = frame.first() {
+                        fanout.push(f32::from_sample(*raw));
+                    }
+                }
+            },
+            |err| report_stream_error("Input stream", &err),
+            None,
+        )
+        .map_err(|e| format!("Failed to build input stream: {e}"))
+}
+
+fn build_pulse_input(
+    input_id: &str,
+    sample_rate: u32,
+    mut fanout: InputFanout,
+    shared: Arc<Mutex<SharedState>>,
+) -> Result<PulseInputCapture, String> {
+    let pulse_device = input_id.strip_prefix(PULSE_INPUT_ID_PREFIX).unwrap_or(input_id);
+    let rate = sample_rate.to_string();
+    let latency_ms = PULSE_CAPTURE_LATENCY_MS.to_string();
+    let process_ms = PULSE_CAPTURE_PROCESS_MS.to_string();
+
+    let mut child = ProcessCommand::new("parec")
+        .args([
+            "--record",
+            "--raw",
+            "--format=s16le",
+            "--channels=1",
+            "--rate",
+            &rate,
+            "--latency-msec",
+            &latency_ms,
+            "--process-time-msec",
+            &process_ms,
+            "--client-name=fretboard",
+            "--stream-name=fretboard-input",
+            "--device",
+            pulse_device,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to start PulseAudio capture via parec: {e}"))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "parec did not provide a readable stdout stream".to_owned())?;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = stop.clone();
+    let thread = thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut buf = [0u8; 4096];
+        let mut carry: Option<u8> = None;
+
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => {
+                    if !stop_flag.load(Ordering::Relaxed) {
+                        set_shared_error(&shared, "PulseAudio capture stopped");
+                    }
+                    break;
+                }
+                Ok(n) => {
+                    let mut idx = 0usize;
+
+                    if let Some(lo) = carry.take() {
+                        if let Some(&hi) = buf.first() {
+                            fanout.push(pulse_i16_to_f32([lo, hi]));
+                            idx = 1;
+                        } else {
+                            carry = Some(lo);
+                            continue;
+                        }
+                    }
+
+                    while idx + 1 < n {
+                        fanout.push(pulse_i16_to_f32([buf[idx], buf[idx + 1]]));
+                        idx += 2;
+                    }
+
+                    if idx < n {
+                        carry = Some(buf[idx]);
+                    }
+                }
+                Err(err) => {
+                    if !stop_flag.load(Ordering::Relaxed) {
+                        set_shared_error(&shared, &format!("PulseAudio read error: {err}"));
+                    }
+                    break;
+                }
             }
         }
+    });
 
-        /// Какой голос (или голоса) звучит на текущем сэмпле и с каким гейтом.
-        /// Возвращает (midi, gate_open) для каждой звучащей ноты — для пульса это
-        /// весь набор, для арпеджио максимум одна нота, для дрона — весь набор.
-        fn sounding_target(&self, out: &mut [bool; 128]) {
-            if self.notes.is_empty() {
-                return;
+    Ok(PulseInputCapture { stop, child, thread })
+}
+
+fn build_monitor_output(
+    input_rate: u32,
+    mut cons: SampleConsumer,
+    monitor_gain: Arc<AtomicU32>,
+) -> Result<(cpal::Stream, u32), String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| "No output device".to_owned())?;
+
+    // Ищем output-config, поддерживающий ровно наш input rate — тогда
+    // никакого ресемпла: step = 1.0, линейная интерполяция вырождается.
+    let matching = device
+        .supported_output_configs()
+        .map_err(|e| format!("Output configs error: {e}"))?
+        .find(|c| {
+            c.sample_format() == cpal::SampleFormat::F32
+                && c.min_sample_rate() <= input_rate
+                && c.max_sample_rate() >= input_rate
+        });
+
+    let (config, actual_rate) = match matching {
+        Some(c) => {
+            let mut config = c.with_sample_rate(input_rate).config();
+            config.buffer_size = preferred_low_latency_buffer(c.buffer_size());
+            (config, input_rate)
+        }
+        None => {
+            let default = device
+                .default_output_config()
+                .map_err(|e| format!("Default output config: {e}"))?;
+            let mut config = default.config();
+            config.buffer_size = preferred_low_latency_buffer(default.buffer_size());
+            (config, default.sample_rate())
+        }
+    };
+
+    let channels = usize::from(config.channels);
+    // Линейная интерполяция: если input_rate == actual_rate, step = 1.0 и
+    // мы читаем ровно по одному сэмплу на фрейм, без сглаживания.
+    let step = input_rate as f32 / actual_rate.max(1) as f32;
+    let mut a: f32 = 0.0;
+    let mut b: f32 = 0.0;
+    let mut phase: f32 = 0.0;
+
+    let stream = device
+        .build_output_stream(
+            config,
+            move |data: &mut [f32], _| {
+                let gain = f32::from_bits(monitor_gain.load(Ordering::Relaxed)).clamp(0.0, 1.0);
+                for frame in data.chunks_mut(channels) {
+                    while phase >= 1.0 {
+                        a = b;
+                        b = cons.try_pop().unwrap_or(a);
+                        phase -= 1.0;
+                    }
+                    let t = phase.clamp(0.0, 1.0);
+                    let sample = (a + (b - a) * t) * gain;
+                    phase += step;
+                    for out in frame {
+                        *out = sample;
+                    }
+                }
+            },
+            |err| report_stream_error("Monitor output", &err),
+            None,
+        )
+        .map_err(|e| format!("Failed to build monitor output: {e}"))?;
+
+    stream
+        .play()
+        .map_err(|e| format!("Failed to start monitor output: {e}"))?;
+    Ok((stream, actual_rate))
+}
+
+fn play_test_note_thread(
+    midi: PNote,
+    shared: Arc<Mutex<SharedState>>,
+    settings: Arc<Mutex<AnalysisSettings>>,
+    input_level: Arc<AtomicU32>,
+) -> Result<(), String> {
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or_else(|| "No output device".to_owned())?;
+    let mut supported = device
+        .supported_output_configs()
+        .map_err(|e| format!("Output configs error: {e}"))?;
+    let output_config = supported
+        .find(|config| config.sample_format() == cpal::SampleFormat::F32)
+        .ok_or_else(|| "No f32 output config for test note".to_owned())?;
+    let output_rate = 48_000_u32.clamp(output_config.min_sample_rate(), output_config.max_sample_rate());
+    let mut config = output_config.with_sample_rate(output_rate).config();
+    config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
+    let sample_rate = config.sample_rate as f32;
+    let channels = usize::from(config.channels);
+    // Тест-нота звучит по текущему камертону, чтобы совпадать с анализом.
+    let reference_hz = settings.lock().map(|g| g.concert_pitch_hz).unwrap_or(440.0);
+    let frequency = midi_to_hz(midi.as_u8() as f32, reference_hz);
+    let total_samples = (sample_rate * TEST_TONE_DURATION.as_secs_f32()) as usize;
+    let samples = Arc::new(test_tone_samples(frequency, sample_rate, total_samples));
+    let playback_samples = samples.clone();
+    let playback_index = Arc::new(AtomicU32::new(0));
+    let playback_position = playback_index.clone();
+
+    let stream = device
+        .build_output_stream(
+            config,
+            move |data: &mut [f32], _| {
+                for frame in data.chunks_mut(channels) {
+                    let index = playback_position.fetch_add(1, Ordering::Relaxed) as usize;
+                    let sample = playback_samples.get(index).copied().unwrap_or(0.0);
+                    for out in frame {
+                        *out = sample;
+                    }
+                }
+            },
+            |err| report_stream_error("Test note output", &err),
+            None,
+        )
+        .map_err(|e| format!("Failed to build test note output: {e}"))?;
+
+    stream
+        .play()
+        .map_err(|e| format!("Failed to start test note output: {e}"))?;
+
+    let input_gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
+    let mut pipeline = AnalysisPipeline::new(sample_rate);
+    let chunk_len = (sample_rate / 50.0).max(1.0) as usize;
+    for chunk in samples.chunks(chunk_len) {
+        pipeline.push_samples(
+            chunk.iter().copied(),
+            &shared,
+            &settings,
+            &input_gain,
+            &input_level,
+        );
+        thread::sleep(Duration::from_secs_f32(chunk.len() as f32 / sample_rate));
+    }
+
+    thread::sleep(Duration::from_millis(120));
+    drop(stream);
+    Ok(())
+}
+
+fn test_tone_samples(frequency: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+    (0..len)
+        .map(|i| {
+            let t = i as f32 / sample_rate;
+            let attack = (i as f32 / (sample_rate * 0.025)).clamp(0.0, 1.0);
+            let release = ((len.saturating_sub(i) as f32) / (sample_rate * 0.08)).clamp(0.0, 1.0);
+            let envelope = attack.min(release);
+            let phase = std::f32::consts::TAU * frequency * t;
+            let sample = 0.55 * phase.sin() + 0.18 * (phase * 2.0).sin() + 0.07 * (phase * 3.0).sin();
+            sample * envelope * TEST_TONE_GAIN
+        })
+        .collect()
+}
+
+fn pulse_i16_to_f32(bytes: [u8; 2]) -> f32 {
+    f32::from(i16::from_le_bytes(bytes)) / 32768.0
+}
+
+// ------------------------------------------------------------------
+// DroneSynth: реалтайм-синтез дрона. Живёт внутри колбэка дрон-стрима,
+// держит фазу/амплитуду каждого голоса между блоками. Параметры берёт из
+// снимка [`DroneState`] через `adopt`; ничего не аллоцирует на горячем пути,
+// кроме `notes` (обновляется только в `adopt`).
+// ------------------------------------------------------------------
+struct DroneSynth {
+    sample_rate:      f32,
+    // Параметры (снимок DroneState, по одному полю чтобы не лочить в колбэке).
+    notes:            Vec<u8>, // отсортированы по высоте (инвариант DroneState)
+    gain:             f32,
+    mode:             DroneMode,
+    samples_per_step: f32, // длина удара в сэмплах = sr*60/bpm
+    pulse_duty:       f32,
+    arp_gate:         f32,
+    arp_pattern:      ArpPattern,
+    brightness:       f32,
+    timbre:           Timbre,
+    // Частота каждой MIDI-ноты при текущем камертоне (пересчёт в `adopt`).
+    freq:             [f32; 128],
+    // Живое состояние голосов.
+    phase:            [f32; 128],  // фаза в циклах, 0..1
+    amp:              [f32; 128],  // сглаженный гейт голоса (атака/спад), 0..1
+    env:              [f32; 128],  // перкуссивная огибающая удара (EPiano), 0..1
+    was_on:           [bool; 128], // гейт на прошлом сэмпле — для детекта удара
+    clock:            f64,         // счётчик сэмплов для секвенсора
+    lfo_phase:        f32,         // фаза LFO вибрато, 0..1
+    ramp_k:           f32,         // шаг сглаживания гейта за сэмпл
+    pluck_decay:      f32,         // множитель затухания env за сэмпл (EPiano)
+}
+
+impl DroneSynth {
+    fn new(sample_rate: f32) -> Self {
+        let mut synth = Self {
+            sample_rate,
+            notes: Vec::new(),
+            gain: 0.0,
+            mode: DroneMode::Sustained,
+            samples_per_step: sample_rate, // = 60 bpm до первого adopt
+            pulse_duty: 0.5,
+            arp_gate: 0.6,
+            arp_pattern: ArpPattern::Up,
+            brightness: 0.4,
+            timbre: Timbre::Sine,
+            freq: [0.0; 128],
+            phase: [0.0; 128],
+            amp: [0.0; 128],
+            env: [0.0; 128],
+            was_on: [false; 128],
+            clock: 0.0,
+            lfo_phase: 0.0,
+            // Экспоненциальное сглаживание с постоянной времени DRONE_RAMP_SECONDS.
+            ramp_k: (1.0 / (DRONE_RAMP_SECONDS * sample_rate)).clamp(0.0, 1.0),
+            // Экспонента затухания удара: amp *= e^(-1/(τ·sr)) каждый сэмпл.
+            pluck_decay: (-1.0 / (DRONE_PLUCK_DECAY_SECONDS * sample_rate)).exp(),
+        };
+        synth.adopt(&DroneState::default());
+        synth
+    }
+
+    /// Подхватить новый снимок состояния. Фаза/амплитуда/часы НЕ сбрасываются
+    /// — параметры можно крутить во время игры без щелчков и сбоя ритма.
+    fn adopt(&mut self, state: &DroneState) {
+        self.notes.clear();
+        self.notes.extend(state.notes.iter().map(|n| n.as_u8()));
+        self.gain = state.gain;
+        self.mode = state.mode;
+        self.samples_per_step = (self.sample_rate * 60.0 / state.bpm).max(1.0);
+        self.pulse_duty = state.pulse_duty;
+        self.arp_gate = state.arp_gate;
+        self.arp_pattern = state.arp_pattern;
+        self.brightness = state.brightness;
+        self.timbre = state.timbre;
+        // Частоты по текущему камертону: midi_to_hz(m, A4) = A4 * 2^((m-69)/12).
+        for (m, slot) in self.freq.iter_mut().enumerate() {
+            *slot = midi_to_hz(m as f32, state.reference_hz);
+        }
+    }
+
+    /// Какой голос (или голоса) звучит на текущем сэмпле и с каким гейтом.
+    /// Возвращает (midi, gate_open) для каждой звучащей ноты — для пульса это
+    /// весь набор, для арпеджио максимум одна нота, для дрона — весь набор.
+    fn sounding_target(&self, out: &mut [bool; 128]) {
+        if self.notes.is_empty() {
+            return;
+        }
+        match self.mode {
+            DroneMode::Sustained => {
+                for &m in &self.notes {
+                    out[m as usize] = true;
+                }
             }
-            match self.mode {
-                DroneMode::Sustained => {
+            DroneMode::Pulse => {
+                let beat_phase = (self.clock / self.samples_per_step as f64).fract() as f32;
+                if beat_phase < self.pulse_duty {
                     for &m in &self.notes {
                         out[m as usize] = true;
                     }
                 }
-                DroneMode::Pulse => {
-                    let beat_phase = (self.clock / self.samples_per_step as f64).fract() as f32;
-                    if beat_phase < self.pulse_duty {
-                        for &m in &self.notes {
-                            out[m as usize] = true;
-                        }
-                    }
-                }
-                DroneMode::Arp => {
-                    let step_len = self.samples_per_step as f64;
-                    let beat_phase = (self.clock / step_len).fract() as f32;
-                    if beat_phase < self.arp_gate {
-                        let step = (self.clock / step_len).floor() as i64;
-                        let n = self.notes.len() as i64;
-                        let pos = match self.arp_pattern {
-                            ArpPattern::Up => step.rem_euclid(n),
-                            ArpPattern::Down => n - 1 - step.rem_euclid(n),
-                            ArpPattern::UpDown => {
-                                // Пинг-понг: период 2*(n-1), вершина и низ не дублируются.
-                                if n <= 1 {
-                                    0
-                                } else {
-                                    let period = 2 * (n - 1);
-                                    let k = step.rem_euclid(period);
-                                    if k < n { k } else { period - k }
-                                }
+            }
+            DroneMode::Arp => {
+                let step_len = self.samples_per_step as f64;
+                let beat_phase = (self.clock / step_len).fract() as f32;
+                if beat_phase < self.arp_gate {
+                    let step = (self.clock / step_len).floor() as i64;
+                    let n = self.notes.len() as i64;
+                    let pos = match self.arp_pattern {
+                        ArpPattern::Up => step.rem_euclid(n),
+                        ArpPattern::Down => n - 1 - step.rem_euclid(n),
+                        ArpPattern::UpDown => {
+                            // Пинг-понг: период 2*(n-1), вершина и низ не дублируются.
+                            if n <= 1 {
+                                0
+                            } else {
+                                let period = 2 * (n - 1);
+                                let k = step.rem_euclid(period);
+                                if k < n { k } else { period - k }
                             }
-                        };
-                        out[self.notes[pos as usize] as usize] = true;
-                    }
+                        }
+                    };
+                    out[self.notes[pos as usize] as usize] = true;
                 }
-            }
-        }
-
-        fn next_sample(&mut self) -> f32 {
-            let mut target = [false; 128];
-            self.sounding_target(&mut target);
-
-            // Глобальный LFO вибрато: считаем дёшево всегда, применяем лишь к смычку.
-            self.lfo_phase = (self.lfo_phase + DRONE_VIBRATO_HZ / self.sample_rate).fract();
-            let pitch_mod = if matches!(self.timbre, Timbre::Violin) {
-                1.0 + DRONE_VIBRATO_DEPTH * (std::f32::consts::TAU * self.lfo_phase).sin()
-            } else {
-                1.0
-            };
-            // EPiano — единственный перкуссивный тембр: гейт умножается на затухающую
-            // огибающую удара, перезапуск на фронте включения ноты.
-            let percussive = matches!(self.timbre, Timbre::EPiano);
-
-            let mut mix = 0.0_f32;
-            // Нормировка тембра: яркость добавляет обертоны, держим пик ~1.
-            let timbre_norm = 1.0 / (1.0 + 0.6 * self.brightness);
-            for (m, &want_on) in target.iter().enumerate() {
-                // Удар: на фронте включения (off→on) перезапускаем огибающую.
-                if percussive && want_on && !self.was_on[m] {
-                    self.env[m] = 1.0;
-                }
-                self.was_on[m] = want_on;
-
-                let want = if want_on { 1.0 } else { 0.0 };
-                let mut a = self.amp[m];
-                // Пропускаем полностью молчащий голос (и гейт, и хвост огибающей).
-                if a == 0.0 && want == 0.0 && self.env[m] == 0.0 {
-                    continue;
-                }
-                a += (want - a) * self.ramp_k;
-                if (a - want).abs() < 1e-4 {
-                    a = want;
-                }
-                self.amp[m] = a;
-                if a <= 1e-4 {
-                    self.amp[m] = 0.0;
-                }
-
-                // Итоговая громкость голоса: гейт (атака/спад) × огибающая удара.
-                let level = if percussive { a * self.env[m] } else { a };
-                if level > 1e-4 {
-                    let ph = self.phase[m];
-                    mix += level * timbre_voice(self.timbre, ph, self.brightness) * timbre_norm;
-                    let next = ph + (self.freq[m] * pitch_mod) / self.sample_rate;
-                    self.phase[m] = next.fract();
-                }
-
-                // Затухание удара продолжается, пока нота держится (зажатая клавиша
-                // уходит в тишину); ниже порога обнуляем, чтобы голос выпал из цикла.
-                if percussive {
-                    self.env[m] *= self.pluck_decay;
-                    if self.env[m] < 1e-5 {
-                        self.env[m] = 0.0;
-                    }
-                }
-            }
-
-            self.clock += 1.0;
-            // tanh — мягкий лимитер: плотный аккорд не клиппует жёстко.
-            (mix * DRONE_OUTPUT_GAIN * self.gain).tanh()
-        }
-    }
-
-    /// Сэмпл одного голоса по тембру. `ph` — фаза в циклах (0..1), `brightness`
-    /// (0..1) управляет яркостью верхних гармоник. Каждый тембр нормирован к пику
-    /// ≈1, чтобы громкость не прыгала при переключении. Гармоник ≤12 — на самой
-    /// высокой дрон-ноте (~1 кГц) даже 12-я гармоника ниже Найквиста, без алиасинга.
-    /// Перкуссивная огибающая и вибрато живут в `next_sample`, не здесь.
-    fn timbre_voice(timbre: Timbre, ph: f32, brightness: f32) -> f32 {
-        use std::f32::consts::TAU;
-        let tau = TAU * ph;
-        match timbre {
-            // Чистый тон с лёгкими обертонами — прежний дефолтный голос дрона.
-            Timbre::Sine => tau.sin() + brightness * (0.4 * (2.0 * tau).sin() + 0.2 * (3.0 * tau).sin()),
-            // Смычковая струна: пилообразный спектр (гармоники ~1/k), brightness
-            // открывает верх через спектральный наклон `tilt`.
-            Timbre::Violin => {
-                let tilt = 0.45 + 0.5 * brightness; // 0.45..0.95
-                let mut s = 0.0;
-                let mut w = 1.0;
-                for k in 1..=10 {
-                    let kf = k as f32;
-                    s += (w / kf) * (kf * tau).sin();
-                    w *= tilt;
-                }
-                s * 0.55
-            }
-            // Орган/драубары: фундамент + октавы, тёплый и стабильный, без затухания.
-            Timbre::Organ => {
-                let up = 0.4 + 0.6 * brightness;
-                let base = tau.sin()
-                    + 0.5 * (2.0 * tau).sin()
-                    + up * (0.6 * (3.0 * tau).sin() + 0.4 * (4.0 * tau).sin());
-                base * 0.5
-            }
-            // Субтрактивный синт: яркая пила со «срезом» (фильтром) по brightness.
-            Timbre::Synth => {
-                let tilt = 0.3 + 0.65 * brightness; // 0.3..0.95
-                let mut s = 0.0;
-                let mut w = 1.0;
-                for k in 1..=12 {
-                    let kf = k as f32;
-                    s += (w / kf) * (kf * tau).sin();
-                    w *= tilt;
-                }
-                s * 0.5
-            }
-            // Электропиано/удар: немного гармоник с «колокольной» 2-й; перкуссивная
-            // огибающая (затухание) добавляется в next_sample через env.
-            Timbre::EPiano => {
-                let bell = 0.3 + 0.5 * brightness;
-                (tau.sin()
-                    + bell * (2.0 * tau).sin()
-                    + 0.4 * bell * (3.0 * tau).sin()
-                    + 0.2 * bell * (4.0 * tau).sin())
-                    * 0.6
             }
         }
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
+    fn next_sample(&mut self) -> f32 {
+        let mut target = [false; 128];
+        self.sounding_target(&mut target);
 
-        /// DIAGNOSTIC: does a take, played back through the **public engine API**, put a
-        /// line on the melody history?
-        ///
-        /// The module's other tests each prove one link — `replay` proves the source hands
-        /// over the take in real time, `core`'s rig proves the pipelines draw a line when
-        /// fed. Nothing proves the links are *joined*: that Start actually tears down the
-        /// live capture, builds a replay one, wires it to the same rings the analysis
-        /// workers drain, and that frames come out the other end. Every one of those is a
-        /// place where replay could fail silently — the app would look idle and the roll
-        /// would stay empty, with no error anywhere.
-        ///
-        /// Needs no audio device: the monitor is off by default, so the replay capture
-        /// opens no output, and the live capture failing to build on a headless box is
-        /// exactly the state a user hits when they replay with no mic plugged in.
-        ///
-        /// Not an assertion of a number — the counts depend on the bow. It fails on zero,
-        /// which is the reading that means replay is broken rather than the take quiet.
-        #[test]
-        #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
-        fn a_take_replayed_through_the_engine_draws_a_line() {
-            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("testdata")
-                .join("g_open_slow_strokes.wav");
-            let engine = AudioEngine::new();
+        // Глобальный LFO вибрато: считаем дёшево всегда, применяем лишь к смычку.
+        self.lfo_phase = (self.lfo_phase + DRONE_VIBRATO_HZ / self.sample_rate).fract();
+        let pitch_mod = if matches!(self.timbre, Timbre::Violin) {
+            1.0 + DRONE_VIBRATO_DEPTH * (std::f32::consts::TAU * self.lfo_phase).sin()
+        } else {
+            1.0
+        };
+        // EPiano — единственный перкуссивный тембр: гейт умножается на затухающую
+        // огибающую удара, перезапуск на фронте включения ноты.
+        let percussive = matches!(self.timbre, Timbre::EPiano);
 
-            engine.start_replay(path.clone());
-
-            // The bank is gated on a UI-driven deadline: nothing publishes melody frames
-            // unless a panel keeps asking. The panel that hosts replay does exactly this
-            // every frame; a test that forgot would measure the gate, not replay.
-            let deadline = Instant::now() + Duration::from_secs(20);
-            let mut frames = Vec::new();
-            let mut cursor = None;
-            let mut playing_seen = false;
-            loop {
-                engine.request_resonator();
-                for frame in engine.melody_since(cursor) {
-                    cursor = Some(frame.seq);
-                    frames.push(frame);
-                }
-                match engine.replay_status() {
-                    ReplayStatus::Playing { .. } => playing_seen = true,
-                    ReplayStatus::Finished { .. } => break,
-                    ReplayStatus::Failed(msg) => panic!("replay refused the take: {msg}"),
-                    other => {
-                        assert!(
-                            Instant::now() < deadline,
-                            "replay never started; stuck at {other:?}"
-                        );
-                    }
-                }
-                assert!(Instant::now() < deadline, "replay never finished");
-                thread::sleep(Duration::from_millis(16)); // ~a UI frame
+        let mut mix = 0.0_f32;
+        // Нормировка тембра: яркость добавляет обертоны, держим пик ~1.
+        let timbre_norm = 1.0 / (1.0 + 0.6 * self.brightness);
+        for (m, &want_on) in target.iter().enumerate() {
+            // Удар: на фронте включения (off→on) перезапускаем огибающую.
+            if percussive && want_on && !self.was_on[m] {
+                self.env[m] = 1.0;
             }
-            // Drain what landed between the last poll and the end of the take.
+            self.was_on[m] = want_on;
+
+            let want = if want_on { 1.0 } else { 0.0 };
+            let mut a = self.amp[m];
+            // Пропускаем полностью молчащий голос (и гейт, и хвост огибающей).
+            if a == 0.0 && want == 0.0 && self.env[m] == 0.0 {
+                continue;
+            }
+            a += (want - a) * self.ramp_k;
+            if (a - want).abs() < 1e-4 {
+                a = want;
+            }
+            self.amp[m] = a;
+            if a <= 1e-4 {
+                self.amp[m] = 0.0;
+            }
+
+            // Итоговая громкость голоса: гейт (атака/спад) × огибающая удара.
+            let level = if percussive { a * self.env[m] } else { a };
+            if level > 1e-4 {
+                let ph = self.phase[m];
+                mix += level * timbre_voice(self.timbre, ph, self.brightness) * timbre_norm;
+                let next = ph + (self.freq[m] * pitch_mod) / self.sample_rate;
+                self.phase[m] = next.fract();
+            }
+
+            // Затухание удара продолжается, пока нота держится (зажатая клавиша
+            // уходит в тишину); ниже порога обнуляем, чтобы голос выпал из цикла.
+            if percussive {
+                self.env[m] *= self.pluck_decay;
+                if self.env[m] < 1e-5 {
+                    self.env[m] = 0.0;
+                }
+            }
+        }
+
+        self.clock += 1.0;
+        // tanh — мягкий лимитер: плотный аккорд не клиппует жёстко.
+        (mix * DRONE_OUTPUT_GAIN * self.gain).tanh()
+    }
+}
+
+/// Сэмпл одного голоса по тембру. `ph` — фаза в циклах (0..1), `brightness`
+/// (0..1) управляет яркостью верхних гармоник. Каждый тембр нормирован к пику
+/// ≈1, чтобы громкость не прыгала при переключении. Гармоник ≤12 — на самой
+/// высокой дрон-ноте (~1 кГц) даже 12-я гармоника ниже Найквиста, без алиасинга.
+/// Перкуссивная огибающая и вибрато живут в `next_sample`, не здесь.
+fn timbre_voice(timbre: Timbre, ph: f32, brightness: f32) -> f32 {
+    use std::f32::consts::TAU;
+    let tau = TAU * ph;
+    match timbre {
+        // Чистый тон с лёгкими обертонами — прежний дефолтный голос дрона.
+        Timbre::Sine => tau.sin() + brightness * (0.4 * (2.0 * tau).sin() + 0.2 * (3.0 * tau).sin()),
+        // Смычковая струна: пилообразный спектр (гармоники ~1/k), brightness
+        // открывает верх через спектральный наклон `tilt`.
+        Timbre::Violin => {
+            let tilt = 0.45 + 0.5 * brightness; // 0.45..0.95
+            let mut s = 0.0;
+            let mut w = 1.0;
+            for k in 1..=10 {
+                let kf = k as f32;
+                s += (w / kf) * (kf * tau).sin();
+                w *= tilt;
+            }
+            s * 0.55
+        }
+        // Орган/драубары: фундамент + октавы, тёплый и стабильный, без затухания.
+        Timbre::Organ => {
+            let up = 0.4 + 0.6 * brightness;
+            let base = tau.sin()
+                + 0.5 * (2.0 * tau).sin()
+                + up * (0.6 * (3.0 * tau).sin() + 0.4 * (4.0 * tau).sin());
+            base * 0.5
+        }
+        // Субтрактивный синт: яркая пила со «срезом» (фильтром) по brightness.
+        Timbre::Synth => {
+            let tilt = 0.3 + 0.65 * brightness; // 0.3..0.95
+            let mut s = 0.0;
+            let mut w = 1.0;
+            for k in 1..=12 {
+                let kf = k as f32;
+                s += (w / kf) * (kf * tau).sin();
+                w *= tilt;
+            }
+            s * 0.5
+        }
+        // Электропиано/удар: немного гармоник с «колокольной» 2-й; перкуссивная
+        // огибающая (затухание) добавляется в next_sample через env.
+        Timbre::EPiano => {
+            let bell = 0.3 + 0.5 * brightness;
+            (tau.sin()
+                + bell * (2.0 * tau).sin()
+                + 0.4 * bell * (3.0 * tau).sin()
+                + 0.2 * bell * (4.0 * tau).sin())
+                * 0.6
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// DIAGNOSTIC: does a take, played back through the **public engine API**, put a
+    /// line on the melody history?
+    ///
+    /// The module's other tests each prove one link — `replay` proves the source hands
+    /// over the take in real time, `core`'s rig proves the pipelines draw a line when
+    /// fed. Nothing proves the links are *joined*: that Start actually tears down the
+    /// live capture, builds a replay one, wires it to the same rings the analysis
+    /// workers drain, and that frames come out the other end. Every one of those is a
+    /// place where replay could fail silently — the app would look idle and the roll
+    /// would stay empty, with no error anywhere.
+    ///
+    /// Needs no audio device: the monitor is off by default, so the replay capture
+    /// opens no output, and the live capture failing to build on a headless box is
+    /// exactly the state a user hits when they replay with no mic plugged in.
+    ///
+    /// Not an assertion of a number — the counts depend on the bow. It fails on zero,
+    /// which is the reading that means replay is broken rather than the take quiet.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn a_take_replayed_through_the_engine_draws_a_line() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("g_open_slow_strokes.wav");
+        let engine = AudioEngine::new();
+
+        engine.start_replay(path.clone());
+
+        // The bank is gated on a UI-driven deadline: nothing publishes melody frames
+        // unless a panel keeps asking. The panel that hosts replay does exactly this
+        // every frame; a test that forgot would measure the gate, not replay.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut frames = Vec::new();
+        let mut cursor = None;
+        let mut playing_seen = false;
+        loop {
+            engine.request_resonator();
             for frame in engine.melody_since(cursor) {
+                cursor = Some(frame.seq);
                 frames.push(frame);
             }
-
-            let voiced = frames.iter().filter(|f| f.pitch.is_some()).count();
-            let scored = frames.iter().filter(|f| f.salience.is_some()).count();
-            println!("\n=== g_open_slow_strokes replayed through the engine ===");
-            println!("  frames      : {}", frames.len());
-            println!("  ...scored   : {scored}");
-            println!("  ...voiced   : {voiced}");
-
-            assert!(
-                playing_seen,
-                "replay went straight to Finished — it played nothing"
-            );
-            assert!(
-                !frames.is_empty(),
-                "replay finished the take but the engine published no frames — the source is \
-                 not wired to the analysis rings"
-            );
-            assert!(
-                voiced > 0,
-                "the engine replayed {} frames of a bowed G and decided no pitch, ever",
-                frames.len()
-            );
+            match engine.replay_status() {
+                ReplayStatus::Playing { .. } => playing_seen = true,
+                ReplayStatus::Finished { .. } => break,
+                ReplayStatus::Failed(msg) => panic!("replay refused the take: {msg}"),
+                other => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "replay never started; stuck at {other:?}"
+                    );
+                }
+            }
+            assert!(Instant::now() < deadline, "replay never finished");
+            thread::sleep(Duration::from_millis(16)); // ~a UI frame
         }
+        // Drain what landed between the last poll and the end of the take.
+        for frame in engine.melody_since(cursor) {
+            frames.push(frame);
+        }
+
+        let voiced = frames.iter().filter(|f| f.pitch.is_some()).count();
+        let scored = frames.iter().filter(|f| f.salience.is_some()).count();
+        println!("\n=== g_open_slow_strokes replayed through the engine ===");
+        println!("  frames      : {}", frames.len());
+        println!("  ...scored   : {scored}");
+        println!("  ...voiced   : {voiced}");
+
+        assert!(
+            playing_seen,
+            "replay went straight to Finished — it played nothing"
+        );
+        assert!(
+            !frames.is_empty(),
+            "replay finished the take but the engine published no frames — the source is \
+                 not wired to the analysis rings"
+        );
+        assert!(
+            voiced > 0,
+            "the engine replayed {} frames of a bowed G and decided no pitch, ever",
+            frames.len()
+        );
     }
 }

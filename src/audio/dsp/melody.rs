@@ -704,13 +704,25 @@ mod beta_sweep {
     #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
     fn rtswipe_beta_sweep() {
         println!("\n=== RT-SWIPE · SALIENCE_BETA sweep — % on a real note / an octave off ===");
-        for (name, lo, hi, must_remain) in TAKES {
+        for Take {
+            name,
+            lo,
+            hi,
+            must_remain,
+        } in TAKES
+        {
             let band = lo..=hi;
             println!("\n--- {name}  (truth: MIDI {lo}..={hi}) ---");
             let report = |label: String, verdicts: &[Option<f32>]| {
                 let (inside, octave) = tally(verdicts, band.clone());
                 print!("  {label:<20}: in {inside:>5.1}%   octave-off {octave:>5.1}%");
-                for (note_label, midi) in must_remain {
+                // `label` is taken by the closure's own parameter above — bind it apart rather
+                // than shadow the row label mid-`print!`.
+                for MustRemain {
+                    label: note_label,
+                    midi,
+                } in must_remain
+                {
                     print!("   {note_label} {:>5.1}%", on_note(verdicts, *midi));
                 }
                 println!();
@@ -776,10 +788,10 @@ mod beta_sweep {
             if fed <= hold {
                 continue;
             }
-            if let Some((midi, _)) = decoded {
-                if (midi - target_midi).abs() < 0.5 {
-                    return (fed - hold) as f32 / sample_rate * 1000.0;
-                }
+            if let Some((midi, _)) = decoded
+                && (midi - target_midi).abs() < 0.5
+            {
+                return (fed - hold) as f32 / sample_rate * 1000.0;
             }
         }
         f32::INFINITY
@@ -800,13 +812,25 @@ mod beta_sweep {
     fn rtswipe_holds_the_octave_on_the_violin_takes() {
         println!("\n=== two frontends · same takes · same kernel · per-frame argmax ===");
         println!("(no Viterbi on either side — this is the raw evidence each frontend offers)");
-        for (name, lo, hi, must_remain) in TAKES {
+        for Take {
+            name,
+            lo,
+            hi,
+            must_remain,
+        } in TAKES
+        {
             let band = lo..=hi;
             println!("\n--- {name}  (truth: MIDI {lo}..={hi}) ---");
             let report = |label: &str, verdicts: &[Option<f32>]| {
                 let (inside, octave) = tally(verdicts, band.clone());
                 print!("  {label:<18}: in {inside:>5.1}%   octave-off {octave:>5.1}%");
-                for (note_label, midi) in must_remain {
+                // `label` is taken by the closure's own parameter above — bind it apart rather
+                // than shadow the row label mid-`print!`.
+                for MustRemain {
+                    label: note_label,
+                    midi,
+                } in must_remain
+                {
                     print!("   {note_label} {:>5.1}%", on_note(verdicts, *midi));
                 }
                 println!();
@@ -872,13 +896,67 @@ mod beta_sweep {
     ///
     /// G4 (67) stays genuinely ambiguous on this take and no tally can resolve it: it is both
     /// the phantom octave of the open G *and* a semitone-flat reading of the bowed G♯4.
-    const TAKES: [(&str, i32, i32, &[(&str, i32)]); 5] = [
-        ("g_open_slow_strokes", 55, 55, &[]),
-        ("g_open_fast_strokes", 55, 55, &[]),
-        ("g_open_real_octave", 55, 68, &[("G3", 55), ("G#4", 68)]),
-        ("g_string_trill", 55, 62, &[]),
-        ("a_string_trill", 69, 76, &[]),
+    const TAKES: [Take; 5] = [
+        Take {
+            name:        "g_open_slow_strokes",
+            lo:          55,
+            hi:          55,
+            must_remain: &[],
+        },
+        Take {
+            name:        "g_open_fast_strokes",
+            lo:          55,
+            hi:          55,
+            must_remain: &[],
+        },
+        Take {
+            name:        "g_open_real_octave",
+            lo:          55,
+            hi:          68,
+            must_remain: &[
+                MustRemain {
+                    label: "G3",
+                    midi:  55,
+                },
+                MustRemain {
+                    label: "G#4",
+                    midi:  68,
+                },
+            ],
+        },
+        Take {
+            name:        "g_string_trill",
+            lo:          55,
+            hi:          62,
+            must_remain: &[],
+        },
+        Take {
+            name:        "a_string_trill",
+            lo:          69,
+            hi:          76,
+            must_remain: &[],
+        },
     ];
+
+    /// One row of [`TAKES`]. Named fields rather than a tuple because three sweeps destructure
+    /// it and `lo`/`hi` are two `i32` that mean opposite ends of the same band — the one pair
+    /// a positional reading can silently swap.
+    struct Take {
+        /// File stem under `testdata/`, without the extension.
+        name:        &'static str,
+        /// Inclusive MIDI band of the take's truth, as the player stated it.
+        lo:          i32,
+        hi:          i32,
+        /// See the table's docs: notes that must keep being found, so paralysis inside the
+        /// band cannot pass for tracking. Empty where the band alone convicts.
+        must_remain: &'static [MustRemain],
+    }
+
+    /// A note the take really contains, under the name the player used for it.
+    struct MustRemain {
+        label: &'static str,
+        midi:  i32,
+    }
 
     /// What a frontend actually says, most common first — the take's content by name rather
     /// than filed into buckets someone chose in advance.
@@ -968,10 +1046,10 @@ mod beta_sweep {
             if fed <= hold {
                 continue;
             }
-            if let Some((midi, _)) = decoded {
-                if (midi - target_midi).abs() < 0.5 {
-                    return (fed - hold) as f32 / sample_rate * 1000.0;
-                }
+            if let Some((midi, _)) = decoded
+                && (midi - target_midi).abs() < 0.5
+            {
+                return (fed - hold) as f32 / sample_rate * 1000.0;
             }
         }
         f32::INFINITY
@@ -1011,13 +1089,25 @@ mod beta_sweep {
     #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
     fn salience_beta_sweep() {
         println!("\n=== SALIENCE_BETA sweep — % of frames on a real note / an octave off ===");
-        for (name, lo, hi, must_remain) in TAKES {
+        for Take {
+            name,
+            lo,
+            hi,
+            must_remain,
+        } in TAKES
+        {
             let band = lo..=hi;
             println!("\n--- {name}  (truth: MIDI {lo}..={hi}) ---");
             let report = |label: String, verdicts: &[Option<f32>]| {
                 let (inside, octave) = tally(verdicts, band.clone());
                 print!("  {label:<20}: in {inside:>5.1}%   octave-off {octave:>5.1}%");
-                for (note_label, midi) in must_remain {
+                // `label` is taken by the closure's own parameter above — bind it apart rather
+                // than shadow the row label mid-`print!`.
+                for MustRemain {
+                    label: note_label,
+                    midi,
+                } in must_remain
+                {
                     print!("   {note_label} {:>5.1}%", on_note(verdicts, *midi));
                 }
                 println!();

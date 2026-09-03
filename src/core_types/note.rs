@@ -37,18 +37,13 @@ impl Accidental {
 /// preference threaded through every note-label producer (the snails, the note
 /// bars/waterfalls, the resonator bank, the tuner readout, the fretboard, the
 /// scale-finder wheels, the drone) so the whole app agrees on one spelling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum AccidentalStyle {
-    Sharps,
-    Flats,
-}
-
-impl Default for AccidentalStyle {
     // Sharps: the spelling the analysis labels (note bars, resonator, tuner)
     // already used before the toggle existed, so old configs read unchanged.
-    fn default() -> Self {
-        AccidentalStyle::Sharps
-    }
+    #[default]
+    Sharps,
+    Flats,
 }
 
 impl AccidentalStyle {

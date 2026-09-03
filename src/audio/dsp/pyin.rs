@@ -102,11 +102,7 @@ impl ThresholdPrior {
 fn yin_pick(c: &Cmndf, threshold: f32) -> Option<usize> {
     for tau in c.min_lag..c.max_lag {
         if c.d[tau] < threshold {
-            let mut t = tau;
-            while t + 1 <= c.max_lag && c.d[t + 1] < c.d[t] {
-                t += 1;
-            }
-            return Some(t);
+            return Some(c.dip_bottom(tau));
         }
     }
     None
@@ -670,11 +666,7 @@ mod tests {
             let mut f = 0.0;
             for tau in c.min_lag..c.max_lag {
                 if c.d[tau] < 0.15 {
-                    let mut t = tau;
-                    while t + 1 <= c.max_lag && c.d[t + 1] < c.d[t] {
-                        t += 1;
-                    }
-                    f = sr / t as f32;
+                    f = sr / c.dip_bottom(tau) as f32;
                     break;
                 }
             }

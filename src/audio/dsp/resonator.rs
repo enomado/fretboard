@@ -458,10 +458,10 @@ mod tests {
                 an.process_samples(&new[fed..fed + take], true);
                 fed += take;
                 let snap = an.snapshot(true, AccidentalStyle::Sharps);
-                if let Some((midi, _strength)) = snap.fundamental {
-                    if (midi - target_midi).abs() < 0.5 {
-                        return fed as f32 / sr * 1000.0;
-                    }
+                if let Some((midi, _strength)) = snap.fundamental
+                    && (midi - target_midi).abs() < 0.5
+                {
+                    return fed as f32 / sr * 1000.0;
                 }
             }
             f32::INFINITY

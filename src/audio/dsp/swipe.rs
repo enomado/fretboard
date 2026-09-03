@@ -492,7 +492,6 @@ impl SalienceFrame {
         let (peak_bin, &peak) = self.curve[self.tracked_bins()?]
             .iter()
             .enumerate()
-            .map(|(offset, value)| (offset, value))
             .max_by(|(_, a), (_, b)| a.total_cmp(b))
             .unwrap();
         if peak <= 0.0 {
@@ -658,9 +657,9 @@ mod tests {
         // Inside the domain it is the evidence itself — no smoothing, and above all no
         // rectifying: a negative salience is a *punished* candidate (the valleys are why
         // this scorer exists), and it must reach the display as such.
-        for bin in first_tracked..display.len() {
+        for (bin, &painted) in display.iter().enumerate().skip(first_tracked) {
             assert_eq!(
-                display[bin],
+                painted,
                 frame.salience_at(bin),
                 "bin {bin} was altered on the way to the display"
             );

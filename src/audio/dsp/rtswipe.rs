@@ -109,6 +109,38 @@ struct AnalysisWindow {
     fft:        Arc<dyn RealToComplex<f32>>,
 }
 
+/// One rung's FFT-stage buffers, held together because they are only ever used together and
+/// their four lengths are all functions of the *same* window — keeping them as one value is
+/// what stops those lengths from being spelled out twice and drifting apart.
+///
+/// Reused frame to frame so [`RtSwipe::frame`] allocates nothing on the audio thread: a real
+/// FFT is not an in-place transform, so it needs an input, an output and its own scratch, and
+/// `malloc` on the audio path is a jitter hazard regardless of its average cost.
+struct ColumnScratch {
+    /// `window.size` — the history, tapered.
+    input:    Vec<f32>,
+    /// `window.size / 2 + 1` — bins DC..Nyquist, the real FFT's output shape.
+    fft_out:  Vec<Complex32>,
+    /// The transform's own workspace (`get_scratch_len`).
+    work:     Vec<Complex32>,
+    /// `window.size / 2` — `|X|`, materialized once because the log grid reads a low bin
+    /// dozens of times (see [`fill_column`]).
+    spectrum: Vec<f32>,
+}
+
+impl ColumnScratch {
+    /// Shapes come from the plan (`make_*_vec`) rather than from arithmetic here, so they stay
+    /// correct if the backend's scratch needs ever change.
+    fn new(window: &AnalysisWindow) -> Self {
+        Self {
+            input:    vec![0.0f32; window.size],
+            fft_out:  window.fft.make_output_vec(),
+            work:     window.fft.make_scratch_vec(),
+            spectrum: vec![0.0f32; window.size / 2],
+        }
+    }
+}
+
 pub(crate) struct RtSwipe {
     sample_rate:  f32,
     /// A4, as everywhere else the grid's bins are turned into frequencies. Taken rather
@@ -127,16 +159,15 @@ pub(crate) struct RtSwipe {
     // Reused scratch, so [`Self::frame`] allocates nothing on the audio thread beyond the
     // one frame it returns (its curve, and the winner's column). This is a real-time-safety
     // fix, not just a speed one: `malloc` can block on a global lock, so per-frame allocation
-    // on the audio path is a *jitter* hazard regardless of its average cost. Per window: a real
-    // input buffer, the FFT's complex output, and the FFT's own scratch (a real FFT is not an
-    // in-place transform); plus the per-rung grid columns the blend reads.
-    scratch_input:    Vec<Vec<f32>>, // one per window, `window.size` (windowed real input)
-    scratch_fft_out:  Vec<Vec<Complex32>>, // one per window, `window.size / 2 + 1` (DC..Nyquist)
-    scratch_fft_work: Vec<Vec<Complex32>>, // one per window, the FFT's own scratch (`get_scratch_len`)
-    scratch_spectrum: Vec<Vec<f32>>, // one per window, `window.size / 2` long (`|X|`)
-    scratch_columns:  Vec<Vec<f32>>, // one per window, `SPIRAL_BIN_COUNT` long (raw)
-    scratch_warped:   Vec<Vec<f32>>, // one per window, `SPIRAL_BIN_COUNT` long (√-warped)
-    scratch_norms:    Vec<f32>,      // one per window
+    // on the audio path is a *jitter* hazard regardless of its average cost.
+    //
+    // The grid columns stay separate fields rather than joining [`ColumnScratch`]: `frame`
+    // reads one while writing another (raw → √-warped), and split borrows reach fields of
+    // `self`, not two fields behind the same `[i]`.
+    scratch_fft:     Vec<ColumnScratch>, // one per window, the FFT stage
+    scratch_columns: Vec<Vec<f32>>,      // one per window, `SPIRAL_BIN_COUNT` long (raw)
+    scratch_warped:  Vec<Vec<f32>>,      // one per window, `SPIRAL_BIN_COUNT` long (√-warped)
+    scratch_norms:   Vec<f32>,           // one per window
 }
 
 impl RtSwipe {
@@ -156,22 +187,7 @@ impl RtSwipe {
 
         let longest = windows.iter().map(|window| window.size).max().unwrap();
         let rungs = windows.len();
-        // The real FFT's own vector shapes: `make_output_vec` is N/2+1, `make_scratch_vec` is
-        // `get_scratch_len`. Asking the plan rather than hardcoding keeps this correct if the
-        // backend's scratch needs ever change.
-        let scratch_input = windows.iter().map(|window| vec![0.0f32; window.size]).collect();
-        let scratch_fft_out = windows
-            .iter()
-            .map(|window| window.fft.make_output_vec())
-            .collect();
-        let scratch_fft_work = windows
-            .iter()
-            .map(|window| window.fft.make_scratch_vec())
-            .collect();
-        let scratch_spectrum = windows
-            .iter()
-            .map(|window| vec![0.0f32; window.size / 2])
-            .collect();
+        let scratch_fft = windows.iter().map(ColumnScratch::new).collect();
         Self {
             sample_rate,
             reference_hz,
@@ -181,10 +197,7 @@ impl RtSwipe {
             lambda: blend_weights(&windows, reference_hz),
             kernel: SwipeKernel::new(BINS_PER_SEMITONE),
             windows,
-            scratch_input,
-            scratch_fft_out,
-            scratch_fft_work,
-            scratch_spectrum,
+            scratch_fft,
             scratch_columns: vec![vec![0.0; SPIRAL_BIN_COUNT]; rungs],
             scratch_warped: vec![vec![0.0; SPIRAL_BIN_COUNT]; rungs],
             scratch_norms: vec![0.0; rungs],
@@ -219,10 +232,7 @@ impl RtSwipe {
                 &self.history,
                 self.sample_rate,
                 self.reference_hz,
-                &mut self.scratch_input[i],
-                &mut self.scratch_fft_out[i],
-                &mut self.scratch_fft_work[i],
-                &mut self.scratch_spectrum[i],
+                &mut self.scratch_fft[i],
                 &mut self.scratch_columns[i],
             );
             sqrt_warp_into(&self.scratch_columns[i], &mut self.scratch_warped[i]);
@@ -326,20 +336,14 @@ impl RtSwipe {
     /// the tests that read a single rung; [`Self::frame`] uses [`fill_column`] into scratch.
     #[cfg(test)]
     fn column(&self, window: &AnalysisWindow) -> Vec<f32> {
-        let mut input = vec![0.0f32; window.size];
-        let mut fft_out = window.fft.make_output_vec();
-        let mut work = window.fft.make_scratch_vec();
-        let mut spectrum = vec![0.0f32; window.size / 2];
+        let mut scratch = ColumnScratch::new(window);
         let mut out = vec![0.0f32; SPIRAL_BIN_COUNT];
         fill_column(
             window,
             &self.history,
             self.sample_rate,
             self.reference_hz,
-            &mut input,
-            &mut fft_out,
-            &mut work,
-            &mut spectrum,
+            &mut scratch,
             &mut out,
         );
         out
@@ -404,8 +408,8 @@ fn window_ladder(sample_rate: f32, reference_hz: f32) -> Vec<usize> {
 /// in `log₂(N)`, precomputed for the whole grid.
 ///
 /// A candidate's ideal window is `8·fs/f` and the rungs are octave-spaced, so a candidate
-/// sits between two of them and takes `1 − |log₂(f/pO_k)|` from each; the two weights sum to
-/// 1. Interpolating **the curves** and not the spectra is what makes this cheap enough to be
+/// sits between two of them and takes `1 − |log₂(f/pO_k)|` from each; the two weights sum to 1.
+/// Interpolating **the curves** and not the spectra is what makes this cheap enough to be
 /// worth doing: a spectral blend would have to be rebuilt per candidate, since each candidate
 /// wants a different mix — which is a cross-correlation destroyed. The kernel's output, by
 /// contrast, is already per-candidate, so the blend is a weighted sum of eight curves.
@@ -438,24 +442,29 @@ fn blend_weights(windows: &[AnalysisWindow], reference_hz: f32) -> Vec<Vec<(Wind
 }
 
 /// One rung's **raw** magnitude column into `out`, allocating nothing: window the history into
-/// `input`, real-FFT it into `fft_out` (with `work` as the transform's scratch), and resample
-/// the magnitudes onto the shared log grid.
+/// `scratch.input`, real-FFT it into `scratch.fft_out`, and resample the magnitudes onto the
+/// shared log grid.
 ///
 /// Free rather than a method so [`RtSwipe::frame`] can call it while holding disjoint mutable
 /// borrows of its scratch fields — a `&self` method would borrow all of `self` and clash.
-/// `out.len()` is [`SPIRAL_BIN_COUNT`]; `input.len()` is `window.size`, `fft_out.len()` is
-/// `window.size / 2 + 1`.
+/// `out.len()` is [`SPIRAL_BIN_COUNT`]; `scratch` must be the one built for *this* `window`
+/// (see [`ColumnScratch::new`]).
 fn fill_column(
     window: &AnalysisWindow,
     history: &[f32],
     sample_rate: f32,
     reference_hz: f32,
-    input: &mut [f32],
-    fft_out: &mut [Complex32],
-    work: &mut [Complex32],
-    spectrum: &mut [f32],
+    scratch: &mut ColumnScratch,
     out: &mut [f32],
 ) {
+    // Destructured up front: the FFT below needs two of these borrowed mutably at once, which
+    // repeated `scratch.field` access inside one call expression cannot express.
+    let ColumnScratch {
+        input,
+        fft_out,
+        work,
+        spectrum,
+    } = scratch;
     // Right-aligned: the window ends at the newest sample. This is RT-SWIPE's one structural
     // change to SWIPE, and the reason the delay is N/2 rather than N_max/2.
     let start = history.len() - window.size;

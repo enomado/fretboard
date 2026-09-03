@@ -307,8 +307,8 @@ impl Widget for RowCaption<'_> {
 /// The canonical dropdown — a pill-shaped combo box that shares the pills' height
 /// band and baseline.
 ///
-/// `egui::ComboBox` cannot: it derives its height from the font (galley 16.125 px
-/// + 2×`button_padding.y` = 30.125 px, vs the pill's 28) and it centres the
+/// `egui::ComboBox` cannot: it derives its height from the font (galley 16.125 px +
+/// 2×`button_padding.y` = 30.125 px, vs the pill's 28) and it centres the
 /// *galley box*, which — per the module docs — sits ~1 px above the ink. Stacked
 /// in a top-aligned `horizontal_wrapped` row, those two errors compound and land
 /// the selected text ~2 px below the [`RowCaption`] beside it. No styling of

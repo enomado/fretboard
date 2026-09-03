@@ -372,8 +372,11 @@ mod native {
 
     fn stats_from_i16le(data: &[u8]) -> LevelStats {
         let mut stats = LevelStats::default();
-        for pair in data.chunks_exact(2) {
-            let sample = f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0;
+        // `as_chunks::<2>` yields `&[u8; 2]` — the array `from_le_bytes` wants, so the pair
+        // arrives already length-checked instead of being re-indexed out of a slice. The
+        // trailing remainder (an odd byte) is dropped: half a frame is not a sample.
+        for &pair in data.as_chunks::<2>().0 {
+            let sample = f32::from(i16::from_le_bytes(pair)) / 32768.0;
             stats.push(sample);
         }
         stats

@@ -75,6 +75,27 @@ pub(crate) struct Cmndf {
     pub(crate) max_lag: usize,
 }
 
+impl Cmndf {
+    /// From the lag where the curve first crossed a threshold, walk down to the bottom of
+    /// *that* dip — while the next lag is still lower, step onto it.
+    ///
+    /// Why it is its own step rather than "take the minimum": the crossing lag is only the
+    /// first sample under the threshold, which on a wide dip sits on its shoulder, and the
+    /// period is the bottom. Descending stops at the first local minimum on purpose — the
+    /// global minimum of the whole curve is usually a *multiple* of the period, which is
+    /// precisely the octave error YIN's threshold rule exists to avoid.
+    ///
+    /// `d[max_lag]` is the last valid lag (`d.len() == max_lag + 1`), so the walk never
+    /// reads past the end. `tau` must be a lag inside `min_lag..=max_lag`.
+    pub(crate) fn dip_bottom(&self, tau: usize) -> usize {
+        let mut t = tau;
+        while t < self.max_lag && self.d[t + 1] < self.d[t] {
+            t += 1;
+        }
+        t
+    }
+}
+
 /// Compute the CMNDF for one analysis window. `None` when the window is too short
 /// for even a single lag of the tracked range.
 pub(crate) fn cmndf(window: &[f32], sample_rate: f32) -> Option<Cmndf> {
@@ -137,11 +158,7 @@ mod tests {
         let c = cmndf(window, sample_rate).unwrap();
         for tau in c.min_lag..c.max_lag {
             if c.d[tau] < threshold {
-                let mut t = tau;
-                while t + 1 <= c.max_lag && c.d[t + 1] < c.d[t] {
-                    t += 1;
-                }
-                return sample_rate / t as f32;
+                return sample_rate / c.dip_bottom(tau) as f32;
             }
         }
         panic!("no dip below {threshold}");
