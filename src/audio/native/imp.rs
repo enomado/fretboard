@@ -863,9 +863,9 @@ impl AudioContext {
     }
 
     fn start_analysis_worker(&self, sample_rate: u32, analysis_cons: SampleConsumer) -> AnalysisWorker {
-        start_analysis_worker(
-            sample_rate as f32,
+        start_worker(
             analysis_cons,
+            WorkerPipeline::Analysis(AnalysisPipeline::new(sample_rate as f32)),
             self.shared.clone(),
             self.settings.clone(),
             self.input_gain.clone(),
@@ -874,14 +874,16 @@ impl AudioContext {
     }
 
     fn start_resonator_worker(&self, sample_rate: u32, resonator_cons: SampleConsumer) -> AnalysisWorker {
-        start_resonator_worker(
-            sample_rate as f32,
+        start_worker(
             resonator_cons,
+            WorkerPipeline::Resonator {
+                pipeline: ResonatorPipeline::new(sample_rate as f32),
+                wanted:   self.resonator_wanted.clone(),
+            },
             self.shared.clone(),
             self.settings.clone(),
             self.input_gain.clone(),
             self.input_level.clone(),
-            self.resonator_wanted.clone(),
         )
     }
 
@@ -1052,78 +1054,86 @@ impl AnalysisWorker {
     }
 }
 
-fn start_analysis_worker(
-    sample_rate: f32,
-    mut cons: SampleConsumer,
-    shared: Arc<Mutex<SharedState>>,
-    settings: Arc<Mutex<AnalysisSettings>>,
-    input_gain: Arc<AtomicU32>,
-    input_level: Arc<AtomicU32>,
-) -> AnalysisWorker {
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_flag = stop.clone();
-
-    let thread = thread::spawn(move || {
-        let mut pipeline = AnalysisPipeline::new(sample_rate);
-        let mut batch: Vec<f32> = Vec::with_capacity(4096);
-
-        while !stop_flag.load(Ordering::Relaxed) {
-            batch.clear();
-            // Дренируем сколько есть в кольце, не больше 4096 за раз,
-            // чтобы FFT-пауза не превышала одного сэмпл-окна.
-            for _ in 0..4096 {
-                match cons.try_pop() {
-                    Some(s) => batch.push(s),
-                    None => break,
-                }
-            }
-            if batch.is_empty() {
-                thread::sleep(ANALYSIS_IDLE_SLEEP);
-                continue;
-            }
-            pipeline.push_samples(batch.drain(..), &shared, &settings, &input_gain, &input_level);
-        }
-    });
-
-    AnalysisWorker { stop, thread }
+/// Что считает воркер. Пайплайнов ровно два, и различаются они для петли одной
+/// развилкой — паркуется ли воркер, — поэтому `enum`, а не трейт.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "один экземпляр на поток воркера, переезжает в него один раз — размер варианта ничего не стоит"
+)]
+enum WorkerPipeline {
+    Analysis(AnalysisPipeline),
+    /// Считает, только пока UI сдвигает дедлайн вперёд; иначе кольцо дренируется вхолостую.
+    Resonator {
+        pipeline: ResonatorPipeline,
+        wanted:   Arc<Mutex<Instant>>,
+    },
 }
 
-fn start_resonator_worker(
-    sample_rate: f32,
+impl WorkerPipeline {
+    /// Запаркован ли воркер: анализ — никогда, банк — когда дедлайн UI в прошлом
+    /// (панель-потребитель закрылась, см. [`RESONATOR_PARK_GRACE`]).
+    fn parked(&self) -> bool {
+        match self {
+            Self::Analysis(_) => false,
+            Self::Resonator { wanted, .. } => Instant::now() >= *wanted.lock().unwrap(),
+        }
+    }
+
+    fn push_samples(
+        &mut self,
+        samples: impl IntoIterator<Item = f32>,
+        shared: &Arc<Mutex<SharedState>>,
+        settings: &Arc<Mutex<AnalysisSettings>>,
+        input_gain: &Arc<AtomicU32>,
+        input_level: &Arc<AtomicU32>,
+    ) {
+        match self {
+            Self::Analysis(pipeline) => {
+                pipeline.push_samples(samples, shared, settings, input_gain, input_level)
+            }
+            Self::Resonator { pipeline, .. } => {
+                pipeline.push_samples(samples, shared, settings, input_gain, input_level)
+            }
+        }
+    }
+}
+
+/// Дренируем сколько есть в кольце, не больше 4096 за раз, чтобы FFT-пауза не
+/// превышала одного сэмпл-окна.
+fn pop_batch(cons: &mut SampleConsumer, batch: &mut Vec<f32>) {
+    for _ in 0..4096 {
+        match cons.try_pop() {
+            Some(s) => batch.push(s),
+            None => break,
+        }
+    }
+}
+
+/// `input_level` пишет анализ-воркер, а банк читает: это гейт тишины мелодической
+/// линии. Колонка банка нормирована и тишину от шума отличить не может — абсолютный
+/// уровень меряется на другой плоскости и передаётся сюда.
+fn start_worker(
     mut cons: SampleConsumer,
+    mut pipeline: WorkerPipeline,
     shared: Arc<Mutex<SharedState>>,
     settings: Arc<Mutex<AnalysisSettings>>,
     input_gain: Arc<AtomicU32>,
-    // Written by the analysis worker, read here: the melody line's silence gate.
-    // The bank's own column is normalized and so cannot tell silence from noise —
-    // the absolute level is measured on the other plane and shared across.
     input_level: Arc<AtomicU32>,
-    resonator_wanted: Arc<Mutex<Instant>>,
 ) -> AnalysisWorker {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = stop.clone();
 
     let thread = thread::spawn(move || {
-        let mut pipeline = ResonatorPipeline::new(sample_rate);
         let mut batch: Vec<f32> = Vec::with_capacity(4096);
 
         while !stop_flag.load(Ordering::Relaxed) {
-            // Гейт: банк нужен, только пока UI двигает дедлайн вперёд; дедлайн в
-            // прошлом ⇒ паркуемся.
-            let active = Instant::now() < *resonator_wanted.lock().unwrap();
-
             batch.clear();
-            for _ in 0..4096 {
-                match cons.try_pop() {
-                    Some(s) => batch.push(s),
-                    None => break,
-                }
-            }
-
-            if !active {
-                // Запаркованы: кольцо ВСЁ РАВНО дренируем (иначе переполнится и
-                // при пробуждении выльется пачкой старого звука), но дорогой банк
-                // не считаем — это и есть экономия CPU.
+            pop_batch(&mut cons, &mut batch);
+            // Дедлайн смотрим ПОСЛЕ вычерпывания: запаркованный воркер кольцо ВСЁ
+            // РАВНО дренирует (иначе оно переполнится и при пробуждении выльется
+            // пачкой старого звука), но дорогой банк не считает — это и есть
+            // экономия CPU.
+            if pipeline.parked() {
                 thread::sleep(RESONATOR_PARK_SLEEP);
                 continue;
             }
