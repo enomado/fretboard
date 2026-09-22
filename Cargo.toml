@@ -58,7 +58,7 @@ image = "0.25"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "0.18.2"
-ringbuf = "0.5.1"
+ringbuf = "0.5.2"
 # WAV, both directions, and every end is about the same corpus:
 #   - `audio::native::imp::recorder` WRITES takes straight off the capture ring,
 #     which is what makes a take *be* the signal the detector saw rather than a
@@ -91,9 +91,9 @@ ndk-context = "0.1.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 eframe = { workspace = true, features = ["glow", "persistence"] }
-wasm-bindgen = "0.2.127"
-wasm-bindgen-futures = "0.4.77"
-js-sys = "0.3.104"
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4.78"
+js-sys = "0.3.105"
 # Wire format for main-thread ↔ DSP-worker messages (samples / settings out,
 # readings back). Compact binary, much cheaper than JSON for the f32 spectra.
 # Compact binary serde format for the wire protocol. postcard keeps payloads
@@ -105,7 +105,7 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 # Web Audio capture (mic via getUserMedia, system via getDisplayMedia) + the
 # audio graph (MediaStreamSource → ScriptProcessor) that ships samples to the
 # DSP web worker.
-web-sys = { version = "0.3.104", features = [
+web-sys = { version = "0.3.105", features = [
     "Document",
     "Window",
     "Element",
@@ -193,8 +193,8 @@ inherits = "dev"
 
 
 [workspace.dependencies]
-egui = "0.36.1"
-eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "persistence"] }
+egui = "0.36.2"
+eframe = { version = "0.36.2", default-features = false, features = ["default_fonts", "persistence"] }
 subsecond = "0.7.10"
 dioxus-cli-config = "0.7.10"
 tungstenite = { version = "0.30.0", features = ["native-tls"] }
