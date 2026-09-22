@@ -36,6 +36,7 @@ use crate::audio::{
     MelodyFrame,
     MelodyHistory,
 };
+use crate::core_types::pitch::Midi;
 use crate::ui::pianoroll::{
     self,
     HeatGrid,
@@ -252,7 +253,7 @@ impl PitchRoll {
             .frames
             .iter()
             .skip(recent)
-            .filter_map(|frame| frame.pitch)
+            .filter_map(|frame| frame.pitch.map(|Midi(midi)| midi))
             .collect();
         if pitches.is_empty() {
             return; // nothing played recently → keep the current framing
@@ -305,9 +306,14 @@ impl PitchRoll {
     }
 
     /// The most recent pitch the engine actually gave us — the note sounding now,
-    /// looking back past any silent/rejected frames at the tail.
+    /// looking back past any silent/rejected frames at the tail. Raw MIDI: its only
+    /// callers are the view window's arithmetic, which is plain `f32`.
     fn sounding(&self) -> Option<f32> {
-        self.frames.iter().rev().find_map(|frame| frame.pitch)
+        self.frames
+            .iter()
+            .rev()
+            .find_map(|frame| frame.pitch)
+            .map(|Midi(midi)| midi)
     }
 
     /// The frames as the renderer wants them: aged against the playhead, with the
@@ -369,9 +375,9 @@ pub(super) fn columns_of<'a>(
             };
             RollColumn {
                 age_s: (playhead_t - frame.t) as f32,
-                pitch: frame.pitch.map(|midi_f| {
+                pitch: frame.pitch.map(|midi| {
                     PitchPoint {
-                        midi_f,
+                        midi,
                         level: frame.level,
                     }
                 }),
@@ -510,7 +516,7 @@ mod tests {
             MelodyFrame {
                 seq: self.seq,
                 t: self.t,
-                pitch,
+                pitch: pitch.map(Midi),
                 level,
                 heat: Vec::new(),
                 salience: None,
@@ -546,7 +552,7 @@ mod tests {
             vec![MelodyFrame {
                 seq: 1,
                 t: 0.0,
-                pitch: Some(69.0),
+                pitch: Some(Midi(69.0)),
                 level: 0.5, // over HEAT_LEVEL_GATE
                 heat: vec![1.0, 0.0],
                 salience,
@@ -627,7 +633,7 @@ mod tests {
         }
 
         let pitches =
-            |roll: &PitchRoll| -> Vec<Option<f32>> { roll.frames.iter().map(|f| f.pitch).collect() };
+            |roll: &PitchRoll| -> Vec<Option<Midi>> { roll.frames.iter().map(|f| f.pitch).collect() };
         assert_eq!(
             pitches(&slow),
             pitches(&fast),
@@ -679,7 +685,7 @@ mod tests {
         roll.update(vec![MelodyFrame {
             seq:      bank.seq + 1,
             t:        0.0,
-            pitch:    Some(60.0),
+            pitch:    Some(Midi(60.0)),
             level:    0.5,
             heat:     Vec::new(),
             salience: None,

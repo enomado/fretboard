@@ -87,6 +87,7 @@ use crate::audio::{
     MelodyHistory,
     ReplayStatus,
 };
+use crate::core_types::pitch::Midi;
 use crate::ui::pianoroll::{
     self,
     RollColumn,
@@ -399,7 +400,7 @@ impl LoadedTake {
         let mut lo = f32::INFINITY;
         let mut hi = f32::NEG_INFINITY;
         for frame in self.frames.iter() {
-            if let Some(pitch) = frame.pitch {
+            if let Some(Midi(pitch)) = frame.pitch {
                 lo = lo.min(pitch);
                 hi = hi.max(pitch);
             }
@@ -1162,11 +1163,11 @@ mod tests {
         let frames = (0..count)
             .map(|i| {
                 MelodyFrame {
-                    seq: first + i as u64,
-                    t: start_t + (i + 1) as f64 * CADENCE_S,
-                    pitch,
-                    level: 0.5,
-                    heat: Vec::new(),
+                    seq:      first + i as u64,
+                    t:        start_t + (i + 1) as f64 * CADENCE_S,
+                    pitch:    pitch.map(Midi),
+                    level:    0.5,
+                    heat:     Vec::new(),
                     salience: None,
                 }
             })

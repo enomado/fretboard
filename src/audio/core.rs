@@ -59,6 +59,10 @@ use crate::audio::types::{
     TunerReading,
 };
 use crate::core_types::note::AccidentalStyle;
+use crate::core_types::pitch::{
+    Hz,
+    Midi,
+};
 
 // ------------------------------------------------------------------
 // Конфигурация анализа
@@ -230,7 +234,7 @@ pub(crate) struct ResonatorPipeline {
     /// The A4 `rtswipe` was built against. Its ladder and grid are cut from the concert
     /// pitch, so a retune has to rebuild it — see [`Self::sync_settings`], which mirrors the
     /// bank's own rebuild-on-settings-change.
-    rtswipe_ref:  f32,
+    rtswipe_ref:  Hz,
     last_publish: Instant,
     /// The **audio clock**: samples this pipeline has actually processed, and the rate
     /// to read them at. `samples_seen / sample_rate` is the timestamp handed to the
@@ -275,7 +279,7 @@ struct AnalysisFrame {
     spiral_spectrum:  Vec<f32>,
     // Камертон момента анализа: нота считается после сглаживания частоты
     // (в publish_*), а settings туда не доходят — несём значение во фрейме.
-    concert_pitch_hz: f32,
+    concert_pitch_hz: Hz,
     // Стиль знаков альтерации (диезы/бемоли) на момент кадра — как и камертон,
     // нужен при подписи нот в publish_*, куда settings не доходят.
     accidental:       AccidentalStyle,
@@ -288,7 +292,7 @@ impl ResonatorPipeline {
         // A4 = 440 until the first settings sync tells us the user's concert pitch; the bank
         // starts the same way (`ResonatorViewSettings::default`), and `sync_settings` rebuilds
         // both the instant a real value arrives.
-        let rtswipe_ref = 440.0;
+        let rtswipe_ref = Hz::A4_STANDARD;
         Self {
             analyzer: ResonatorAnalyzer::new(sample_rate),
             rtswipe: RtSwipe::new(sample_rate, rtswipe_ref),
@@ -569,7 +573,7 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
     // concert pitch it was measured with, so the 16 ms bank path can snap to it
     // without reaching for the settings. Clarity is pYIN's voiced probability,
     // which is what decides whether the opinion is worth taking at all.
-    let anchor_midi = 69.0 + 12.0 * (smoothed_frequency / frame.concert_pitch_hz).log2();
+    let anchor_midi = Hz(smoothed_frequency).to_midi(frame.concert_pitch_hz).0;
     state.octave_anchor = Some((anchor_midi, clarity));
     // Hand the attack counter to the bank path, which is what feeds it to the
     // segmenter. Onsets are found on this plane (off the window RMS) but consumed
@@ -718,7 +722,7 @@ fn publish_resonator_snapshot(
     state.melody_history.push(MelodyFrame {
         seq,
         t: now_seconds,
-        pitch: melody_pitch.map(|(midi, _)| midi),
+        pitch: melody_pitch.map(|(midi, _)| Midi(midi)),
         level,
         heat: resonator_spectrum.clone(),
         // The scorer's own view of this same column, for the roll's debug layer. Taken

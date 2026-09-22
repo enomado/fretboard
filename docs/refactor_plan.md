@@ -24,7 +24,7 @@
 | Ф3 | `core_types` не зависит от UI (`Scale` → `Mark`) | ✅ «refactor(ui): impl Mark for Scale переезжает к трейту — core_types без egui» |
 | Ф4 | Распил `audio/native/imp.rs` по швам | ✅ «refactor(audio): распил native/imp.rs — drone, workers, capture, output» (⚠ `imp.rs` = 1038, не < 1000 — см. раздел фазы) |
 | Ф5 | Мелочи: `total_cmp`, мёртвая `egui` в workspace | ✅ «chore: total_cmp в ранжировании гамм, мёртвая egui из workspace» |
-| Ф6а | `Hz` / `Midi` + единственная конверсия | ⬜ |
+| Ф6а | `Hz` / `Midi` + единственная конверсия | ✅ «refactor(types): Hz и Midi — одна конверсия частота↔высота» (см. «Итог» фазы) |
 | Ф6б | `SampleRate` | ⬜ |
 | Ф6в | Целые MIDI-ноты и единый `BankRange` | ⬜ |
 | Ф7 | Снять 22 `pub use` из `audio/mod.rs` | ⬜ |
@@ -249,8 +249,10 @@ doc-шапки модулей, путь одной doc-ссылки и два с
 - Поля в `serde`-структурах (`audio/types.rs`, `worker_proto.rs`, персист настроек) —
   тип получает `#[serde(transparent)]`, чтобы формат на диске и в worker-протоколе не
   изменился. **Тест совместимости**: десериализовать литерал старого формата
-  `AnalysisSettings` (снять из текущего `serde_json::to_string(&AnalysisSettings::default())`
-  ДО правки и вписать в тест строкой).
+  `AnalysisSettings` (снять из текущего `ron::ser::to_string(&AnalysisSettings::default())`
+  ДО правки и вписать в тест строкой; RON — потому что так персистит eframe, JSON тут ни при
+  чём). Образец — `pre_hz_ron_snapshots_still_load` в `audio/types.rs` (Ф6а): туда же
+  дописывать новые поля.
 - Массовая механика (сотни сайтов в Ф6б) — субагентом дешёвой модели по готовому
   рецепту; приёмка — гейтом фазы и `code_smell prim` дельтой, а НЕ отчётом агента.
 - Вне Ф6 (записано, не делаем сейчас): `Cents`, `Seconds`, `view_lo/view_hi` роллов,
@@ -282,6 +284,29 @@ doc-шапки модулей, путь одной doc-ссылки и два с
 **DoD.** `rg -n '69\.0 \+ 12\.0|\(midi - 69\.0\) / 12\.0' src` → только `Hz::to_midi`.
 `rg 'fn (freq_to_midi|midi_to_freq|hz_to_midi|midi_to_frequency|frequency_to_midi)' src` → 0.
 Юнит-тест `Hz::to_midi ∘ Midi::to_hz = id` на 442 Гц (не на 440 — там путаница опоры не видна).
+
+**Итог (2026-09-22).** Оба DoD-`rg` → только `Hz::to_midi` / 0. Копий формулы было не 7+5,
+а больше: ещё `analysis_math.rs` ×3, `resonator.rs` (рабочая + 2 тестовые), `core.rs:572`,
+тесты `melody.rs` ×3 и `pyin.rs` ×2 — сняты все. Прямых вызовов `resonators::midi_to_hz`
+вне `Midi::to_hz` не осталось (`drone.rs`, `output.rs`, `rtswipe.rs`, `resonator.rs`).
+Тесты: lib 186 → **189** (+2 в `pitch.rs`, +1 `pre_hz_ron_snapshots_still_load`).
+Решения по ходу, которые следующей фазе стоит знать:
+- **Тест совместимости — на RON, а не на `serde_json`**, как писали общие правила: настройки
+  персистит eframe в RON (`app/persist.rs`), JSON их не касается. Литералы `AnalysisSettings`
+  и `DroneState` сняты `ron::ser::to_string` с дефолтов ДО правки. Проверен мутацией: без
+  `serde(transparent)` на `Hz` тест падает на разборе.
+- **pYIN (`pyin.rs:172-177`) — не баг, подтверждено.** `step()` отдаёт частоту кандидата
+  или центр бина через обратную конверсию; MIDI наружу не уходит. Жёсткое 440 стало
+  константой `GRID_A4 = Hz::A4_STANDARD` с комментарием, почему не камертон.
+- **Где `Midi`, а где ещё `f32`.** `Midi` — в `MelodyFrame::pitch` и `PitchPoint::midi`
+  (бывшее `midi_f`). `f32` сознательно оставлены: внутренние MIDI-координаты DSP-сеток
+  (trellis/swipe/rtswipe/банк — граница с ядром), `PitchMap::y_of` и `staff::midi_to_y`
+  (граница рисования, их зовут и с целыми нотами — это Ф6в), рамка вида роллов
+  (`view_lo/hi`, вне Ф6), параметры `octave_gate::accept` / `segmenter::update` (DSP).
+- **Остаток по `code_smell prim`**: `frequency_hz: f32 ×5` (`TunerTarget`, `PitchEstimate`,
+  `TunerReading::frequency_hz`, …) — частоты детектора, а не камертон; в Ф6а не входили.
+  Из-за них `frequency_to_note` и `resample_to_log_grid` теперь в отчёте как «смешанные»
+  сигнатуры (`Hz` рядом с голым hz-`f32`). Кандидат на добивку тем же типом, если решим.
 
 ### Ф6б — `SampleRate`
 
@@ -352,6 +377,12 @@ src`; в памяти от 09-03 стояло 27 — пересчитать на
   Ф1 сняла с этого места глотание отравления, но сам фолбек `Option<String>` → пустая
   строка остался в отчёте `code_smell option-crutch`. Это доменный вопрос (что значит
   реплей без выбранного входа и кто читает `selected_id`), а не механика замка.
+- **`TunerReading::fast_pitch` и `::melody_pitch` никто не читает** (найдено в Ф6а,
+  2026-09-22, `rg '\.(fast|melody)_pitch' src`): движок пишет их в `core.rs:613`, `:745`,
+  а вне `audio/core.rs` нет ни одного чтения — панели берут высоту из `MelodyFrame`.
+  Док-комментарии в `audio/types.rs:25-43` описывают их как вход для панелей. Либо снести
+  поля (и копирование в воркер-протоколе), либо найти потребителя — в Ф6а не трогали,
+  поэтому они и остались `(f32, f32)`, а не `(Midi, f32)`.
 - **`try_lock` в колбэке дрона** (`imp.rs:704`, `build_drone_stream`) глотал и `WouldBlock`, и
   `Poisoned` одним `if let Ok`. Ф1 развела их: `WouldBlock` — держим прошлый снимок, как
   задумано; `Poisoned` — паника, как у всех `lock()`.

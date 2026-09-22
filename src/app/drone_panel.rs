@@ -63,7 +63,7 @@ impl App {
         let analysis = self.audio.analysis_settings();
         let reference_hz = analysis.concert_pitch_hz;
         let accidental = analysis.accidental;
-        if (drone.reference_hz - reference_hz).abs() > 1e-3 {
+        if (drone.reference_hz.0 - reference_hz.0).abs() > 1e-3 {
             drone.reference_hz = reference_hz;
             changed = true;
         }

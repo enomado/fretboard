@@ -569,6 +569,7 @@ mod tests {
     };
     use crate::audio::dsp::resonator::ResonatorAnalyzer;
     use crate::core_types::note::AccidentalStyle;
+    use crate::core_types::pitch::Hz;
 
     /// The kernel must reproduce eq. 3-12 where the harmonic set is unbroken, and SWIPE′'s
     /// stated valley weights where it is not. Checked on the raw cosine·envelope product,
@@ -608,7 +609,7 @@ mod tests {
         let mut column = vec![0.0f32; len];
         for (index, &amplitude) in amplitudes.iter().enumerate() {
             let hz = f0_hz * (index + 1) as f32;
-            let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+            let midi = Hz(hz).to_midi(Hz::A4_STANDARD).0;
             let bin = ((midi - min_midi) * bps).round() as usize;
             if bin < len {
                 column[bin] += amplitude;
@@ -735,7 +736,7 @@ mod tests {
             let mut column = vec![0.0f32; len];
             for (index, amplitude) in [1.0f32, 0.8, 0.6, 0.35, 0.2].into_iter().enumerate() {
                 let hz = 880.0 * (index + 1) as f32;
-                let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+                let midi = Hz(hz).to_midi(Hz::A4_STANDARD).0;
                 let bin = ((midi - min_midi) * bps).round() as usize;
                 if bin < len {
                     column[bin] += amplitude;

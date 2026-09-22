@@ -561,6 +561,7 @@ mod beta_sweep {
     use crate::audio::dsp::resonator::ResonatorAnalyzer;
     use crate::audio::dsp::rtswipe::RtSwipe;
     use crate::core_types::note::AccidentalStyle;
+    use crate::core_types::pitch::Hz;
 
     /// The candidate exchange rates. Spans three orders of magnitude because the honest
     /// prior on this number was "nobody knows" — pYIN's implied rate (its emissions are
@@ -645,7 +646,7 @@ mod beta_sweep {
             .map(|s| s.unwrap() as f32 / 32768.0)
             .collect();
 
-        let mut rtswipe = RtSwipe::new(sample_rate, 440.0);
+        let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         let hop = (sample_rate * 0.016) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
@@ -676,7 +677,7 @@ mod beta_sweep {
             .map(|s| s.unwrap() as f32 / 32768.0)
             .collect();
 
-        let mut rtswipe = RtSwipe::new(sample_rate, 440.0);
+        let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         let mut decoder = SalienceDecoder::with_beta(beta);
         let hop = (sample_rate * 0.016) as usize;
         let mut verdicts = Vec::new();
@@ -775,8 +776,8 @@ mod beta_sweep {
         let mut signal = violin_tone(from_hz, sample_rate, hold);
         signal.extend(violin_tone(to_hz, sample_rate, hold));
 
-        let target_midi = 69.0 + 12.0 * (to_hz / 440.0).log2();
-        let mut rtswipe = RtSwipe::new(sample_rate, 440.0);
+        let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0;
+        let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         let mut decoder = SalienceDecoder::with_beta(beta);
         let hop = (sample_rate * 0.016) as usize;
         let mut fed = 0usize;
@@ -1029,7 +1030,7 @@ mod beta_sweep {
         let mut signal = violin_tone(from_hz, sample_rate, hold);
         signal.extend(violin_tone(to_hz, sample_rate, hold));
 
-        let target_midi = 69.0 + 12.0 * (to_hz / 440.0).log2();
+        let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0;
         let mut analyzer = ResonatorAnalyzer::new(sample_rate);
         let mut decoder = SalienceDecoder::with_beta(beta);
         let hop = (sample_rate * 0.016) as usize;
@@ -1131,6 +1132,7 @@ mod tests {
     use super::*;
     use crate::audio::dsp::analysis_math::SPIRAL_BINS_PER_SEMITONE;
     use crate::audio::dsp::swipe::SwipeKernel;
+    use crate::core_types::pitch::Hz;
 
     /// REGRESSION, and it was total: **the bank's span is a slider, and the decoder assumed
     /// it was the default.**
@@ -1162,7 +1164,7 @@ mod tests {
         let mut column = vec![0.0f32; len];
         for (index, amplitude) in [1.0f32, 0.8, 0.6, 0.35].into_iter().enumerate() {
             let hz = 440.0 * (index + 1) as f32;
-            let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+            let midi = Hz(hz).to_midi(Hz::A4_STANDARD).0;
             let bin = ((midi - min_midi) * bps).round() as usize;
             if bin < len {
                 column[bin] += amplitude;

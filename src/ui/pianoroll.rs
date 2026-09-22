@@ -50,16 +50,17 @@ use eframe::egui::{
 };
 
 use crate::core_types::note::AccidentalStyle;
+use crate::core_types::pitch::Midi;
 use crate::ui::theme::intonation_color;
 use crate::ui::tokens::color;
 
-/// One frame of continuous detected pitch: `midi_f` is the fractional MIDI number
+/// One frame of continuous detected pitch: `midi` is the fractional MIDI number
 /// (integer part = note, fraction = how sharp/flat), `level` the input level 0..1
 /// that fades the graph so quiet playing reads faint.
 #[derive(Clone, Copy)]
 pub struct PitchPoint {
-    pub midi_f: f32,
-    pub level:  f32,
+    pub midi:  Midi,
+    pub level: f32,
 }
 
 /// One published bank frame, ready to draw: how long ago it sounded, what the melody
@@ -703,10 +704,11 @@ fn draw_graph(painter: &Painter, map: RollMapping, columns: &[RollColumn<'_>]) {
         let x = map.x_of(column.age_s);
         // Clamp to the plot so a note briefly outside the eased window rides the
         // edge instead of drawing off into space; the window normally keeps it in.
-        let y = map.y_of(point.midi_f).clamp(plot.top(), plot.bottom());
+        let Midi(midi) = point.midi;
+        let y = map.y_of(midi).clamp(plot.top(), plot.bottom());
         let here = pos2(x, y);
 
-        let cents = (point.midi_f - point.midi_f.round()) * 100.0;
+        let cents = (midi - midi.round()) * 100.0;
         let base = intonation_color(cents);
         // Louder → more opaque, so dynamics read in the trail; sqrt lifts quiet notes.
         let alpha = (60.0 + point.level.clamp(0.0, 1.0).sqrt() * 195.0).clamp(0.0, 255.0) as u8;

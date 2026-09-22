@@ -2,7 +2,6 @@ use resonators::{
     OnePoleBank,
     ResonatorConfig,
     heuristic_alpha,
-    midi_to_hz,
 };
 
 use super::analysis_math::{
@@ -19,6 +18,10 @@ use super::swipe::{
 };
 use crate::audio::types::AnalysisSettings;
 use crate::core_types::note::AccidentalStyle;
+use crate::core_types::pitch::{
+    Hz,
+    Midi,
+};
 
 const RESONATOR_MIN_MIDI: usize = NOTE_BUCKET_MIN_MIDI;
 const RESONATOR_MAX_MIDI: usize = NOTE_BUCKET_MAX_MIDI;
@@ -65,7 +68,7 @@ pub(crate) struct ResonatorViewSettings {
     gamma:             f32,
     power:             bool,
     // Эталон A4: меняется камертон → пересобираем банк (PartialEq ловит сдвиг).
-    reference_hz:      f32,
+    reference_hz:      Hz,
 }
 
 #[derive(Clone, Debug)]
@@ -133,7 +136,7 @@ impl Default for ResonatorViewSettings {
             beta_scale:        1.0,
             gamma:             0.72,
             power:             false,
-            reference_hz:      440.0,
+            reference_hz:      Hz::A4_STANDARD,
         }
     }
 }
@@ -279,7 +282,7 @@ fn build_resonator_bank(sample_rate: f32, settings: &ResonatorViewSettings) -> O
     let configs: Vec<ResonatorConfig> = (0..bin_count)
         .map(|i| {
             let midi = settings.min_midi as f32 + i as f32 / settings.bins_per_semitone as f32;
-            let frequency = midi_to_hz(midi, settings.reference_hz);
+            let frequency = Midi(midi).to_hz(settings.reference_hz).0;
             // Floor guards only alpha > 0 (a zero coefficient is a dead resonator);
             // it must sit well below base_alpha * min(slider). The old floor of 1e-4
             // silently swallowed the bottom of the slider range for bass bins: at
@@ -373,7 +376,7 @@ fn resonator_snapshot(
         }
         let gate = (-0.5 * (ds / GATE_SIGMA_SEMITONES).powi(2)).exp();
 
-        let midi = 69.0 + 12.0 * (f_hat / settings.reference_hz).log2();
+        let midi = Hz(f_hat).to_midi(settings.reference_hz).0;
         let position = (midi - settings.min_midi as f32) * OUTPUT_BINS_PER_SEMITONE as f32;
         splat_linear(&mut spectrum, position, weight * gate);
     }
@@ -445,7 +448,7 @@ mod tests {
             let sr = 48_000.0f32;
             let hold = (sr * 0.6) as usize;
             let mut an = ResonatorAnalyzer::new(sr);
-            let target_midi = 69.0 + 12.0 * (to_hz / 440.0).log2();
+            let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0;
 
             // Prime on the old note, then feed the new one in audio-callback-sized
             // chunks, sampling the fundamental at the bank's own 16 ms publish rate.
@@ -527,7 +530,7 @@ mod tests {
         let sr = 44100.0;
         let mut an = ResonatorAnalyzer::new(sr);
         let target_midi = 69.1; // between bank bins at 69.0 and 69.2
-        let f = 440.0 * 2.0_f32.powf((target_midi - 69.0) / 12.0);
+        let f = Midi(target_midi).to_hz(Hz::A4_STANDARD).0;
         let sig: Vec<f32> = (0..sr as usize)
             .map(|i| (TAU * f * i as f32 / sr).sin())
             .collect();

@@ -130,3 +130,77 @@ impl PNote {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Interval(pub i32);
+
+/// Частота, Гц.
+///
+/// `serde(transparent)` — на диске (RON настроек) и в worker-протоколе (postcard) это
+/// тот же голый `f32`, что был до появления типа.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Hz(pub f32);
+
+impl Hz {
+    /// ISO 16: A4 = 440 Гц. Эталон по умолчанию и опора там, где MIDI — внутренняя
+    /// координата, а не высота для человека (сетка pYIN, корпус бенчмарка).
+    pub const A4_STANDARD: Hz = Hz(440.0);
+
+    /// Дробная MIDI-высота этой частоты при камертоне `a4`:
+    /// `m = 69 + 12·log2(f / a4)` — 69 = A4, каждые 12 единиц = октава (×2 по частоте).
+    ///
+    /// Единственная копия формулы в репозитории; обратная — [`Midi::to_hz`]. Частота
+    /// ≤ 0 даёт `-inf`/NaN — отсеивать тишину вызывающему, как и раньше.
+    pub fn to_midi(self, a4: Hz) -> Midi {
+        Midi(69.0 + 12.0 * (self.0 / a4.0).log2())
+    }
+}
+
+/// Дробная MIDI-высота: 69.0 = A4, 69.5 = A4 + 50¢. Целая нота — [`PNote`].
+///
+/// Шкала логарифмическая и зависит от камертона: одно и то же `Midi` звучит на разной
+/// частоте при A4 = 440 и 442, поэтому конверсии в обе стороны принимают его явно.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Midi(pub f32);
+
+impl Midi {
+    /// Частота этой высоты при камертоне `a4`. Формулу держит крейт `resonators` (им же
+    /// строится банк), здесь её не повторяем.
+    pub fn to_hz(self, a4: Hz) -> Hz {
+        Hz(resonators::midi_to_hz(self.0, a4.0))
+    }
+}
+
+impl From<PNote> for Midi {
+    fn from(note: PNote) -> Midi {
+        Midi(note.0 as f32)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Hz,
+        Midi,
+        PNote,
+    };
+
+    /// Круговой путь на 442 Гц, а не на 440: при 440 перепутанная опора (жёсткое 440
+    /// внутри одной из конверсий) давала бы тот же ответ и тест бы её не видел.
+    #[test]
+    fn midi_round_trip_is_identity_at_a442() {
+        let a4 = Hz(442.0);
+        assert_eq!(a4.to_midi(a4), Midi(69.0));
+        for m in [21.0f32, 55.0, 69.0, 69.5, 88.25, 108.0] {
+            let back = Midi(m).to_hz(a4).to_midi(a4);
+            assert!((back.0 - m).abs() < 1e-4, "{m} → {back:?}");
+        }
+        // Опора действительно участвует: A4 при 442 — это не 69 при 440.
+        let at_440 = a4.to_midi(Hz::A4_STANDARD);
+        assert!((at_440.0 - 69.0786).abs() < 1e-3, "{at_440:?}");
+    }
+
+    #[test]
+    fn integer_note_is_its_own_midi() {
+        assert_eq!(Midi::from(PNote::new(60).unwrap()), Midi(60.0));
+    }
+}

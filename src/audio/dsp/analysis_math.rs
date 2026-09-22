@@ -15,13 +15,14 @@ pub(crate) const SPIRAL_BIN_COUNT: usize =
     (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
 
 use crate::core_types::note::AccidentalStyle;
+use crate::core_types::pitch::Hz;
 
 pub(crate) fn frequency_to_note(
     frequency_hz: f32,
-    reference_hz: f32,
+    reference_hz: Hz,
     style: AccidentalStyle,
 ) -> (String, f32) {
-    let midi = 69.0 + 12.0 * (frequency_hz / reference_hz).log2();
+    let midi = Hz(frequency_hz).to_midi(reference_hz).0;
     let nearest = midi.round();
     let cents = (midi - nearest) * 100.0;
     (style.midi_name(nearest as i32), cents)
@@ -99,12 +100,12 @@ pub(crate) fn accumulate_note_energy(
     frequency: f32,
     energy: f32,
     note_spread: f32,
-    reference_hz: f32,
+    reference_hz: Hz,
 ) {
     if frequency <= 0.0 || note_bars.is_empty() {
         return;
     }
-    let midi = 69.0 + 12.0 * (frequency / reference_hz).log2();
+    let midi = Hz(frequency).to_midi(reference_hz).0;
     let note_position = midi - NOTE_BUCKET_MIN_MIDI as f32;
     let center = note_position.round() as isize;
     for index in (center - 2)..=(center + 2) {
@@ -124,12 +125,12 @@ pub(crate) fn accumulate_spiral_energy(
     spiral_bars: &mut [f32],
     frequency: f32,
     energy: f32,
-    reference_hz: f32,
+    reference_hz: Hz,
 ) {
     if frequency <= 0.0 || spiral_bars.is_empty() {
         return;
     }
-    let midi = 69.0 + 12.0 * (frequency / reference_hz).log2();
+    let midi = Hz(frequency).to_midi(reference_hz).0;
     if !(NOTE_BUCKET_MIN_MIDI as f32..=NOTE_BUCKET_MAX_MIDI as f32).contains(&midi) {
         return;
     }
@@ -272,7 +273,7 @@ mod tests {
             440.0,
             1.0,
             AnalysisSettings::default().note_spread,
-            440.0,
+            Hz::A4_STANDARD,
         );
         let a4_index = 69 - NOTE_BUCKET_MIN_MIDI;
 
@@ -343,12 +344,12 @@ mod tests {
             16.3516,
             1.0,
             AnalysisSettings::default().note_spread,
-            440.0,
+            Hz::A4_STANDARD,
         );
         assert!(note_bars[0] > 0.9);
 
         let mut spiral_bars = vec![0.0; SPIRAL_BIN_COUNT];
-        accumulate_spiral_energy(&mut spiral_bars, 32.7032, 1.0, 440.0);
+        accumulate_spiral_energy(&mut spiral_bars, 32.7032, 1.0, Hz::A4_STANDARD);
         let c1_index = 12 * 8;
         assert!(spiral_bars[c1_index] > 0.9);
     }

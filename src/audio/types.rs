@@ -2,7 +2,11 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use crate::core_types::note::AccidentalStyle;
-use crate::core_types::pitch::PNote;
+use crate::core_types::pitch::{
+    Hz,
+    Midi,
+    PNote,
+};
 
 // Serialize/Deserialize so the wasm DSP web worker can ship readings back to the
 // main thread (postcard over postMessage). Inert on native.
@@ -107,7 +111,7 @@ pub struct MelodyFrame {
     /// The melody line's note, or `None` for silence *or* a rejected octave slip —
     /// decided in `dsp::melody`, and deliberately the same `None` for both (see
     /// `dsp::segmenter` for why a rejected frame must read as a gap, not a change).
-    pub pitch:    Option<f32>,
+    pub pitch:    Option<Midi>,
     /// The absolute input level the engine gated **this** frame on. Carried rather
     /// than read live so a panel fades a point by the level of the moment it is
     /// drawing, not of the moment it happens to be drawing at.
@@ -437,7 +441,7 @@ pub struct AnalysisSettings {
     /// `serde(default)` — мягкая миграция: в RON прошлых версий поля нет, и без
     /// дефолта весь снимок настроек сбросился бы. Берём 440.0 (а НЕ `f32`-ноль).
     #[serde(default = "default_concert_pitch_hz")]
-    pub concert_pitch_hz:   f32,
+    pub concert_pitch_hz:   Hz,
     pub spectrum_smoothing: usize,
     pub note_spread:        f32,
     pub spectrum_gamma:     f32,
@@ -519,8 +523,8 @@ const MAX_FFT_SIZE: usize = 32768;
 /// search down there.
 const LOWEST_DISPLAYED_FREQUENCY: f32 = 16.0;
 
-fn default_concert_pitch_hz() -> f32 {
-    440.0
+fn default_concert_pitch_hz() -> Hz {
+    Hz::A4_STANDARD
 }
 
 impl Default for AnalysisSettings {
@@ -530,7 +534,7 @@ impl Default for AnalysisSettings {
             fft_size:           16384,
             min_frequency:      16.0,
             max_frequency:      2_000.0,
-            concert_pitch_hz:   440.0,
+            concert_pitch_hz:   Hz::A4_STANDARD,
             spectrum_smoothing: 1,
             note_spread:        0.35,
             spectrum_gamma:     0.58,
@@ -585,7 +589,7 @@ impl AnalysisSettings {
         // верди-строй и исторические низкие диапазоны), верхняя 466.16 (A#4).
         // Покрывает все академические стандарты (430/440/442/443/444) и не
         // даёт уехать в бессмыслицу.
-        self.concert_pitch_hz = self.concert_pitch_hz.clamp(400.0, 466.0);
+        self.concert_pitch_hz = Hz(self.concert_pitch_hz.0.clamp(400.0, 466.0));
         self.spectrum_smoothing = self.spectrum_smoothing.min(4);
         self.note_spread = self.note_spread.clamp(0.15, 0.8);
         self.spectrum_gamma = self.spectrum_gamma.clamp(0.35, 1.2);
@@ -673,7 +677,7 @@ pub struct DroneState {
     /// Эталон A4 (камертон). UI держит его в синхроне с настройками анализа,
     /// чтобы дрон звучал по тому же строю, что и тюнер. Частота ноты считается
     /// в реалтайме из этого значения, поэтому смена камертона слышна сразу.
-    pub reference_hz: f32,
+    pub reference_hz: Hz,
     pub mode:         DroneMode,
     /// Темп пульса/арпеджио в ударах в минуту (один удар = один шаг).
     pub bpm:          f32,
@@ -701,7 +705,7 @@ impl Default for DroneState {
             // A2 — низкий, спокойный референс-дрон по умолчанию.
             notes:        vec![PNote::new(45).unwrap()],
             gain:         0.4,
-            reference_hz: 440.0,
+            reference_hz: Hz::A4_STANDARD,
             mode:         DroneMode::Sustained,
             bpm:          80.0,
             pulse_duty:   0.5,
@@ -722,7 +726,7 @@ impl DroneState {
         self.notes.truncate(DRONE_MAX_NOTES);
         self.gain = self.gain.clamp(0.0, 1.0);
         // Камертон — те же границы, что у `AnalysisSettings` (400..466).
-        self.reference_hz = self.reference_hz.clamp(400.0, 466.0);
+        self.reference_hz = Hz(self.reference_hz.0.clamp(400.0, 466.0));
         self.bpm = self.bpm.clamp(20.0, 300.0);
         self.pulse_duty = self.pulse_duty.clamp(0.05, 0.95);
         self.arp_gate = self.arp_gate.clamp(0.05, 1.0);
@@ -757,7 +761,7 @@ mod tests {
             fft_size:           1_000,
             min_frequency:      900.0,
             max_frequency:      920.0,
-            concert_pitch_hz:   900.0,
+            concert_pitch_hz:   Hz(900.0),
             spectrum_smoothing: 12,
             note_spread:        0.01,
             spectrum_gamma:     0.01,
@@ -782,7 +786,7 @@ mod tests {
         assert!(settings.window_size >= MIN_WINDOW_SIZE);
         assert!(settings.fft_size >= settings.window_size.next_power_of_two());
         assert!(settings.max_frequency > settings.min_frequency);
-        assert!((400.0..=466.0).contains(&settings.concert_pitch_hz));
+        assert!((400.0..=466.0).contains(&settings.concert_pitch_hz.0));
         assert!(settings.spectrum_smoothing <= 4);
         assert!((0.15..=0.8).contains(&settings.note_spread));
         assert!(settings.resonator.max_midi > settings.resonator.min_midi);
@@ -800,7 +804,7 @@ mod tests {
             // Дубли + не по порядку + сверх потолка полифонии.
             notes:        (0..30u8).rev().map(|i| PNote::new(40 + i).unwrap()).collect(),
             gain:         5.0,
-            reference_hz: 1000.0,
+            reference_hz: Hz(1000.0),
             mode:         DroneMode::Arp,
             bpm:          5000.0,
             pulse_duty:   2.0,
@@ -813,7 +817,7 @@ mod tests {
         assert!(clean.notes.len() <= DRONE_MAX_NOTES);
         assert!(clean.notes.windows(2).all(|w| w[0] < w[1]), "sorted + deduped");
         assert!((0.0..=1.0).contains(&clean.gain));
-        assert!((400.0..=466.0).contains(&clean.reference_hz));
+        assert!((400.0..=466.0).contains(&clean.reference_hz.0));
         assert!((20.0..=300.0).contains(&clean.bpm));
         assert!((0.05..=0.95).contains(&clean.pulse_duty));
         assert!((0.05..=1.0).contains(&clean.arp_gate));
@@ -848,6 +852,33 @@ mod tests {
         assert_eq!(drone.notes.len(), DRONE_MAX_NOTES);
     }
 
+    /// Камертон стал `Hz` — формат на диске обязан остаться голым числом. Литералы сняты
+    /// `ron::ser::to_string` с дефолтов ДО появления типа (2026-09-22), камертон вписан
+    /// недефолтный, чтобы отличать разбор от подстановки `serde(default)`.
+    #[test]
+    fn pre_hz_ron_snapshots_still_load() {
+        let settings: AnalysisSettings = ron::from_str(
+            "(window_size:6144,fft_size:16384,min_frequency:16.0,max_frequency:2000.0,\
+             concert_pitch_hz:442.0,spectrum_smoothing:1,note_spread:0.35,spectrum_gamma:0.58,\
+             note_gamma:0.72,resonator:(min_midi:12,max_midi:108,bins:5,alpha:1.0,beta:1.0,\
+             gamma:0.72,history:52,update_ms:16,power:false,reassign:true,frontend:ResonatorBank),\
+             accidental:Sharps)",
+        )
+        .unwrap();
+        assert_eq!(settings.concert_pitch_hz, Hz(442.0));
+
+        let drone: DroneState = ron::from_str(
+            "(notes:[45],gain:0.4,reference_hz:443.0,mode:Sustained,bpm:80.0,pulse_duty:0.5,\
+             arp_gate:0.6,arp_pattern:Up,brightness:0.4,timbre:Sine)",
+        )
+        .unwrap();
+        assert_eq!(drone.reference_hz, Hz(443.0));
+
+        // И обратно: пишем то же голое число, а не `(442.0)` newtype-обёртки.
+        let ron = ron::ser::to_string(&settings).unwrap();
+        assert!(ron.contains(",concert_pitch_hz:442.0,"), "{ron}");
+    }
+
     #[test]
     fn missing_concert_pitch_in_old_ron_defaults_to_a440() {
         // Снимок до появления камертона: поля concert_pitch_hz нет. Мягкая
@@ -860,6 +891,6 @@ mod tests {
         );
 
         let restored: AnalysisSettings = ron::from_str(&legacy).unwrap();
-        assert_eq!(restored.concert_pitch_hz, 440.0);
+        assert_eq!(restored.concert_pitch_hz, Hz::A4_STANDARD);
     }
 }

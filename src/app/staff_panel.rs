@@ -64,6 +64,7 @@ use crate::core_types::note::{
     CIRCLE_OF_FIFTHS,
     KeySignature,
 };
+use crate::core_types::pitch::Midi;
 use crate::ui::segmented::{
     PillCombo,
     RowCaption,
@@ -642,7 +643,7 @@ impl Waterfall<'_> {
     fn draw_trail(&self, painter: &Painter) {
         let radius = (self.geom.gap * 0.17).max(1.2);
         for frame in self.frames.iter() {
-            let Some(midi_f) = frame.pitch else {
+            let Some(Midi(midi)) = frame.pitch else {
                 continue; // silence, or a rejected slip → a gap in the trail
             };
             let age_s = (self.now - frame.t) as f32;
@@ -650,7 +651,7 @@ impl Waterfall<'_> {
             if x < self.geom.notes_left {
                 continue;
             }
-            let y = staff::midi_to_y(self.geom, self.style, self.clef, midi_f);
+            let y = staff::midi_to_y(self.geom, self.style, self.clef, midi);
             // Fade with age, intensify with level. Age is in *seconds* now, so the fade
             // is a real half-life rather than "how much of the buffer ago" — at 30 fps
             // the old trail faded over twice as much time as at 60.

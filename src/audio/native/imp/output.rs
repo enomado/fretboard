@@ -17,7 +17,6 @@ use cpal::traits::{
     HostTrait,
     StreamTrait,
 };
-use resonators::midi_to_hz;
 use ringbuf::traits::Consumer;
 
 use super::devices::preferred_low_latency_buffer;
@@ -30,7 +29,10 @@ use crate::audio::core::{
     SharedState,
 };
 use crate::audio::types::AnalysisSettings;
-use crate::core_types::pitch::PNote;
+use crate::core_types::pitch::{
+    Midi,
+    PNote,
+};
 
 const TEST_TONE_GAIN: f32 = 0.28;
 const TEST_TONE_DURATION: Duration = Duration::from_millis(1_600);
@@ -133,7 +135,7 @@ pub(super) fn play_test_note_thread(
     let channels = usize::from(config.channels);
     // Тест-нота звучит по текущему камертону, чтобы совпадать с анализом.
     let reference_hz = settings.lock().unwrap().concert_pitch_hz;
-    let frequency = midi_to_hz(midi.as_u8() as f32, reference_hz);
+    let frequency = Midi::from(midi).to_hz(reference_hz).0;
     let total_samples = (sample_rate * TEST_TONE_DURATION.as_secs_f32()) as usize;
     let samples = Arc::new(test_tone_samples(frequency, sample_rate, total_samples));
     let playback_samples = samples.clone();

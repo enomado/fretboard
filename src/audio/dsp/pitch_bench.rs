@@ -50,14 +50,15 @@ use std::path::{
 use crate::audio::dsp::resonator::ResonatorAnalyzer;
 use crate::audio::dsp::rtswipe::RtSwipe;
 use crate::core_types::note::AccidentalStyle;
+use crate::core_types::pitch::Hz;
 
 /// A4, for every frequency↔MIDI conversion in this module.
 ///
 /// Shared rather than spelled out per call site because it has to match in three places at
-/// once — [`hz_to_midi`] (which reads the annotation), the bank's default grid
+/// once — [`load_annotation`] (which reads the annotation), the bank's default grid
 /// (`resonator`'s `reference_hz`) and [`RtSwipe::new`]'s. A frontend put on a grid the
 /// annotation is not on would lose cents to arithmetic and blame the detector.
-const CONCERT_PITCH_HZ: f32 = 440.0;
+const CONCERT_PITCH_HZ: Hz = Hz::A4_STANDARD;
 
 /// mir_eval's raw-pitch-accuracy threshold, and the one behind every number in the
 /// paper's tables: a voiced frame is correct when the estimate lands within 50 cents of
@@ -200,8 +201,8 @@ impl PitchMask {
     fn from_hz(lo_hz: f32, hi_hz: f32) -> Self {
         assert!(lo_hz < hi_hz, "mask {lo_hz}..{hi_hz} Hz is empty");
         PitchMask {
-            lo_midi: hz_to_midi(lo_hz),
-            hi_midi: hz_to_midi(hi_hz),
+            lo_midi: Hz(lo_hz).to_midi(CONCERT_PITCH_HZ).0,
+            hi_midi: Hz(hi_hz).to_midi(CONCERT_PITCH_HZ).0,
         }
     }
 
@@ -275,11 +276,6 @@ impl Annotation {
     }
 }
 
-/// Hz → fractional MIDI. The corpus speaks Hz; the bank speaks MIDI.
-fn hz_to_midi(hz: f32) -> f32 {
-    69.0 + 12.0 * (hz / CONCERT_PITCH_HZ).log2()
-}
-
 /// Parse a `time,frequency` CSV. Frequency 0.0 means unvoiced.
 ///
 /// No header in this corpus, so a line that does not parse as two floats is a corpus
@@ -296,8 +292,9 @@ fn load_annotation(path: &Path) -> Annotation {
         let (t, f) = line.split_once(',').unwrap();
         let hz: f32 = f.trim().parse().unwrap();
         times.push(t.trim().parse().unwrap());
-        // 0 Hz is the corpus's unvoiced marker. Anything else is a real f0.
-        midi.push((hz > 0.0).then(|| hz_to_midi(hz)));
+        // 0 Hz is the corpus's unvoiced marker. Anything else is a real f0. The corpus
+        // speaks Hz; the bank speaks MIDI.
+        midi.push((hz > 0.0).then(|| Hz(hz).to_midi(CONCERT_PITCH_HZ).0));
     }
     Annotation { times, midi }
 }

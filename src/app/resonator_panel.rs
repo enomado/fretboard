@@ -166,21 +166,22 @@ impl App {
             // выход за границы тихо срежется при `set_analysis_settings`.
             const STEP: f32 = 0.5;
             let snap = |hz: f32| (hz / STEP).round() * STEP;
+            let a4 = &mut settings.concert_pitch_hz.0;
             if ui.small_button("−").clicked() {
-                settings.concert_pitch_hz = snap(settings.concert_pitch_hz - STEP).clamp(400.0, 466.0);
+                *a4 = snap(*a4 - STEP).clamp(400.0, 466.0);
                 *c = true;
             }
             *c |= ui
                 .add_sized(
                     [104.0, 20.0],
-                    egui::Slider::new(&mut settings.concert_pitch_hz, 400.0..=466.0).show_value(false),
+                    egui::Slider::new(a4, 400.0..=466.0).show_value(false),
                 )
                 .changed();
             if ui.small_button("+").clicked() {
-                settings.concert_pitch_hz = snap(settings.concert_pitch_hz + STEP).clamp(400.0, 466.0);
+                *a4 = snap(*a4 + STEP).clamp(400.0, 466.0);
                 *c = true;
             }
-            format!("{:.1} Hz", settings.concert_pitch_hz)
+            format!("{:.1} Hz", *a4)
         });
         mobile_slider(ui, "Spread", &mut changed, |ui, c| {
             *c |= ui

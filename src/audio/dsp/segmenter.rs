@@ -208,6 +208,7 @@ mod tests {
         use crate::audio::dsp::pyin::PitchTracker;
         use crate::audio::dsp::resonator::ResonatorAnalyzer;
         use crate::core_types::note::AccidentalStyle;
+        use crate::core_types::pitch::Hz;
 
         fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
             let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
@@ -234,7 +235,7 @@ mod tests {
             let mut sig = violin_tone(from_hz, sr, hold);
             sig.extend(violin_tone(to_hz, sr, hold));
             let change_ms = hold as f32 / sr * 1000.0;
-            let target_midi = (69.0 + 12.0 * (to_hz / 440.0).log2()).round() as i32;
+            let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0.round() as i32;
 
             let mut tracker = PitchTracker::new();
             let mut bank = ResonatorAnalyzer::new(sr);
@@ -266,7 +267,7 @@ mod tests {
                     let win = &sig[next_analysis - window_size..next_analysis];
                     anchor = tracker
                         .process(win, sr)
-                        .map(|(f, c)| (69.0 + 12.0 * (f / 440.0).log2(), c));
+                        .map(|(f, c)| (Hz(f).to_midi(Hz::A4_STANDARD).0, c));
                     next_analysis += analysis_hop;
                 }
                 if t_ms >= next_bank_publish_ms {

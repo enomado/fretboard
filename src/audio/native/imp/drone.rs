@@ -5,14 +5,13 @@
 //! `AudioContext::build_drone_stream`); voices keep their phase across snapshots so a
 //! change of notes or timbre mid-play does not click.
 
-use resonators::midi_to_hz;
-
 use crate::audio::types::{
     ArpPattern,
     DroneMode,
     DroneState,
     Timbre,
 };
+use crate::core_types::pitch::Midi;
 
 /// Общий потолок громкости дрона после суммирования голосов (до мастер-гейна
 /// из [`DroneState`]). Держит даже плотный аккорд в безопасном пределе.
@@ -101,9 +100,9 @@ impl DroneSynth {
         self.arp_pattern = state.arp_pattern;
         self.brightness = state.brightness;
         self.timbre = state.timbre;
-        // Частоты по текущему камертону: midi_to_hz(m, A4) = A4 * 2^((m-69)/12).
+        // Частоты по текущему камертону: таблица на все 128 нот, индекс = MIDI.
         for (m, slot) in self.freq.iter_mut().enumerate() {
-            *slot = midi_to_hz(m as f32, state.reference_hz);
+            *slot = Midi(m as f32).to_hz(state.reference_hz).0;
         }
     }
 

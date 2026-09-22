@@ -264,12 +264,12 @@ impl App {
                     let pitch_changed = ui
                         .add_sized(
                             [180.0, 18.0],
-                            egui::Slider::new(&mut settings.concert_pitch_hz, 415.0..=466.0)
+                            egui::Slider::new(&mut settings.concert_pitch_hz.0, 415.0..=466.0)
                                 .show_value(false),
                         )
                         .changed();
                     ui.label(
-                        RichText::new(format!("{:.1} Hz", settings.concert_pitch_hz))
+                        RichText::new(format!("{:.1} Hz", settings.concert_pitch_hz.0))
                             .color(color::TEXT_VALUE)
                             .monospace(),
                     );

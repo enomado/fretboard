@@ -49,6 +49,10 @@ use super::trellis::{
     PitchGrid,
     PitchTrellis,
 };
+use crate::core_types::pitch::{
+    Hz,
+    Midi,
+};
 
 // --- Candidate stage ---------------------------------------------------------
 
@@ -169,13 +173,14 @@ const MAX_MIDI: f32 = TRACKED_MAX_MIDI;
 /// what happens on the channel whose cadence **is** a slider.
 const FRAME_DT: f32 = 0.040;
 
-fn freq_to_midi(frequency_hz: f32) -> f32 {
-    69.0 + 12.0 * (frequency_hz / 440.0).log2()
-}
-
-fn midi_to_freq(midi: f32) -> f32 {
-    440.0 * 2.0f32.powf((midi - 69.0) / 12.0)
-}
+/// Опора сетки треллиса — стандартные 440, а **не** камертон из настроек, и это не
+/// упущение. MIDI здесь — внутренняя координата бинов: частота кандидата уходит в бин
+/// (`Hz → Midi`) и обратно (`Midi → Hz`) по одной и той же опоре, так что в круговом
+/// пути она сокращается. Наружу [`PitchTracker::step`] отдаёт частоту кандидата (или
+/// центр бина, пересчитанный обратно), а не MIDI — нота по камертону считается уже
+/// потребителем. Камертон 442 сдвинул бы только края сетки на 8¢, что для диапазона
+/// C1..C8 не значит ничего.
+const GRID_A4: Hz = Hz::A4_STANDARD;
 
 /// Stateful probabilistic-YIN pitch tracker: one per audio stream. Feeds on
 /// analysis windows and carries its trellis frame to frame.
@@ -232,7 +237,9 @@ impl PitchTracker {
         let mut emissions = Emissions::zeroed(self.trellis.grid());
         for cand in candidates {
             emissions.add_at_bin(
-                self.trellis.grid().bin_of_midi(freq_to_midi(cand.frequency_hz)),
+                self.trellis
+                    .grid()
+                    .bin_of_midi(Hz(cand.frequency_hz).to_midi(GRID_A4).0),
                 cand.probability,
             );
         }
@@ -242,13 +249,13 @@ impl PitchTracker {
         // Report the winning *candidate's* frequency (sub-cent) rather than the
         // 10-cent bin centre, so the tuner's cents stay sharp. Fall back to the bin
         // centre if no candidate sits near the decoded bin.
-        let mut freq = midi_to_freq(self.trellis.grid().midi_of_state(state));
+        let mut freq = Midi(self.trellis.grid().midi_of_state(state)).to_hz(GRID_A4).0;
         let mut best_p = 0.0f32;
         for cand in candidates {
             let cb = self
                 .trellis
                 .grid()
-                .bin_of_midi(freq_to_midi(cand.frequency_hz))
+                .bin_of_midi(Hz(cand.frequency_hz).to_midi(GRID_A4).0)
                 .round() as isize;
             if (cb - state.0 as isize).abs() <= 2 && cand.probability > best_p {
                 best_p = cand.probability;
@@ -396,7 +403,7 @@ mod tests {
     #[test]
     fn floor_clears_the_hmm_grid() {
         let grid = PitchGrid::new(MIN_MIDI, MAX_MIDI, BINS_PER_SEMITONE);
-        let lowest_state_hz = midi_to_freq(grid.midi_of_state(PitchState(0)));
+        let lowest_state_hz = Midi(grid.midi_of_state(PitchState(0))).to_hz(GRID_A4).0;
 
         // Downward: every pitch the HMM has a state for must be *findable*, with the
         // longest lag landing past that note's period rather than clipping its dip.
@@ -520,7 +527,7 @@ mod tests {
         let mut sorted = cands.clone();
         sorted.sort_by(|a, b| b.probability.total_cmp(&a.probability));
         for cand in sorted.iter() {
-            let midi = 69.0 + 12.0 * (cand.frequency_hz / 440.0).log2();
+            let midi = Hz(cand.frequency_hz).to_midi(GRID_A4).0;
             println!(
                 "  {:>8.2} Hz (midi {:>6.2})  p = {:.3}",
                 cand.frequency_hz, midi, cand.probability
@@ -781,7 +788,7 @@ mod tests {
                     let mut sorted = cands.clone();
                     sorted.sort_by(|a, b| b.probability.total_cmp(&a.probability));
                     for cand in sorted.iter().take(4) {
-                        let midi = 69.0 + 12.0 * (cand.frequency_hz / 440.0).log2();
+                        let midi = Hz(cand.frequency_hz).to_midi(GRID_A4).0;
                         // Below the HMM's MIN_MIDI a candidate cannot be emitted into
                         // any pitch state at all — `step` skips the negative bin — yet
                         // it still adds its mass to `voiced`.

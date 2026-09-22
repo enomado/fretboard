@@ -611,14 +611,6 @@ fn spectrum_color(value: f32) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
-fn midi_to_frequency(midi: f32, reference_hz: f32) -> f32 {
-    reference_hz * 2.0_f32.powf((midi - 69.0) / 12.0)
-}
-
-fn frequency_to_midi(frequency_hz: f32, reference_hz: f32) -> f32 {
-    69.0 + 12.0 * (frequency_hz / reference_hz).log2()
-}
-
 fn format_sample_count(value: usize) -> String {
     if value >= 1000 {
         format!("{:.1}k", value as f32 / 1000.0)
