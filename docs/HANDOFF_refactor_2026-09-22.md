@@ -112,13 +112,16 @@ code_smell prim --mode all --top 500 > <scratchpad>/prim_{before,after}.txt   # 
 
 ## Ждут решения хозяина (не механика фаз)
 
-Все записаны в плане с местом в коде:
+Все записаны в плане с местом в коде. **2026-09-23:** «Попутные находки» плана разобраны
+целиком (5 коммитов, lib 195 → 197, `release_ghosts_…` больше не флейкает, `cargo doc -D
+warnings` чист и в гейте); сняты и три пункта отсюда — зачёркнуты.
 
 - `native/imp.rs` = 1038 строк при пороге Ф4 `< 1000` — выносить ли методы сборки
-  захвата в `capture.rs` (Ф4, «Итог»).
-- `current_input_sample_rate()` отдаёт `0` до старта захвата, а UI печатает «Input rate: 0 Hz»
-  (`app/controls.rs:330`). Сделать `Option<SampleRate>` = решить, что показывать (Ф6б,
-  «Попутные находки»).
-- `TunerReading::fast_pitch/melody_pitch` никто не читает — снести или найти потребителя.
+  захвата в `capture.rs` (Ф4, «Итог»). (После 09-23 — чуть больше: `decode_rate`.)
+- ~~`current_input_sample_rate()` отдаёт `0`~~ — `Option<SampleRate>`, «Input rate: idle».
+- ~~`TunerReading::fast_pitch/melody_pitch` никто не читает~~ — снесены.
 - `frequency_hz: f32 ×5` (частоты детектора) — добить ли типом `Hz`.
-- `ActiveCapture.selected_id = ""` при реплее без выбранного входа.
+- ~~`ActiveCapture.selected_id = ""`~~ — `Option<String>`; это был живой баг пересборки монитора.
+- 🆕 **Призрак после ноты зависит от `update_ms`** (ползунок каденции банка): при ≤ 10 мс
+  пишется, при ≥ 16 — нет. Подозреваемый — кадровая медиана `OctaveGate`. Оракул готов
+  (тест `release_ghosts_…` с `update_ms` 10 vs 20). Подробно — в «Попутных находках» плана.
