@@ -5,6 +5,7 @@
 //! `AudioContext::build_drone_stream`); voices keep their phase across snapshots so a
 //! change of notes or timbre mid-play does not click.
 
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     ArpPattern,
     DroneMode,
@@ -34,7 +35,7 @@ const DRONE_PLUCK_DECAY_SECONDS: f32 = 2.2;
 // кроме `notes` (обновляется только в `adopt`).
 // ------------------------------------------------------------------
 pub(super) struct DroneSynth {
-    sample_rate:      f32,
+    sample_rate:      SampleRate,
     // Параметры (снимок DroneState, по одному полю чтобы не лочить в колбэке).
     notes:            Vec<u8>, // отсортированы по высоте (инвариант DroneState)
     gain:             f32,
@@ -59,13 +60,13 @@ pub(super) struct DroneSynth {
 }
 
 impl DroneSynth {
-    pub(super) fn new(sample_rate: f32) -> Self {
+    pub(super) fn new(sample_rate: SampleRate) -> Self {
         let mut synth = Self {
             sample_rate,
             notes: Vec::new(),
             gain: 0.0,
             mode: DroneMode::Sustained,
-            samples_per_step: sample_rate, // = 60 bpm до первого adopt
+            samples_per_step: sample_rate.hz(), // = 60 bpm до первого adopt
             pulse_duty: 0.5,
             arp_gate: 0.6,
             arp_pattern: ArpPattern::Up,
@@ -79,9 +80,9 @@ impl DroneSynth {
             clock: 0.0,
             lfo_phase: 0.0,
             // Экспоненциальное сглаживание с постоянной времени DRONE_RAMP_SECONDS.
-            ramp_k: (1.0 / (DRONE_RAMP_SECONDS * sample_rate)).clamp(0.0, 1.0),
+            ramp_k: (1.0 / (DRONE_RAMP_SECONDS * sample_rate.hz())).clamp(0.0, 1.0),
             // Экспонента затухания удара: amp *= e^(-1/(τ·sr)) каждый сэмпл.
-            pluck_decay: (-1.0 / (DRONE_PLUCK_DECAY_SECONDS * sample_rate)).exp(),
+            pluck_decay: (-1.0 / (DRONE_PLUCK_DECAY_SECONDS * sample_rate.hz())).exp(),
         };
         synth.adopt(&DroneState::default());
         synth
@@ -94,7 +95,7 @@ impl DroneSynth {
         self.notes.extend(state.notes.iter().map(|n| n.as_u8()));
         self.gain = state.gain;
         self.mode = state.mode;
-        self.samples_per_step = (self.sample_rate * 60.0 / state.bpm).max(1.0);
+        self.samples_per_step = (self.sample_rate.hz() * 60.0 / state.bpm).max(1.0);
         self.pulse_duty = state.pulse_duty;
         self.arp_gate = state.arp_gate;
         self.arp_pattern = state.arp_pattern;
@@ -158,7 +159,7 @@ impl DroneSynth {
         self.sounding_target(&mut target);
 
         // Глобальный LFO вибрато: считаем дёшево всегда, применяем лишь к смычку.
-        self.lfo_phase = (self.lfo_phase + DRONE_VIBRATO_HZ / self.sample_rate).fract();
+        self.lfo_phase = (self.lfo_phase + DRONE_VIBRATO_HZ / self.sample_rate.hz()).fract();
         let pitch_mod = if matches!(self.timbre, Timbre::Violin) {
             1.0 + DRONE_VIBRATO_DEPTH * (std::f32::consts::TAU * self.lfo_phase).sin()
         } else {
@@ -198,7 +199,7 @@ impl DroneSynth {
             if level > 1e-4 {
                 let ph = self.phase[m];
                 mix += level * timbre_voice(self.timbre, ph, self.brightness) * timbre_norm;
-                let next = ph + (self.freq[m] * pitch_mod) / self.sample_rate;
+                let next = ph + (self.freq[m] * pitch_mod) / self.sample_rate.hz();
                 self.phase[m] = next.fract();
             }
 

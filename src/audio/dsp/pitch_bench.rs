@@ -49,6 +49,7 @@ use std::path::{
 
 use crate::audio::dsp::resonator::ResonatorAnalyzer;
 use crate::audio::dsp::rtswipe::RtSwipe;
+use crate::audio::sample_rate::SampleRate;
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::Hz;
 
@@ -325,14 +326,14 @@ fn load_annotation(path: &Path) -> Annotation {
 ///   flatters *them*.
 fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
     let mut reader = hound::WavReader::open(audio).unwrap();
-    let sample_rate = reader.spec().sample_rate as f32;
+    let sample_rate = SampleRate(reader.spec().sample_rate);
     let samples: Vec<f32> = reader
         .samples::<i16>()
         .map(|s| s.unwrap() as f32 / 32768.0)
         .collect();
 
     let mut analyzer = ResonatorAnalyzer::new(sample_rate);
-    let hop = (sample_rate * BANK_HOP_SECONDS) as usize;
+    let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
     let mut tallies = vec![Tally::default(); scorings.len()];
 
     let mut fed = 0usize;
@@ -342,7 +343,7 @@ fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> V
         // The frame reflects the bank's state *after* `fed` samples, so that is its
         // timestamp. What the *truth* was at that moment depends on the lag — see the
         // function's docs; the bank is driven once and every lag reads off the same frame.
-        let seconds = fed as f32 / sample_rate;
+        let seconds = fed as f32 / sample_rate.hz();
         let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
@@ -380,21 +381,21 @@ fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> V
 /// follow-up if and only if the sweep says the frontend is worth it.
 fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
     let mut reader = hound::WavReader::open(audio).unwrap();
-    let sample_rate = reader.spec().sample_rate as f32;
+    let sample_rate = SampleRate(reader.spec().sample_rate);
     let samples: Vec<f32> = reader
         .samples::<i16>()
         .map(|s| s.unwrap() as f32 / 32768.0)
         .collect();
 
     let mut rtswipe = RtSwipe::new(sample_rate, CONCERT_PITCH_HZ);
-    let hop = (sample_rate * BANK_HOP_SECONDS) as usize;
+    let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
     let mut tallies = vec![Tally::default(); scorings.len()];
 
     let mut fed = 0usize;
     while fed + hop <= samples.len() {
         rtswipe.process_samples(&samples[fed..fed + hop]);
         fed += hop;
-        let seconds = fed as f32 / sample_rate;
+        let seconds = fed as f32 / sample_rate.hz();
         let estimate = rtswipe.frame().and_then(|frame| frame.argmax());
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {

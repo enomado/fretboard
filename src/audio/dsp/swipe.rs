@@ -568,6 +568,7 @@ mod tests {
         resonator_fundamental,
     };
     use crate::audio::dsp::resonator::ResonatorAnalyzer;
+    use crate::audio::sample_rate::SampleRate;
     use crate::core_types::note::AccidentalStyle;
     use crate::core_types::pitch::Hz;
 
@@ -903,7 +904,7 @@ mod tests {
         ] {
             let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
             let mut reader = hound::WavReader::open(&path).unwrap();
-            let sample_rate = reader.spec().sample_rate as f32;
+            let sample_rate = SampleRate(reader.spec().sample_rate);
             let samples: Vec<f32> = reader
                 .samples::<i16>()
                 .map(|s| s.unwrap() as f32 / 32768.0)
@@ -912,7 +913,7 @@ mod tests {
             let mut analyzer = ResonatorAnalyzer::new(sample_rate);
             // Sample the decision at the bank's own ~16 ms publish cadence, which is the
             // rate `MelodyTracker` is contractually driven at.
-            let hop = (sample_rate * 0.016) as usize;
+            let hop = (sample_rate.hz() * 0.016) as usize;
 
             let (mut old_g3, mut old_g4, mut old_other, mut old_silent) = (0u32, 0u32, 0u32, 0u32);
             let (mut new_g3, mut new_g4, mut new_other) = (0u32, 0u32, 0u32);
@@ -1067,12 +1068,13 @@ mod sub_octave_in_time_probe {
         SPIRAL_BINS_PER_SEMITONE,
     };
     use crate::audio::dsp::resonator::ResonatorAnalyzer;
+    use crate::audio::sample_rate::SampleRate;
     use crate::core_types::note::AccidentalStyle;
 
-    fn tone(frequency_hz: f32, sample_rate: f32, len: usize, partials: &[f32]) -> Vec<f32> {
+    fn tone(frequency_hz: f32, sample_rate: SampleRate, len: usize, partials: &[f32]) -> Vec<f32> {
         (0..len)
             .map(|i| {
-                let t = i as f32 / sample_rate;
+                let t = i as f32 / sample_rate.hz();
                 partials
                     .iter()
                     .enumerate()
@@ -1085,7 +1087,7 @@ mod sub_octave_in_time_probe {
 
     #[test]
     fn does_f5_fall_into_f4_and_when() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let bps = SPIRAL_BINS_PER_SEMITONE as f32;
         let min_midi = NOTE_BUCKET_MIN_MIDI as f32;
         let bin_of = |midi: f32| ((midi - min_midi) * bps).round() as usize;
@@ -1095,8 +1097,8 @@ mod sub_octave_in_time_probe {
             ("pure F5 (flageolet-ish)", &[1.0f32][..]),
         ] {
             let mut analyzer = ResonatorAnalyzer::new(sr);
-            let samples = tone(698.46, sr, (sr * 0.5) as usize, partials); // F5 = MIDI 77
-            let hop = (sr * 0.016) as usize;
+            let samples = tone(698.46, sr, (sr.hz() * 0.5) as usize, partials); // F5 = MIDI 77
+            let hop = (sr.hz() * 0.016) as usize;
             let mut fed = 0usize;
 
             println!("\n=== {label} — does F4 overtake F5, and when? ===");
@@ -1110,7 +1112,7 @@ mod sub_octave_in_time_probe {
                 };
                 let f5 = frame.salience_at(bin_of(77.0));
                 let f4 = frame.salience_at(bin_of(65.0));
-                let t_ms = fed as f32 / sr * 1000.0;
+                let t_ms = fed as f32 / sr.hz() * 1000.0;
                 println!(
                     "  {t_ms:6.0}  {f5:8.4}  {f4:8.4}   {}",
                     if f5 > f4 { "F5" } else { "F4  <-- SUB-OCTAVE" }
@@ -1131,6 +1133,7 @@ mod low_register_probe {
         SPIRAL_BINS_PER_SEMITONE,
     };
     use crate::audio::dsp::resonator::ResonatorAnalyzer;
+    use crate::audio::sample_rate::SampleRate;
     use crate::core_types::note::AccidentalStyle;
 
     /// Find a frame where the low junk wins, then dissect the arithmetic behind it.
@@ -1143,14 +1146,14 @@ mod low_register_probe {
 
         let path = format!("{}/testdata/g_open_slow_strokes.wav", env!("CARGO_MANIFEST_DIR"));
         let mut reader = hound::WavReader::open(&path).unwrap();
-        let sample_rate = reader.spec().sample_rate as f32;
+        let sample_rate = SampleRate(reader.spec().sample_rate);
         let samples: Vec<f32> = reader
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / 32768.0)
             .collect();
 
         let mut analyzer = ResonatorAnalyzer::new(sample_rate);
-        let hop = (sample_rate * 0.016) as usize;
+        let hop = (sample_rate.hz() * 0.016) as usize;
         let mut fed = 0usize;
         let mut dissected = 0;
 
@@ -1164,7 +1167,7 @@ mod low_register_probe {
             // Skip the first second: the bank starts empty and needs to charge, so the
             // opening frames are junk for a reason that has nothing to do with scoring.
             // (The first cut of this probe caught only those and "disproved" itself.)
-            if fed as f32 / sample_rate < 1.0 {
+            if fed as f32 / sample_rate.hz() < 1.0 {
                 continue;
             }
             // Only interested in the plunges: a verdict far below the played G3.
@@ -1183,7 +1186,7 @@ mod low_register_probe {
 
             println!(
                 "\n=== frame at {:.2}s — verdict MIDI {midi:.2}, truth G3 (55) ===",
-                fed as f32 / sample_rate
+                fed as f32 / sample_rate.hz()
             );
             println!("  salience  winner {:.4}   G3 {:.4}", curve[winner], curve[g3]);
             // The suspicion: `salience` divides by the norm of the kernel's positive part

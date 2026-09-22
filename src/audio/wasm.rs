@@ -35,6 +35,7 @@ use web_time::{
     Instant,
 };
 
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     AnalysisSettings,
     AudioInputKind,
@@ -523,7 +524,7 @@ async fn run_capture(inner: Rc<Inner>, worker: web_sys::Worker, id: Option<Strin
 
     let ctx = web_sys::AudioContext::new().map_err(|e| format!("AudioContext failed: {}", err_text(&e)))?;
     let _ = ctx.resume(); // best-effort: leave any rejection to the no-audio symptom
-    let sample_rate = ctx.sample_rate();
+    let sample_rate = SampleRate::from_web_audio(ctx.sample_rate());
 
     let source = ctx
         .create_media_stream_source(&stream)
@@ -573,7 +574,7 @@ async fn run_capture(inner: Rc<Inner>, worker: web_sys::Worker, id: Option<Strin
     );
     post_msg(&worker, &ToWorker::Gain(inner.input_gain.get()));
 
-    inner.sample_rate.set(sample_rate as u32);
+    inner.sample_rate.set(sample_rate.0);
     inner.latest.borrow_mut().status = Some(AudioStatus::Listening);
     *inner.capture.borrow_mut() = Some(Capture {
         ctx,

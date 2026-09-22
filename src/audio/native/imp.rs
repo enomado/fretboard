@@ -133,6 +133,7 @@ use crate::audio::dsp::analysis_math::{
     NOTE_BUCKET_MAX_MIDI,
     NOTE_BUCKET_MIN_MIDI,
 };
+use crate::audio::sample_rate::SampleRate;
 
 const CPAL_INPUT_ID_PREFIX: &str = "cpal::";
 #[cfg(target_os = "windows")]
@@ -140,7 +141,7 @@ const CPAL_DEFAULT_OUTPUT_LOOPBACK_ID: &str = "cpal-loopback::@DEFAULT_OUTPUT@";
 const PULSE_INPUT_ID_PREFIX: &str = "pulse::";
 const PULSE_DEFAULT_SOURCE_ID: &str = "pulse::@DEFAULT_SOURCE@";
 const PULSE_DEFAULT_MONITOR_ID: &str = "pulse::@DEFAULT_MONITOR@";
-const PULSE_CAPTURE_RATE: u32 = 48_000;
+const PULSE_CAPTURE_RATE: SampleRate = SampleRate(48_000);
 const LOW_LATENCY_TARGET_FRAMES: u32 = 256;
 
 // Analysis tuning constants (window/waterfall/interval) live in `audio::core`.
@@ -672,7 +673,7 @@ impl AudioContext {
         let output_rate = 48_000_u32.clamp(output_config.min_sample_rate(), output_config.max_sample_rate());
         let mut config = output_config.with_sample_rate(output_rate).config();
         config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
-        let sample_rate = config.sample_rate as f32;
+        let sample_rate = SampleRate(config.sample_rate);
         let channels = usize::from(config.channels);
 
         let drone = self.drone.clone();
@@ -731,7 +732,7 @@ impl AudioContext {
         let device = capture.device;
         let selected_id = capture.selected_id;
         let config = capture.config;
-        let sample_rate = config.sample_rate();
+        let sample_rate = SampleRate(config.sample_rate());
         let channels = usize::from(config.channels());
         let sample_format = config.sample_format();
         let input_buffer_size = preferred_low_latency_buffer(config.buffer_size());
@@ -819,7 +820,7 @@ impl AudioContext {
 
     // Кольцевой буфер для монитора-вывода. Создаём только если monitor on.
     // Держим запас небольшим, чтобы монитор не копил лишнюю задержку.
-    fn monitor_ring(&self, sample_rate: u32) -> (Option<SampleProducer>, Option<SampleConsumer>) {
+    fn monitor_ring(&self, sample_rate: SampleRate) -> (Option<SampleProducer>, Option<SampleConsumer>) {
         if self.monitor_enabled.load(Ordering::Relaxed) {
             let (prod, cons) = HeapRb::<f32>::new(low_latency_monitor_ring_len(sample_rate)).split();
             (Some(prod), Some(cons))
@@ -830,26 +831,26 @@ impl AudioContext {
 
     // Ошибку запуска монитора не считаем фатальной: запись и анализ
     // должны продолжать работать без playback monitoring.
+    //
+    // `None` = монитор не поднят (выключен или не собрался), и частоты у него нет.
     fn start_monitor_output(
         &self,
-        sample_rate: u32,
+        sample_rate: SampleRate,
         monitor_cons: Option<SampleConsumer>,
-    ) -> (Option<cpal::Stream>, u32) {
-        match monitor_cons {
-            Some(cons) => {
-                match build_monitor_output(sample_rate, cons, self.monitor_gain.clone()) {
-                    Ok((stream, rate)) => (Some(stream), rate),
-                    Err(_) => (None, 0),
-                }
-            }
-            None => (None, 0),
-        }
+    ) -> (Option<cpal::Stream>, Option<SampleRate>) {
+        monitor_cons
+            .and_then(|cons| build_monitor_output(sample_rate, cons, self.monitor_gain.clone()).ok())
+            .unzip()
     }
 
-    fn start_analysis_worker(&self, sample_rate: u32, analysis_cons: SampleConsumer) -> AnalysisWorker {
+    fn start_analysis_worker(
+        &self,
+        sample_rate: SampleRate,
+        analysis_cons: SampleConsumer,
+    ) -> AnalysisWorker {
         start_worker(
             analysis_cons,
-            WorkerPipeline::Analysis(AnalysisPipeline::new(sample_rate as f32)),
+            WorkerPipeline::Analysis(AnalysisPipeline::new(sample_rate)),
             self.shared.clone(),
             self.settings.clone(),
             self.input_gain.clone(),
@@ -857,11 +858,15 @@ impl AudioContext {
         )
     }
 
-    fn start_resonator_worker(&self, sample_rate: u32, resonator_cons: SampleConsumer) -> AnalysisWorker {
+    fn start_resonator_worker(
+        &self,
+        sample_rate: SampleRate,
+        resonator_cons: SampleConsumer,
+    ) -> AnalysisWorker {
         start_worker(
             resonator_cons,
             WorkerPipeline::Resonator {
-                pipeline: ResonatorPipeline::new(sample_rate as f32),
+                pipeline: ResonatorPipeline::new(sample_rate),
                 wanted:   self.resonator_wanted.clone(),
             },
             self.shared.clone(),
@@ -874,14 +879,29 @@ impl AudioContext {
     /// Общий хвост всех трёх путей захвата ⇒ единственная точка, где виден факт
     /// «вход поднялся, и вот на чём». Без этой строки в логе «звука нет» неотличимо
     /// от «звук идёт, но тишина в микрофоне» — а это разные баги.
-    fn finish_capture_start(&self, sample_rate: u32, output_rate: u32, selected_id: &str) {
+    fn finish_capture_start(
+        &self,
+        sample_rate: SampleRate,
+        output_rate: Option<SampleRate>,
+        selected_id: &str,
+    ) {
         audio_alog(&format!(
-            "capture started: id={selected_id} rate={sample_rate} monitor_out={output_rate}"
+            "capture started: id={selected_id} rate={} monitor_out={}",
+            sample_rate.0,
+            output_rate.map_or(0, |rate| rate.0)
         ));
-        self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
-        self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
+        self.store_capture_rates(sample_rate, output_rate);
         self.reset_shared_state();
         *self.selected_input_id.lock().unwrap() = Some(selected_id.to_owned());
+    }
+
+    /// Опубликовать частоты поднятого capture для UI. Атомик держит голый `u32`, и
+    /// «монитора нет» кодируется в нём нулём — это кодировка канала, а не частота:
+    /// `AudioEngine::monitor_output_sample_rate` раскодирует 0 обратно в `None`.
+    fn store_capture_rates(&self, sample_rate: SampleRate, output_rate: Option<SampleRate>) {
+        self.input_sample_rate.store(sample_rate.0, Ordering::Relaxed);
+        self.monitor_output_rate
+            .store(output_rate.map_or(0, |rate| rate.0), Ordering::Relaxed);
     }
 
     /// Поднять capture, играющий дубль с диска вместо устройства.
@@ -925,8 +945,7 @@ impl AudioContext {
         // Чистим состояние ДО первого сэмпла дубля: иначе линия дубля начнётся
         // с хвоста того, что микрофон слышал секунду назад, и первые кадры
         // реплея были бы про другой звук.
-        self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
-        self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
+        self.store_capture_rates(sample_rate, output_rate);
         self.reset_shared_state();
 
         let selected_id = self.selected_input_id.lock().unwrap().clone().unwrap_or_default();

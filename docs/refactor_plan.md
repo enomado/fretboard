@@ -25,7 +25,7 @@
 | Ф4 | Распил `audio/native/imp.rs` по швам | ✅ «refactor(audio): распил native/imp.rs — drone, workers, capture, output» (⚠ `imp.rs` = 1038, не < 1000 — см. раздел фазы) |
 | Ф5 | Мелочи: `total_cmp`, мёртвая `egui` в workspace | ✅ «chore: total_cmp в ранжировании гамм, мёртвая egui из workspace» |
 | Ф6а | `Hz` / `Midi` + единственная конверсия | ✅ «refactor(types): Hz и Midi — одна конверсия частота↔высота» (см. «Итог» фазы) |
-| Ф6б | `SampleRate` | ⬜ |
+| Ф6б | `SampleRate` | ✅ «refactor(audio): SampleRate — частота дискретизации отдельным типом» (см. «Итог» фазы) |
 | Ф6в | Целые MIDI-ноты и единый `BankRange` | ⬜ |
 | Ф7 | Снять 22 `pub use` из `audio/mod.rs` | ⬜ |
 
@@ -60,8 +60,11 @@ cargo test --release --lib --bins --tests                    # счётчик т
 **Дельта детекторов**: до фазы сохранить нужный отчёт `code_smell` в scratchpad, после —
 сравнить. Приёмка по дельте, а не по «стало меньше».
 
-**Форматирование**: `rustfmt <изменённые файлы>`, без `lib.rs`/`mod.rs`, если в них
-менялось только объявление модуля (иначе rustfmt пройдёт по детям).
+**Форматирование**: `rustfmt --edition 2024 <изменённые файлы>`, без `lib.rs`/`mod.rs`,
+если в них менялось только объявление модуля (иначе rustfmt пройдёт по детям). ⚠ Без
+`--edition 2024` голый `rustfmt` парсит файл как 2015, падает на let-chains, и `--check`
+**молчит про диффы** — выглядит как «всё отформатировано» (поймано в Ф6б).
+`native/imp.rs` — корень подмодулей `imp/*.rs`: rustfmt по нему проходит и по ним.
 
 ---
 
@@ -322,6 +325,32 @@ doc-шапки модулей, путь одной doc-ссылки и два с
 **DoD.** `code_smell prim`: пары `sample_rate: f32` / `sample_rate: u32` исчезли из
 NEWTYPE CANDIDATES; остаток (если есть) перечислен в коммите с причиной.
 
+**Итог (2026-09-22).** `prim`: `sample_rate: f32 ×21` и `sample_rate: u32 ×16` → 0;
+`rg 'sample_rate:\s*(f32|u32)|sample_rate as ' src` → 0. Тесты: lib 189 → **191** (+2 в
+`sample_rate.rs`). Решения по ходу:
+- **Методы — все три, по сайтам.** `hz()` — DSP-формулы; `duration_of(n)` — три темпирующих
+  `thread::sleep` (`core.rs` Rig, `output.rs`, `replay.rs`); `samples_in(d)` — кольца
+  (анализ 0.5 с, монитор 30 мс, рекордер 4 с), тест-нота, чанки реплея/Rig. `samples_in`
+  считает **в целых** (нс × sr / 1e9): через `f32` пол врёт на сэмпл (48 кГц × 9 мс =
+  431.99997 → 431 вместо 432; тест держит свидетеля). Константы стали `Duration`:
+  `RECORDER_RING` (было `RECORDER_RING_SECONDS: u32`), `REPLAY_CHUNK` (было `f32` секунд).
+  На всех реальных сайтах результат тот же, что был.
+- **Граница `resonators`**: `build_resonator_bank` раскрывает `.hz()` один раз — крейт
+  знает частоту только как `f32`. Граница cpal: `build_monitor_output` принимает и отдаёт
+  `SampleRate`, `.0` — внутри. Граница веба: `SampleRate::from_web_audio(f32)` с `assert!`
+  на целое положительное (под `cfg(wasm32)`, иначе мёртвый код на хосте).
+- **Монитор без частоты — `Option<SampleRate>`, а не 0.** `start_monitor_output` отдавал
+  `(None, 0)`; теперь `(Option<Stream>, Option<SampleRate>)` через `unzip`. Ноль остался
+  только кодировкой в `AtomicU32` — в одном месте, `AudioContext::store_capture_rates`.
+- **Worker-протокол**: `ToWorker::Init { sample_rate }` был `f32`, стал `SampleRate`
+  (`serde(transparent)` ⇒ `u32` в postcard). Формат провода поменялся с f32 на u32 —
+  это нормально: обе стороны из одной wasm-сборки. Персист (`AnalysisSettings`, RON) не
+  тронут, частоты дискретизации в нём нет ⇒ тест совместимости не нужен.
+- **`prim` после**: новые строки — «смешанные» сигнатуры (`cmndf`, `spectrum_bars`,
+  `fill_column`, `analyze_window`, … — рядом с `SampleRate` голые буферы `&[f32]`), как и
+  в Ф6а; и два граничных конструктора самого типа (`duration_of(n: usize)`,
+  `from_web_audio(hz: f32)`) — это их работа.
+
 ### Ф6в — целые MIDI-ноты и единый `BankRange`
 
 - Целая нота везде — `PNote` (он уже есть и проверяет диапазон в `PNote::new`):
@@ -383,6 +412,13 @@ src`; в памяти от 09-03 стояло 27 — пересчитать на
   Док-комментарии в `audio/types.rs:25-43` описывают их как вход для панелей. Либо снести
   поля (и копирование в воркер-протоколе), либо найти потребителя — в Ф6а не трогали,
   поэтому они и остались `(f32, f32)`, а не `(Midi, f32)`.
+- **`current_input_sample_rate()` отдаёт `u32`, где 0 = «capture не поднят»** (найдено в
+  Ф6б, 2026-09-22): `audio/native/imp.rs` (`AudioEngine::current_input_sample_rate`, атомик
+  `input_sample_rate` стартует с 0) и `audio/wasm.rs` (`Cell<u32>` с 0). Соседний
+  `monitor_output_sample_rate()` тот же ноль уже раскодирует в `Option`. Честная форма —
+  `Option<SampleRate>`, но потребитель — строка UI `app/controls.rs:330` («Input rate: {} Hz»,
+  сейчас печатает «0 Hz» до старта), а что показывать вместо нуля — решение по UI, не
+  механика фазы. Геттеры оставлены на примитивах как граница с UI.
 - **`try_lock` в колбэке дрона** (`imp.rs:704`, `build_drone_stream`) глотал и `WouldBlock`, и
   `Poisoned` одним `if let Ok`. Ф1 развела их: `WouldBlock` — держим прошлый снимок, как
   задумано; `Poisoned` — паника, как у всех `lock()`.

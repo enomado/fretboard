@@ -13,11 +13,12 @@ use super::analysis_math::{
     smooth_bars,
     spectrum_bucket_index,
 };
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::AnalysisSettings;
 
 pub(crate) fn spectrum_bars_for_window(
     window: &[f32],
-    sample_rate: f32,
+    sample_rate: SampleRate,
     settings: &AnalysisSettings,
     planner: &mut FftPlanner<f32>,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -35,7 +36,7 @@ fn apply_hann_window(input: &[f32]) -> Vec<f32> {
 
 fn spectrum_bars(
     window: &[f32],
-    sample_rate: f32,
+    sample_rate: SampleRate,
     settings: &AnalysisSettings,
     planner: &mut FftPlanner<f32>,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
@@ -49,7 +50,7 @@ fn spectrum_bars(
 
     let magnitudes: Vec<f32> = input.iter().take(input.len() / 2).map(|v| v.norm_sqr()).collect();
 
-    let hz_per_bin = sample_rate / input.len() as f32;
+    let hz_per_bin = sample_rate.hz() / input.len() as f32;
     let mut bars: Vec<f32> = vec![0.0; SPECTRUM_BINS];
     let mut note_bars: Vec<f32> = vec![0.0; NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI + 1];
     let mut spiral_bars: Vec<f32> = vec![0.0; SPIRAL_BIN_COUNT];

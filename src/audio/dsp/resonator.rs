@@ -16,6 +16,7 @@ use super::swipe::{
     SalienceFrame,
     SwipeKernel,
 };
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::AnalysisSettings;
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::{
@@ -100,7 +101,7 @@ pub(crate) struct ResonatorSnapshot {
 #[derive(Debug)]
 pub(crate) struct ResonatorAnalyzer {
     settings:    ResonatorViewSettings,
-    sample_rate: f32,
+    sample_rate: SampleRate,
     bank:        OnePoleBank,
 
     // Instantaneous-frequency tracking state, one slot per bank bin.
@@ -159,7 +160,7 @@ impl From<&AnalysisSettings> for ResonatorViewSettings {
 }
 
 impl ResonatorAnalyzer {
-    pub(crate) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(sample_rate: SampleRate) -> Self {
         let settings = ResonatorViewSettings::default();
         let settings_bins = settings.bins_per_semitone;
         let bank = build_resonator_bank(sample_rate, &settings);
@@ -235,7 +236,7 @@ impl ResonatorAnalyzer {
             PI,
             TAU,
         };
-        let dt = dn as f32 / self.sample_rate;
+        let dt = dn as f32 / self.sample_rate.hz();
         let two_pi_dt = TAU * dt;
         // Disjoint-field borrow: `prev`/`det` mutate the tracking vecs while
         // `self.bank.phase(i)` reads a different field — `i` is still needed to
@@ -277,7 +278,9 @@ impl ResonatorAnalyzer {
     }
 }
 
-fn build_resonator_bank(sample_rate: f32, settings: &ResonatorViewSettings) -> OnePoleBank {
+fn build_resonator_bank(sample_rate: SampleRate, settings: &ResonatorViewSettings) -> OnePoleBank {
+    // Граница с крейтом `resonators`: он знает частоту дискретизации только как `f32`.
+    let sample_rate = sample_rate.hz();
     let bin_count = (settings.max_midi - settings.min_midi) * settings.bins_per_semitone + 1;
     let configs: Vec<ResonatorConfig> = (0..bin_count)
         .map(|i| {
@@ -429,11 +432,11 @@ mod tests {
     /// of habit.
     #[test]
     fn bank_latency_probe() {
-        fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+        fn violin_tone(frequency_hz: f32, sample_rate: SampleRate, len: usize) -> Vec<f32> {
             let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
             (0..len)
                 .map(|i| {
-                    let t = i as f32 / sample_rate;
+                    let t = i as f32 / sample_rate.hz();
                     partials
                         .iter()
                         .enumerate()
@@ -445,8 +448,8 @@ mod tests {
         }
 
         fn probe(from_hz: f32, to_hz: f32) -> f32 {
-            let sr = 48_000.0f32;
-            let hold = (sr * 0.6) as usize;
+            let sr = SampleRate(48_000);
+            let hold = (sr.hz() * 0.6) as usize;
             let mut an = ResonatorAnalyzer::new(sr);
             let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0;
 
@@ -464,7 +467,7 @@ mod tests {
                 if let Some((midi, _strength)) = snap.fundamental
                     && (midi - target_midi).abs() < 0.5
                 {
-                    return fed as f32 / sr * 1000.0;
+                    return fed as f32 / sr.hz() * 1000.0;
                 }
             }
             f32::INFINITY
@@ -527,12 +530,12 @@ mod tests {
     /// nearest bin centre; reassignment should beat that comfortably.
     #[test]
     fn reassignment_lands_between_bins() {
-        let sr = 44100.0;
+        let sr = SampleRate(44_100);
         let mut an = ResonatorAnalyzer::new(sr);
         let target_midi = 69.1; // between bank bins at 69.0 and 69.2
         let f = Midi(target_midi).to_hz(Hz::A4_STANDARD).0;
-        let sig: Vec<f32> = (0..sr as usize)
-            .map(|i| (TAU * f * i as f32 / sr).sin())
+        let sig: Vec<f32> = (0..sr.0 as usize)
+            .map(|i| (TAU * f * i as f32 / sr.hz()).sin())
             .collect();
         an.process_samples(&sig, true);
 
@@ -548,11 +551,11 @@ mod tests {
     /// for the bin nearest the tone (sharp → positive Hz).
     #[test]
     fn detuning_recovers_sharp_offset() {
-        let sr = 44100.0;
+        let sr = SampleRate(44_100);
         let mut an = ResonatorAnalyzer::new(sr);
         let f = 440.0 * 2.0_f32.powf(0.1 / 12.0); // +0.1 semitone, sharp
-        let sig: Vec<f32> = (0..sr as usize)
-            .map(|i| (TAU * f * i as f32 / sr).sin())
+        let sig: Vec<f32> = (0..sr.0 as usize)
+            .map(|i| (TAU * f * i as f32 / sr.hz()).sin())
             .collect();
         an.process_samples(&sig, true);
 
@@ -573,13 +576,13 @@ mod tests {
     /// `TunerReading::fast_pitch`.
     #[test]
     fn fundamental_on_harmonic_tone_resolves_to_root() {
-        let sr = 44100.0;
+        let sr = SampleRate(44_100);
         let mut an = ResonatorAnalyzer::new(sr);
         let f0 = 440.0; // A4 = MIDI 69
         // Fundamental + 2nd + 3rd + 4th partials, fundamental strongest.
-        let sig: Vec<f32> = (0..sr as usize)
+        let sig: Vec<f32> = (0..sr.0 as usize)
             .map(|i| {
-                let t = i as f32 / sr;
+                let t = i as f32 / sr.hz();
                 (TAU * f0 * t).sin()
                     + 0.6 * (TAU * 2.0 * f0 * t).sin()
                     + 0.4 * (TAU * 3.0 * f0 * t).sin()
@@ -609,7 +612,7 @@ mod tests {
         let mut noisy = ResonatorAnalyzer::new(sr);
         // Deterministic pseudo-noise — no rand dependency, and a fixed sequence keeps the
         // test reproducible.
-        let noise: Vec<f32> = (0..sr as usize)
+        let noise: Vec<f32> = (0..sr.0 as usize)
             .map(|i| ((i as f32 * 12.9898).sin() * 43758.547).fract() * 2.0 - 1.0)
             .collect();
         noisy.process_samples(&noise, true);
@@ -627,7 +630,7 @@ mod tests {
     /// Empty / silent input must not panic and yields an all-zero spiral.
     #[test]
     fn silence_is_quiet() {
-        let sr = 44100.0;
+        let sr = SampleRate(44_100);
         let mut an = ResonatorAnalyzer::new(sr);
         an.process_samples(&vec![0.0; 4096], true);
         let snap = an.snapshot(true, AccidentalStyle::Sharps);
@@ -639,10 +642,10 @@ mod tests {
     /// output grid. Both must light up A4.
     #[test]
     fn fallback_path_uses_bank_resolution() {
-        let sr = 44100.0;
+        let sr = SampleRate(44_100);
         let mut an = ResonatorAnalyzer::new(sr);
-        let sig: Vec<f32> = (0..sr as usize)
-            .map(|i| (TAU * 440.0 * i as f32 / sr).sin())
+        let sig: Vec<f32> = (0..sr.0 as usize)
+            .map(|i| (TAU * 440.0 * i as f32 / sr.hz()).sin())
             .collect();
         an.process_samples(&sig, true);
 

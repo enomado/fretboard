@@ -37,6 +37,7 @@ use crate::audio::core::{
     ResonatorPipeline,
     SharedState,
 };
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::AnalysisSettings;
 
 /// Сон запаркованного резонаторного воркера между сливами кольца.
@@ -150,6 +151,6 @@ pub(super) fn start_worker(
 
 // Кольцевой буфер для анализа. Размер — 0.5с при данном rate,
 // с большим запасом на подёргивания планировщика.
-pub(super) fn analysis_ring(sample_rate: u32) -> (SampleProducer, SampleConsumer) {
-    HeapRb::<f32>::new((sample_rate as usize) / 2).split()
+pub(super) fn analysis_ring(sample_rate: SampleRate) -> (SampleProducer, SampleConsumer) {
+    HeapRb::<f32>::new(sample_rate.samples_in(Duration::from_millis(500))).split()
 }

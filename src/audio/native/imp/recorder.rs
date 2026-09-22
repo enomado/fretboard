@@ -41,6 +41,7 @@ use std::sync::{
     Mutex,
 };
 use std::thread;
+use std::time::Duration;
 
 use hound::{
     SampleFormat,
@@ -61,19 +62,20 @@ use super::{
     SampleConsumer,
     SampleProducer,
 };
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     RecorderStatus,
     TakeReport,
 };
 
-/// Depth of the recorder's ring, in seconds of audio.
+/// Depth of the recorder's ring, in audio time.
 ///
 /// Deliberately far deeper than the analysis rings (0.5 s). Those can afford to
 /// overflow — the cost is a stale frame. This one cannot: an overflow here is a
 /// hole in a take. The depth buys the writer room to ride out a filesystem hiccup
 /// without the callback ever having to drop, which is the difference between a
 /// usable take and a wasted one.
-const RECORDER_RING_SECONDS: u32 = 4;
+const RECORDER_RING: Duration = Duration::from_secs(4);
 
 /// How many samples the writer moves per wake-up. Matches the analysis workers'
 /// drain quantum, for the same reason: bounded work per pass, no unbounded stall.
@@ -82,8 +84,8 @@ const RECORDER_BATCH: usize = 8192;
 /// s16le, mono — the corpus format (`testdata/README.md`).
 const RECORDER_BITS: u16 = 16;
 
-pub(super) fn recorder_ring(sample_rate: u32) -> (SampleProducer, SampleConsumer) {
-    HeapRb::<f32>::new((sample_rate * RECORDER_RING_SECONDS) as usize).split()
+pub(super) fn recorder_ring(sample_rate: SampleRate) -> (SampleProducer, SampleConsumer) {
+    HeapRb::<f32>::new(sample_rate.samples_in(RECORDER_RING)).split()
 }
 
 /// The recorder's end of the input fan-out.
@@ -194,7 +196,7 @@ struct OpenTake {
 impl OpenTake {
     fn open(
         path: PathBuf,
-        sample_rate: u32,
+        sample_rate: SampleRate,
         dropped: &AtomicU64,
         cons: &mut SampleConsumer,
     ) -> Result<Self, String> {
@@ -203,10 +205,10 @@ impl OpenTake {
             std::fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
         }
         let spec = WavSpec {
-            channels: 1,
-            sample_rate,
+            channels:        1,
+            sample_rate:     sample_rate.0,
             bits_per_sample: RECORDER_BITS,
-            sample_format: SampleFormat::Int,
+            sample_format:   SampleFormat::Int,
         };
         let writer =
             WavWriter::create(&path, spec).map_err(|e| format!("Cannot write {}: {e}", path.display()))?;
@@ -256,7 +258,12 @@ impl OpenTake {
     ///
     /// This mirrors the dry-drain in [`Self::open`]: both ends of a take are cut
     /// at the click, not at a scheduling accident.
-    fn close(mut self, cons: &mut SampleConsumer, sample_rate: u32, dropped: &AtomicU64) -> RecorderStatus {
+    fn close(
+        mut self,
+        cons: &mut SampleConsumer,
+        sample_rate: SampleRate,
+        dropped: &AtomicU64,
+    ) -> RecorderStatus {
         let pending = cons.occupied_len();
         let tail: Vec<f32> = (0..pending).filter_map(|_| cons.try_pop()).collect();
         if let Err(message) = self.write(&tail) {
@@ -300,7 +307,7 @@ fn to_i16(sample: f32) -> i16 {
 }
 
 pub(super) fn start_recorder_worker(
-    sample_rate: u32,
+    sample_rate: SampleRate,
     mut cons: SampleConsumer,
     handle: RecorderHandle,
 ) -> AnalysisWorker {
@@ -336,7 +343,7 @@ pub(super) fn start_recorder_worker(
                 Ok(()) => {
                     let status = RecorderStatus::Recording {
                         path:    take.path.clone(),
-                        seconds: take.samples as f32 / sample_rate as f32,
+                        seconds: take.samples as f32 / sample_rate.hz(),
                         dropped: take.dropped_so_far(&handle.dropped),
                     };
                     handle.publish(status);
@@ -373,7 +380,7 @@ pub(super) fn start_recorder_worker(
 fn sync_intent(
     handle: &RecorderHandle,
     open: &mut Option<OpenTake>,
-    sample_rate: u32,
+    sample_rate: SampleRate,
     cons: &mut SampleConsumer,
 ) {
     let wanted = handle.shared.lock().unwrap().wanted.clone();
@@ -453,7 +460,7 @@ mod tests {
     /// every check except this one.
     #[test]
     fn a_take_holds_exactly_the_samples_that_went_in() {
-        let sample_rate = 48_000;
+        let sample_rate = SampleRate(48_000);
         let path = std::env::temp_dir().join("fretboard_recorder_take.wav");
         let _ = std::fs::remove_file(&path);
 
@@ -498,7 +505,7 @@ mod tests {
         assert_eq!(report.samples, played.len() as u64, "take is the wrong length");
 
         let mut reader = hound::WavReader::open(&path).unwrap();
-        assert_eq!(reader.spec().sample_rate, sample_rate);
+        assert_eq!(reader.spec().sample_rate, sample_rate.0);
         assert_eq!(reader.spec().channels, 1);
         assert_eq!(reader.spec().bits_per_sample, RECORDER_BITS);
 

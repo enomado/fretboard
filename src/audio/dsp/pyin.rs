@@ -49,6 +49,7 @@ use super::trellis::{
     PitchGrid,
     PitchTrellis,
 };
+use crate::audio::sample_rate::SampleRate;
 use crate::core_types::pitch::{
     Hz,
     Midi,
@@ -116,7 +117,7 @@ fn yin_pick(c: &Cmndf, threshold: f32) -> Option<usize> {
 /// integrating [`yin_pick`] over the Beta threshold prior. Candidates merge by the
 /// integer lag their picks land on (the same dip yields the same bottom lag), then
 /// each lag is parabola-refined to a sub-sample period.
-fn pyin_candidates(c: &Cmndf, prior: &ThresholdPrior, sample_rate: f32) -> (Vec<Candidate>, f32) {
+fn pyin_candidates(c: &Cmndf, prior: &ThresholdPrior, sample_rate: SampleRate) -> (Vec<Candidate>, f32) {
     // (lag, accumulated prior mass); few distinct lags, so a linear scan beats a map.
     let mut lag_prob: Vec<(usize, f32)> = Vec::new();
     let mut voiced = 0.0f32;
@@ -136,7 +137,7 @@ fn pyin_candidates(c: &Cmndf, prior: &ThresholdPrior, sample_rate: f32) -> (Vec<
             let refined = parabolic_tau(&c.d, tau);
             (refined > 0.0).then(|| {
                 Candidate {
-                    frequency_hz: sample_rate / refined,
+                    frequency_hz: sample_rate.hz() / refined,
                     probability:  p,
                 }
             })
@@ -220,7 +221,7 @@ impl PitchTracker {
     /// were quietly confirming each other rather than voting — see that module's
     /// "why the bank leads and YIN only pins the octave". The tuner and fretboard,
     /// this tracker's other consumers, want a steady reading over a prompt one.
-    pub(crate) fn process(&mut self, window: &[f32], sample_rate: f32) -> Option<(f32, f32)> {
+    pub(crate) fn process(&mut self, window: &[f32], sample_rate: SampleRate) -> Option<(f32, f32)> {
         let c = cmndf(window, sample_rate)?;
         let (candidates, voiced) = pyin_candidates(&c, &self.prior, sample_rate);
         self.step(&candidates, voiced)
@@ -272,16 +273,16 @@ mod tests {
 
     use super::*;
 
-    fn tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+    fn tone(frequency_hz: f32, sample_rate: SampleRate, len: usize) -> Vec<f32> {
         (0..len)
-            .map(|i| (TAU * frequency_hz * i as f32 / sample_rate).sin())
+            .map(|i| (TAU * frequency_hz * i as f32 / sample_rate.hz()).sin())
             .collect()
     }
 
     /// Candidate extraction on a clean tone: the dominant hypothesis is the tone.
     #[test]
     fn candidates_find_the_tone() {
-        let sr = 44_100.0;
+        let sr = SampleRate(44_100);
         let prior = ThresholdPrior::new();
         let c = cmndf(&tone(440.0, sr, 6144), sr).unwrap();
         let (cands, voiced) = pyin_candidates(&c, &prior, sr);
@@ -384,7 +385,7 @@ mod tests {
     /// End-to-end on real windows: a clean tone decodes to itself.
     #[test]
     fn process_tracks_a_clean_tone() {
-        let sr = 44_100.0;
+        let sr = SampleRate(44_100);
         let mut t = PitchTracker::new();
         let win = tone(330.0, sr, 6144); // ~E4
         let mut last = None;
@@ -412,13 +413,14 @@ mod tests {
             "floor {LOWEST_TRACKED_FREQUENCY} Hz sits above the HMM's lowest state \
              ({lowest_state_hz:.2} Hz) — that note could never be tracked"
         );
-        for sr in [44_100.0f32, 48_000.0] {
-            let max_lag = (sr / LOWEST_TRACKED_FREQUENCY) as usize as f32;
-            let lowest_period = sr / lowest_state_hz;
+        for sr in [SampleRate(44_100), SampleRate(48_000)] {
+            let max_lag = (sr.hz() / LOWEST_TRACKED_FREQUENCY) as usize as f32;
+            let lowest_period = sr.hz() / lowest_state_hz;
             assert!(
                 max_lag > lowest_period + 1.0,
-                "@{sr} Hz: max_lag {max_lag} does not clear the lowest state's period \
-                 {lowest_period:.1} — its dip would be picked off a clipped edge"
+                "@{} Hz: max_lag {max_lag} does not clear the lowest state's period \
+                 {lowest_period:.1} — its dip would be picked off a clipped edge",
+                sr.0
             );
         }
 
@@ -444,11 +446,11 @@ mod tests {
 
     /// A bowed-string-ish tone: fundamental + harmonics, since a pure sine is
     /// unrealistically easy for YIN (no octave ambiguity at all).
-    fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize, phase0: f32) -> Vec<f32> {
+    fn violin_tone(frequency_hz: f32, sample_rate: SampleRate, len: usize, phase0: f32) -> Vec<f32> {
         let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
         (0..len)
             .map(|i| {
-                let t = phase0 + i as f32 / sample_rate;
+                let t = phase0 + i as f32 / sample_rate.hz();
                 partials
                     .iter()
                     .enumerate()
@@ -472,9 +474,9 @@ mod tests {
     }
 
     fn measure_latency_win(from_hz: f32, to_hz: f32, window_size: usize) -> f32 {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let hop = 1920usize; // ANALYSIS_INTERVAL = 40 ms @ 48 kHz
-        let hold = (sr * 0.6) as usize;
+        let hold = (sr.hz() * 0.6) as usize;
 
         // note1 for 0.6 s then note2 for 0.6 s, phase-continuous.
         let mut sig = violin_tone(from_hz, sr, hold, 0.0);
@@ -488,7 +490,7 @@ mod tests {
             if let Some((f, _)) = t.process(win, sr) {
                 let cents = 1200.0 * (f / to_hz).log2();
                 if cents.abs() < 50.0 {
-                    return (tick - change) as f32 / sr * 1000.0;
+                    return (tick - change) as f32 / sr.hz() * 1000.0;
                 }
             }
             tick += hop;
@@ -503,16 +505,16 @@ mod tests {
     /// ever-noisier sample count — a suspected source of spurious sub-bass dips.
     #[test]
     fn candidate_probe() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let win = violin_tone(440.0, sr, 6144, 0.0);
         let c = cmndf(&win, sr).unwrap();
         println!("\n=== cmndf search range, window 6144 @ 48 kHz ===");
         println!(
             "min_lag {} ({:.0} Hz) .. max_lag {} ({:.1} Hz)",
             c.min_lag,
-            sr / c.min_lag as f32,
+            sr.hz() / c.min_lag as f32,
             c.max_lag,
-            sr / c.max_lag as f32
+            sr.hz() / c.max_lag as f32
         );
         println!(
             "at max_lag the difference averages over only {} of {} samples",
@@ -540,7 +542,7 @@ mod tests {
     /// break? Reports the tracked error in cents per (note, window) pair.
     #[test]
     fn short_window_accuracy_probe() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let notes = [
             ("C2  65 Hz (cello low C)", 65.41f32),
             ("G2  98 Hz (cello G)    ", 98.0),
@@ -589,7 +591,7 @@ mod tests {
     /// and fretboard as well as the staff.
     #[test]
     fn ceiling_probe() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         println!("\n=== reported pitch vs true pitch, across the 1000 Hz ceiling ===");
         for (name, hz) in [
             ("A4  440 Hz         ", 440.0f32),
@@ -658,10 +660,10 @@ mod tests {
     /// Latency of classic YIN — first CMNDF dip below `threshold`, walked to its
     /// bottom — with no HMM and no smoothing. The pre-pYIN reference.
     fn measure_plain_yin_latency(from_hz: f32, to_hz: f32) -> f32 {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let window_size = 6144usize;
         let hop = 1920usize;
-        let hold = (sr * 0.6) as usize;
+        let hold = (sr.hz() * 0.6) as usize;
         let mut sig = violin_tone(from_hz, sr, hold, 0.0);
         sig.extend(violin_tone(to_hz, sr, hold, 0.0));
         let change = hold;
@@ -673,12 +675,12 @@ mod tests {
             let mut f = 0.0;
             for tau in c.min_lag..c.max_lag {
                 if c.d[tau] < 0.15 {
-                    f = sr / c.dip_bottom(tau) as f32;
+                    f = sr.hz() / c.dip_bottom(tau) as f32;
                     break;
                 }
             }
             if f > 0.0 && (1200.0 * (f / to_hz).log2()).abs() < 50.0 {
-                return (tick - change) as f32 / sr * 1000.0;
+                return (tick - change) as f32 / sr.hz() * 1000.0;
             }
             tick += hop;
         }
@@ -696,7 +698,7 @@ mod tests {
     /// frames, and only those, for each candidate floor.
     #[test]
     fn floor_probe() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let win_len = 6144usize;
         let prior = ThresholdPrior::new();
 
@@ -708,10 +710,10 @@ mod tests {
             ("65.4 Hz  C2 (cello low C)", 65.4),
         ];
 
-        println!("\n=== cost per frame, window {win_len} @ {sr:.0} Hz ===");
+        println!("\n=== cost per frame, window {win_len} @ {} Hz ===", sr.0);
         println!("(cmndf's inner loop runs `window - tau` ops for each tau ≤ max_lag)");
         for (name, hz) in floors {
-            let max_lag = (sr / hz) as usize;
+            let max_lag = (sr.hz() / hz) as usize;
             let ops: u64 = (1..=max_lag.min(win_len - 1))
                 .map(|tau| (win_len - tau) as u64)
                 .sum();
@@ -765,7 +767,7 @@ mod tests {
                 let truncated = Cmndf {
                     d:       full.d.clone(),
                     min_lag: full.min_lag,
-                    max_lag: full.max_lag.min((sr / hz) as usize),
+                    max_lag: full.max_lag.min((sr.hz() / hz) as usize),
                 };
                 let (cands, voiced) = pyin_candidates(&truncated, &prior, sr);
                 let changed = match &previous {
@@ -820,7 +822,7 @@ mod tests {
     /// return.
     #[test]
     fn only_the_window_moves_the_tracker() {
-        let sr = 44_100.0;
+        let sr = SampleRate(44_100);
         let mut t = PitchTracker::new();
         let win = tone(440.0, sr, 6144);
         for _ in 0..8 {

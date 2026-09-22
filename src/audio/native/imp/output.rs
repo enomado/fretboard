@@ -28,6 +28,7 @@ use crate::audio::core::{
     AnalysisPipeline,
     SharedState,
 };
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::AnalysisSettings;
 use crate::core_types::pitch::{
     Midi,
@@ -38,10 +39,12 @@ const TEST_TONE_GAIN: f32 = 0.28;
 const TEST_TONE_DURATION: Duration = Duration::from_millis(1_600);
 
 pub(super) fn build_monitor_output(
-    input_rate: u32,
+    input_rate: SampleRate,
     mut cons: SampleConsumer,
     monitor_gain: Arc<AtomicU32>,
-) -> Result<(cpal::Stream, u32), String> {
+) -> Result<(cpal::Stream, SampleRate), String> {
+    // cpal меряет частоту голым `u32` — раскрываем на границе.
+    let input_rate = input_rate.0;
     let host = cpal::default_host();
     let device = host
         .default_output_device()
@@ -109,7 +112,7 @@ pub(super) fn build_monitor_output(
     stream
         .play()
         .map_err(|e| format!("Failed to start monitor output: {e}"))?;
-    Ok((stream, actual_rate))
+    Ok((stream, SampleRate(actual_rate)))
 }
 
 pub(super) fn play_test_note_thread(
@@ -131,12 +134,12 @@ pub(super) fn play_test_note_thread(
     let output_rate = 48_000_u32.clamp(output_config.min_sample_rate(), output_config.max_sample_rate());
     let mut config = output_config.with_sample_rate(output_rate).config();
     config.buffer_size = preferred_low_latency_buffer(output_config.buffer_size());
-    let sample_rate = config.sample_rate as f32;
+    let sample_rate = SampleRate(config.sample_rate);
     let channels = usize::from(config.channels);
     // Тест-нота звучит по текущему камертону, чтобы совпадать с анализом.
     let reference_hz = settings.lock().unwrap().concert_pitch_hz;
     let frequency = Midi::from(midi).to_hz(reference_hz).0;
-    let total_samples = (sample_rate * TEST_TONE_DURATION.as_secs_f32()) as usize;
+    let total_samples = sample_rate.samples_in(TEST_TONE_DURATION);
     let samples = Arc::new(test_tone_samples(frequency, sample_rate, total_samples));
     let playback_samples = samples.clone();
     let playback_index = Arc::new(AtomicU32::new(0));
@@ -165,7 +168,7 @@ pub(super) fn play_test_note_thread(
 
     let input_gain = Arc::new(AtomicU32::new(1.0f32.to_bits()));
     let mut pipeline = AnalysisPipeline::new(sample_rate);
-    let chunk_len = (sample_rate / 50.0).max(1.0) as usize;
+    let chunk_len = sample_rate.samples_in(Duration::from_millis(20)).max(1);
     for chunk in samples.chunks(chunk_len) {
         pipeline.push_samples(
             chunk.iter().copied(),
@@ -174,7 +177,7 @@ pub(super) fn play_test_note_thread(
             &input_gain,
             &input_level,
         );
-        thread::sleep(Duration::from_secs_f32(chunk.len() as f32 / sample_rate));
+        thread::sleep(sample_rate.duration_of(chunk.len()));
     }
 
     thread::sleep(Duration::from_millis(120));
@@ -182,12 +185,13 @@ pub(super) fn play_test_note_thread(
     Ok(())
 }
 
-fn test_tone_samples(frequency: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+fn test_tone_samples(frequency: f32, sample_rate: SampleRate, len: usize) -> Vec<f32> {
+    let sr = sample_rate.hz();
     (0..len)
         .map(|i| {
-            let t = i as f32 / sample_rate;
-            let attack = (i as f32 / (sample_rate * 0.025)).clamp(0.0, 1.0);
-            let release = ((len.saturating_sub(i) as f32) / (sample_rate * 0.08)).clamp(0.0, 1.0);
+            let t = i as f32 / sr;
+            let attack = (i as f32 / (sr * 0.025)).clamp(0.0, 1.0);
+            let release = ((len.saturating_sub(i) as f32) / (sr * 0.08)).clamp(0.0, 1.0);
             let envelope = attack.min(release);
             let phase = std::f32::consts::TAU * frequency * t;
             let sample = 0.55 * phase.sin() + 0.18 * (phase * 2.0).sin() + 0.07 * (phase * 3.0).sin();

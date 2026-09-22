@@ -1,3 +1,5 @@
+use crate::audio::sample_rate::SampleRate;
+
 /// Lowest fundamental the tracker will look for — a semitone below C1. Sets YIN's
 /// longest lag.
 ///
@@ -98,9 +100,9 @@ impl Cmndf {
 
 /// Compute the CMNDF for one analysis window. `None` when the window is too short
 /// for even a single lag of the tracked range.
-pub(crate) fn cmndf(window: &[f32], sample_rate: f32) -> Option<Cmndf> {
-    let min_lag = (sample_rate / HIGHEST_TRACKED_FREQUENCY).max(1.0) as usize;
-    let max_lag = (sample_rate / LOWEST_TRACKED_FREQUENCY) as usize;
+pub(crate) fn cmndf(window: &[f32], sample_rate: SampleRate) -> Option<Cmndf> {
+    let min_lag = (sample_rate.hz() / HIGHEST_TRACKED_FREQUENCY).max(1.0) as usize;
+    let max_lag = (sample_rate.hz() / LOWEST_TRACKED_FREQUENCY) as usize;
     let search_end = max_lag.min(window.len().saturating_sub(1));
     if min_lag >= search_end {
         return None;
@@ -140,11 +142,12 @@ pub(crate) fn cmndf(window: &[f32], sample_rate: f32) -> Option<Cmndf> {
 #[cfg(test)]
 mod tests {
     use super::cmndf;
+    use crate::audio::sample_rate::SampleRate;
 
-    fn sine_wave(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+    fn sine_wave(frequency_hz: f32, sample_rate: SampleRate, len: usize) -> Vec<f32> {
         (0..len)
             .map(|i| {
-                let phase = i as f32 * frequency_hz * std::f32::consts::TAU / sample_rate;
+                let phase = i as f32 * frequency_hz * std::f32::consts::TAU / sample_rate.hz();
                 phase.sin()
             })
             .collect()
@@ -154,11 +157,11 @@ mod tests {
     /// — YIN's period-selection rule and the substrate pYIN's candidate stage
     /// integrates over thresholds. (The *global* min sits on a later period
     /// multiple, which is exactly why one takes the first dip, not the deepest.)
-    fn first_dip_frequency(window: &[f32], sample_rate: f32, threshold: f32) -> f32 {
+    fn first_dip_frequency(window: &[f32], sample_rate: SampleRate, threshold: f32) -> f32 {
         let c = cmndf(window, sample_rate).unwrap();
         for tau in c.min_lag..c.max_lag {
             if c.d[tau] < threshold {
-                return sample_rate / c.dip_bottom(tau) as f32;
+                return sample_rate.hz() / c.dip_bottom(tau) as f32;
             }
         }
         panic!("no dip below {threshold}");
@@ -167,27 +170,27 @@ mod tests {
     #[test]
     fn cmndf_handles_flat_windows_without_invalid_indices() {
         let window = vec![1.0; 981];
-        let result = std::panic::catch_unwind(|| cmndf(&window, 44_100.0));
+        let result = std::panic::catch_unwind(|| cmndf(&window, SampleRate(44_100)));
         assert!(result.is_ok());
     }
 
     #[test]
     fn cmndf_dip_lands_on_c2_period() {
-        let sr = 44_100.0;
+        let sr = SampleRate(44_100);
         let expected = 65.40639;
         assert!((first_dip_frequency(&sine_wave(expected, sr, 6144), sr, 0.1) - expected).abs() < 1.0);
     }
 
     #[test]
     fn cmndf_dip_lands_on_c1_period() {
-        let sr = 44_100.0;
+        let sr = SampleRate(44_100);
         let expected = 32.7032;
         assert!((first_dip_frequency(&sine_wave(expected, sr, 8192), sr, 0.1) - expected).abs() < 1.0);
     }
 
     #[test]
     fn cmndf_dip_lands_on_c3_period() {
-        let sr = 44_100.0;
+        let sr = SampleRate(44_100);
         let expected = 130.81278;
         assert!((first_dip_frequency(&sine_wave(expected, sr, 6144), sr, 0.1) - expected).abs() < 1.0);
     }

@@ -560,6 +560,7 @@ mod beta_sweep {
     use super::*;
     use crate::audio::dsp::resonator::ResonatorAnalyzer;
     use crate::audio::dsp::rtswipe::RtSwipe;
+    use crate::audio::sample_rate::SampleRate;
     use crate::core_types::note::AccidentalStyle;
     use crate::core_types::pitch::Hz;
 
@@ -574,7 +575,7 @@ mod beta_sweep {
     fn decode_take(name: &str, beta: f32) -> Vec<Option<f32>> {
         let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
         let mut reader = hound::WavReader::open(&path).unwrap();
-        let sample_rate = reader.spec().sample_rate as f32;
+        let sample_rate = SampleRate(reader.spec().sample_rate);
         let samples: Vec<f32> = reader
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / 32768.0)
@@ -584,13 +585,13 @@ mod beta_sweep {
         let mut decoder = SalienceDecoder::with_beta(beta);
         // The bank's own ~16 ms publish cadence — the rate `MelodyTracker` is contractually
         // driven at, and what the decoder measures its `dt` against.
-        let hop = (sample_rate * 0.016) as usize;
+        let hop = (sample_rate.hz() * 0.016) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
             analyzer.process_samples(&samples[fed..fed + hop], true);
             fed += hop;
-            let now = fed as f64 / sample_rate as f64;
+            let now = fed as f64 / sample_rate.hz() as f64;
             // Skip the first second: the bank charges from empty, so the opening frames are
             // junk for a reason that has nothing to do with this decision. (The first cut of
             // the low-register probe caught only those and "disproved" itself.)
@@ -610,21 +611,21 @@ mod beta_sweep {
     fn argmax_take(name: &str) -> Vec<Option<f32>> {
         let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
         let mut reader = hound::WavReader::open(&path).unwrap();
-        let sample_rate = reader.spec().sample_rate as f32;
+        let sample_rate = SampleRate(reader.spec().sample_rate);
         let samples: Vec<f32> = reader
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / 32768.0)
             .collect();
 
         let mut analyzer = ResonatorAnalyzer::new(sample_rate);
-        let hop = (sample_rate * 0.016) as usize;
+        let hop = (sample_rate.hz() * 0.016) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
             analyzer.process_samples(&samples[fed..fed + hop], true);
             fed += hop;
             let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
-            if fed as f32 / sample_rate >= 1.0 {
+            if fed as f32 / sample_rate.hz() >= 1.0 {
                 verdicts.push(snapshot.fundamental.map(|(midi, _)| midi));
             }
         }
@@ -640,20 +641,20 @@ mod beta_sweep {
     fn rtswipe_take(name: &str) -> Vec<Option<f32>> {
         let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
         let mut reader = hound::WavReader::open(&path).unwrap();
-        let sample_rate = reader.spec().sample_rate as f32;
+        let sample_rate = SampleRate(reader.spec().sample_rate);
         let samples: Vec<f32> = reader
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / 32768.0)
             .collect();
 
         let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
-        let hop = (sample_rate * 0.016) as usize;
+        let hop = (sample_rate.hz() * 0.016) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
             rtswipe.process_samples(&samples[fed..fed + hop]);
             fed += hop;
-            if fed as f32 / sample_rate >= 1.0 {
+            if fed as f32 / sample_rate.hz() >= 1.0 {
                 verdicts.push(
                     rtswipe
                         .frame()
@@ -671,7 +672,7 @@ mod beta_sweep {
     fn rtswipe_decode_take(name: &str, beta: f32) -> Vec<Option<f32>> {
         let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
         let mut reader = hound::WavReader::open(&path).unwrap();
-        let sample_rate = reader.spec().sample_rate as f32;
+        let sample_rate = SampleRate(reader.spec().sample_rate);
         let samples: Vec<f32> = reader
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / 32768.0)
@@ -679,13 +680,13 @@ mod beta_sweep {
 
         let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         let mut decoder = SalienceDecoder::with_beta(beta);
-        let hop = (sample_rate * 0.016) as usize;
+        let hop = (sample_rate.hz() * 0.016) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
             rtswipe.process_samples(&samples[fed..fed + hop]);
             fed += hop;
-            let now = fed as f64 / sample_rate as f64;
+            let now = fed as f64 / sample_rate.hz() as f64;
             let decoded = rtswipe.frame().and_then(|frame| decoder.decode(&frame, now));
             if now >= 1.0 {
                 verdicts.push(decoded.map(|(midi, _)| midi));
@@ -771,20 +772,20 @@ mod beta_sweep {
     /// [`change_latency_ms`] on the RT-SWIPE frontend: ms from a note change until the decoder
     /// reports the new note, at `beta`.
     fn rtswipe_change_latency_ms(from_hz: f32, to_hz: f32, beta: f32) -> f32 {
-        let sample_rate = 48_000.0f32;
-        let hold = (sample_rate * 0.6) as usize;
+        let sample_rate = SampleRate(48_000);
+        let hold = (sample_rate.hz() * 0.6) as usize;
         let mut signal = violin_tone(from_hz, sample_rate, hold);
         signal.extend(violin_tone(to_hz, sample_rate, hold));
 
         let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0;
         let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         let mut decoder = SalienceDecoder::with_beta(beta);
-        let hop = (sample_rate * 0.016) as usize;
+        let hop = (sample_rate.hz() * 0.016) as usize;
         let mut fed = 0usize;
         while fed + hop <= signal.len() {
             rtswipe.process_samples(&signal[fed..fed + hop]);
             fed += hop;
-            let now = fed as f64 / sample_rate as f64;
+            let now = fed as f64 / sample_rate.hz() as f64;
             let decoded = rtswipe.frame().and_then(|frame| decoder.decode(&frame, now));
             if fed <= hold {
                 continue;
@@ -792,7 +793,7 @@ mod beta_sweep {
             if let Some((midi, _)) = decoded
                 && (midi - target_midi).abs() < 0.5
             {
-                return (fed - hold) as f32 / sample_rate * 1000.0;
+                return (fed - hold) as f32 / sample_rate.hz() * 1000.0;
             }
         }
         f32::INFINITY
@@ -1004,11 +1005,11 @@ mod beta_sweep {
 
     /// A bowed-string-ish tone: fundamental + partials, since a pure sine has no octave
     /// ambiguity at all and would flatter any scorer.
-    fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+    fn violin_tone(frequency_hz: f32, sample_rate: SampleRate, len: usize) -> Vec<f32> {
         let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
         (0..len)
             .map(|i| {
-                let t = i as f32 / sample_rate;
+                let t = i as f32 / sample_rate.hz();
                 partials
                     .iter()
                     .enumerate()
@@ -1025,20 +1026,20 @@ mod beta_sweep {
     /// that never moves scores beautifully on a take whose note never changes — which is
     /// three of the five takes above. Only this can tell "it is right" from "it is stuck".
     fn change_latency_ms(from_hz: f32, to_hz: f32, beta: f32) -> f32 {
-        let sample_rate = 48_000.0f32;
-        let hold = (sample_rate * 0.6) as usize;
+        let sample_rate = SampleRate(48_000);
+        let hold = (sample_rate.hz() * 0.6) as usize;
         let mut signal = violin_tone(from_hz, sample_rate, hold);
         signal.extend(violin_tone(to_hz, sample_rate, hold));
 
         let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0;
         let mut analyzer = ResonatorAnalyzer::new(sample_rate);
         let mut decoder = SalienceDecoder::with_beta(beta);
-        let hop = (sample_rate * 0.016) as usize;
+        let hop = (sample_rate.hz() * 0.016) as usize;
         let mut fed = 0usize;
         while fed + hop <= signal.len() {
             analyzer.process_samples(&signal[fed..fed + hop], true);
             fed += hop;
-            let now = fed as f64 / sample_rate as f64;
+            let now = fed as f64 / sample_rate.hz() as f64;
             let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
             let decoded = snapshot
                 .salience
@@ -1050,7 +1051,7 @@ mod beta_sweep {
             if let Some((midi, _)) = decoded
                 && (midi - target_midi).abs() < 0.5
             {
-                return (fed - hold) as f32 / sample_rate * 1000.0;
+                return (fed - hold) as f32 / sample_rate.hz() * 1000.0;
             }
         }
         f32::INFINITY

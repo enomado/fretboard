@@ -5,6 +5,7 @@
 //! worker; the worker streams back analysis snapshots. Keeping the analysis off
 //! the main thread is the whole reason the worker exists — see `audio::worker`.
 
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     AnalysisSettings,
     AudioStatus,
@@ -17,7 +18,7 @@ use crate::audio::types::{
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) enum ToWorker {
     /// (Re)initialize the pipelines for a freshly opened capture at this rate.
-    Init { sample_rate: f32 },
+    Init { sample_rate: SampleRate },
     /// One contiguous block of mono samples from the capture callback.
     Samples(Vec<f32>),
     /// Analysis settings changed (already sanitized on the worker side too).

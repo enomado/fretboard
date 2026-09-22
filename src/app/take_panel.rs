@@ -197,7 +197,7 @@ impl App {
                         .size(12.0),
                 );
                 ui.label(
-                    RichText::new(format!("{:.1} s · {} Hz", take.seconds(), take.sample_rate))
+                    RichText::new(format!("{:.1} s · {} Hz", take.seconds(), take.sample_rate.0))
                         .color(color::TEXT_HINT)
                         .monospace()
                         .size(12.0),
@@ -329,7 +329,7 @@ fn draw_take_status(ui: &mut Ui, status: &RecorderStatus) {
                         "Saved {} — {:.1} s at {} Hz",
                         take_label(&report.path),
                         report.seconds(),
-                        report.sample_rate
+                        report.sample_rate.0
                     ),
                     color::STATUS_LISTENING,
                 )

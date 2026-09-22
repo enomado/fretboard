@@ -11,6 +11,7 @@ mod core;
 // (its absence is how the melody line came to be driven from pYIN alone at 128 ms
 // without anyone noticing); it simply no longer needs a hole in the wall.
 mod dsp;
+pub(crate) mod sample_rate;
 mod types;
 
 #[cfg(not(target_arch = "wasm32"))]

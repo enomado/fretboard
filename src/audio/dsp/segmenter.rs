@@ -207,14 +207,15 @@ mod tests {
         use crate::audio::dsp::melody::MelodyTracker;
         use crate::audio::dsp::pyin::PitchTracker;
         use crate::audio::dsp::resonator::ResonatorAnalyzer;
+        use crate::audio::sample_rate::SampleRate;
         use crate::core_types::note::AccidentalStyle;
         use crate::core_types::pitch::Hz;
 
-        fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+        fn violin_tone(frequency_hz: f32, sample_rate: SampleRate, len: usize) -> Vec<f32> {
             let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
             (0..len)
                 .map(|i| {
-                    let t = i as f32 / sample_rate;
+                    let t = i as f32 / sample_rate.hz();
                     partials
                         .iter()
                         .enumerate()
@@ -227,14 +228,14 @@ mod tests {
 
         /// Drive the whole stack and return ms until the line shows `to_hz`.
         fn probe(from_hz: f32, to_hz: f32) -> f32 {
-            let sr = 48_000.0f32;
+            let sr = SampleRate(48_000);
             let window_size = 6144usize;
             let analysis_hop = 1920usize; // ANALYSIS_INTERVAL = 40 ms
             let bank_publish_ms = 16.0f32; // ResonatorSettings::update_ms
-            let hold = (sr * 0.6) as usize;
+            let hold = (sr.hz() * 0.6) as usize;
             let mut sig = violin_tone(from_hz, sr, hold);
             sig.extend(violin_tone(to_hz, sr, hold));
-            let change_ms = hold as f32 / sr * 1000.0;
+            let change_ms = hold as f32 / sr.hz() * 1000.0;
             let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0.round() as i32;
 
             let mut tracker = PitchTracker::new();
@@ -254,9 +255,9 @@ mod tests {
             // and this segmenter in the engine — the UI's frame rate no longer has a
             // vote in any of it, which is the point of the module.
             let step_ms = 1.0f32;
-            let mut t_ms = window_size as f32 / sr * 1000.0;
+            let mut t_ms = window_size as f32 / sr.hz() * 1000.0;
             while t_ms < 1150.0 {
-                let now_samples = ((t_ms * sr / 1000.0) as usize).min(sig.len());
+                let now_samples = ((t_ms * sr.hz() / 1000.0) as usize).min(sig.len());
                 // The bank consumes audio continuously and republishes every ~16 ms.
                 if now_samples > bank_fed {
                     bank.process_samples(&sig[bank_fed..now_samples], true);
@@ -273,7 +274,7 @@ mod tests {
                 if t_ms >= next_bank_publish_ms {
                     // `now` is the SAMPLE clock, exactly as the engine derives it — and now
                     // also what the melody's Viterbi measures its frame length off.
-                    let now = now_samples as f64 / sr as f64;
+                    let now = now_samples as f64 / sr.0 as f64;
                     let snapshot = bank.snapshot(true, AccidentalStyle::Sharps);
                     let melody_pitch = melody.update(
                         snapshot.salience.as_ref(),

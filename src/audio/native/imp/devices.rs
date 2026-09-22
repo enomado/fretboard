@@ -3,6 +3,7 @@ use std::process::{
     Command as ProcessCommand,
     Stdio,
 };
+use std::time::Duration;
 
 use cpal::traits::{
     DeviceTrait,
@@ -24,6 +25,7 @@ use super::{
     PULSE_DEFAULT_SOURCE_ID,
     PULSE_INPUT_ID_PREFIX,
 };
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     AudioInputKind,
     AudioInputOption,
@@ -354,8 +356,8 @@ pub(super) fn preferred_low_latency_buffer(range: &SupportedBufferSize) -> Buffe
     }
 }
 
-pub(super) fn low_latency_monitor_ring_len(sample_rate: u32) -> usize {
-    ((sample_rate as usize) * 3 / 100).max(256)
+pub(super) fn low_latency_monitor_ring_len(sample_rate: SampleRate) -> usize {
+    sample_rate.samples_in(Duration::from_millis(30)).max(256)
 }
 
 fn is_cpal_audio_server_proxy(id: &str, name: &str) -> bool {

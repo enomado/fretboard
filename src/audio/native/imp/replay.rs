@@ -43,18 +43,19 @@ use std::time::Duration;
 
 use super::capture::InputFanout;
 use super::workers::AnalysisWorker;
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     ReplayStatus,
     TakeOnDisk,
 };
 
-/// How much audio the source thread hands over per wake-up, in seconds.
+/// How much audio the source thread hands over per wake-up.
 ///
 /// 10 ms — a device callback's quantum, and the same one `core`'s test rig feeds at.
 /// The value matters in both directions: much larger and the planes see the take in
 /// lumps no real capture would deliver; much smaller and the thread spends its life
 /// in the scheduler rather than pushing samples.
-const REPLAY_CHUNK: f32 = 0.01;
+const REPLAY_CHUNK: Duration = Duration::from_millis(10);
 
 /// Handle on replay, held by `AudioEngine` and cloned into `AudioContext`.
 ///
@@ -92,12 +93,12 @@ impl ReplayHandle {
 pub(super) struct LoadedTake {
     pub(super) path:        PathBuf,
     pub(super) samples:     Vec<f32>,
-    pub(super) sample_rate: u32,
+    pub(super) sample_rate: SampleRate,
 }
 
 impl LoadedTake {
     pub(super) fn seconds(&self) -> f32 {
-        self.samples.len() as f32 / self.sample_rate as f32
+        self.samples.len() as f32 / self.sample_rate.hz()
     }
 }
 
@@ -147,7 +148,7 @@ pub(super) fn load_take(path: &Path) -> Result<LoadedTake, String> {
     Ok(LoadedTake {
         path: path.to_owned(),
         samples,
-        sample_rate: spec.sample_rate,
+        sample_rate: SampleRate(spec.sample_rate),
     })
 }
 
@@ -185,7 +186,7 @@ pub(super) fn list_takes(dir: &Path) -> Vec<TakeOnDisk> {
             }
             Some(TakeOnDisk {
                 samples: u64::from(reader.duration()),
-                sample_rate: spec.sample_rate,
+                sample_rate: SampleRate(spec.sample_rate),
                 path,
             })
         })
@@ -213,8 +214,8 @@ pub(super) fn start_replay_source(
     let stop_flag = stop.clone();
 
     let thread = thread::spawn(move || {
-        let sample_rate = take.sample_rate as f32;
-        let chunk = (sample_rate * REPLAY_CHUNK) as usize;
+        let sample_rate = take.sample_rate;
+        let chunk = sample_rate.samples_in(REPLAY_CHUNK);
         let total_seconds = take.seconds();
 
         for (index, block) in take.samples.chunks(chunk).enumerate() {
@@ -233,7 +234,7 @@ pub(super) fn start_replay_source(
             // wall time would drift — and this number is what the roll's playhead is
             // drawn at, so drift here would be a line that does not line up with the
             // audio that produced it.
-            let seconds = ((index + 1) * chunk).min(take.samples.len()) as f32 / sample_rate;
+            let seconds = ((index + 1) * chunk).min(take.samples.len()) as f32 / sample_rate.hz();
             handle.publish(ReplayStatus::Playing {
                 path: take.path.clone(),
                 seconds,
@@ -243,7 +244,7 @@ pub(super) fn start_replay_source(
             // Wall time must keep up with audio time, which is the condition a real
             // capture always satisfies and the one both planes' cadence gates read.
             // Sleeping by the block's own length keeps the two equal.
-            thread::sleep(Duration::from_secs_f32(block.len() as f32 / sample_rate));
+            thread::sleep(sample_rate.duration_of(block.len()));
         }
 
         // Ended on its own. The capture stays up (parked, pushing nothing) until the
@@ -283,7 +284,7 @@ mod tests {
         writer.finalize().unwrap();
 
         let take = load_take(&path).unwrap();
-        assert_eq!(take.sample_rate, 48_000);
+        assert_eq!(take.sample_rate, SampleRate(48_000));
         assert_eq!(take.samples[0], -1.0, "i16::MIN must read back as exactly -1.0");
         assert_eq!(take.samples[1], -1_000.0 / 32768.0);
         assert_eq!(take.samples[2], 0.0);
@@ -339,7 +340,7 @@ mod tests {
     ///    Deleting the sleep would look correct everywhere except on screen.
     #[test]
     fn replay_hands_over_the_whole_take_at_the_rate_it_was_played() {
-        let sample_rate = 48_000u32;
+        let sample_rate = SampleRate(48_000);
         // Short, but several chunks long — the loop's per-chunk bookkeeping (the
         // index → seconds arithmetic, the final partial block) only exists past the
         // first chunk. 0.2 s is 20 of them.
@@ -450,7 +451,7 @@ mod tests {
             vec!["a_take.wav", "b_take.wav"],
             "listing is wrong or unsorted"
         );
-        assert_eq!(takes[0].sample_rate, 48_000);
+        assert_eq!(takes[0].sample_rate, SampleRate(48_000));
         assert_eq!(takes[0].samples, 4_800, "length must come off the header");
         assert_eq!(takes[0].seconds(), 0.1);
 

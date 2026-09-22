@@ -67,6 +67,7 @@ use super::swipe::{
     spectrum_norm,
     tracked_bins,
 };
+use crate::audio::sample_rate::SampleRate;
 use crate::core_types::pitch::{
     Hz,
     Midi,
@@ -145,7 +146,7 @@ impl ColumnScratch {
 }
 
 pub(crate) struct RtSwipe {
-    sample_rate:  f32,
+    sample_rate:  SampleRate,
     /// A4, as everywhere else the grid's bins are turned into frequencies. Taken rather
     /// than assumed: the bank's grid follows `concert_pitch_hz`, and a frontend that
     /// silently pinned 440 would put its columns on a *different* grid from the bank's the
@@ -174,14 +175,14 @@ pub(crate) struct RtSwipe {
 }
 
 impl RtSwipe {
-    pub(crate) fn new(sample_rate: f32, reference_hz: Hz) -> Self {
+    pub(crate) fn new(sample_rate: SampleRate, reference_hz: Hz) -> Self {
         let mut planner = RealFftPlanner::<f32>::new();
         let windows: Vec<AnalysisWindow> = window_ladder(sample_rate, reference_hz)
             .into_iter()
             .map(|size| {
                 AnalysisWindow {
                     size,
-                    optimal_hz: PERIODS_PER_WINDOW * sample_rate / size as f32,
+                    optimal_hz: PERIODS_PER_WINDOW * sample_rate.hz() / size as f32,
                     taper: hann_taper(size),
                     fft: planner.plan_fft_forward(size),
                 }
@@ -373,7 +374,7 @@ impl RtSwipe {
         taps.iter()
             .map(|&(WindowId(rung), lambda)| lambda * self.windows[rung].size as f32 / 2.0)
             .sum::<f32>()
-            / self.sample_rate
+            / self.sample_rate.hz()
     }
 
     /// The grid bin nearest `hz`, clamped to the grid. Private: bins are this module's
@@ -397,10 +398,10 @@ impl RtSwipe {
 /// 48 kHz (N_max = 341 ms), 8 rungs of {64 … 8192} at the corpus's 44.1 kHz (N_max = 186 ms).
 /// The corpus therefore measures a slightly shorter-windowed detector than a 48 kHz device
 /// runs — Camacho's rounding, applied honestly, not a discrepancy to patch out.
-fn window_ladder(sample_rate: f32, reference_hz: Hz) -> Vec<usize> {
+fn window_ladder(sample_rate: SampleRate, reference_hz: Hz) -> Vec<usize> {
     let ideal_length = |midi: f32| {
         let hz = Midi(midi).to_hz(reference_hz).0;
-        (PERIODS_PER_WINDOW * sample_rate / hz).log2().round() as u32
+        (PERIODS_PER_WINDOW * sample_rate.hz() / hz).log2().round() as u32
     };
     let shortest = ideal_length(TRACKED_MAX_MIDI);
     let longest = ideal_length(TRACKED_MIN_MIDI);
@@ -455,7 +456,7 @@ fn blend_weights(windows: &[AnalysisWindow], reference_hz: Hz) -> Vec<Vec<(Windo
 fn fill_column(
     window: &AnalysisWindow,
     history: &[f32],
-    sample_rate: f32,
+    sample_rate: SampleRate,
     reference_hz: Hz,
     scratch: &mut ColumnScratch,
     out: &mut [f32],
@@ -492,7 +493,7 @@ fn fill_column(
     for (mag, bin) in spectrum.iter_mut().zip(&fft_out[..window.size / 2]) {
         *mag = bin.norm();
     }
-    resample_to_log_grid(spectrum, sample_rate / window.size as f32, reference_hz, out);
+    resample_to_log_grid(spectrum, sample_rate.hz() / window.size as f32, reference_hz, out);
 }
 
 /// √-warp `src` into `dst` (both [`SPIRAL_BIN_COUNT`] long) — the in-place form of
@@ -539,11 +540,11 @@ mod tests {
     use super::*;
 
     /// A tone with `partials` relative amplitudes, at `hz`.
-    fn tone(hz: f32, sample_rate: f32, seconds: f32, partials: &[f32]) -> Vec<f32> {
-        let len = (sample_rate * seconds) as usize;
+    fn tone(hz: f32, sample_rate: SampleRate, seconds: f32, partials: &[f32]) -> Vec<f32> {
+        let len = (sample_rate.hz() * seconds) as usize;
         (0..len)
             .map(|i| {
-                let t = i as f32 / sample_rate;
+                let t = i as f32 / sample_rate.hz();
                 partials
                     .iter()
                     .enumerate()
@@ -556,11 +557,11 @@ mod tests {
 
     /// Drive the analyser over a signal at the bank's hop and return the last frame — i.e.
     /// score the tone once it is fully in every window.
-    fn steady_frame(hz: f32, sample_rate: f32, partials: &[f32]) -> SalienceFrame {
+    fn steady_frame(hz: f32, sample_rate: SampleRate, partials: &[f32]) -> SalienceFrame {
         let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         // Long enough for the 16384-sample rung (341 ms) to be full of tone and nothing else.
         let samples = tone(hz, sample_rate, 0.8, partials);
-        let hop = (sample_rate * 0.016) as usize;
+        let hop = (sample_rate.hz() * 0.016) as usize;
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
             rtswipe.process_samples(&samples[fed..fed + hop]);
@@ -581,7 +582,7 @@ mod tests {
     fn the_real_fft_column_equals_the_complex_fft() {
         use rustfft::FftPlanner;
 
-        let sample_rate = 48_000.0f32;
+        let sample_rate = SampleRate(48_000);
         let mut driven = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         // A real, harmonically rich tone so every rung's column carries something across the
         // grid — a divergence that only bit near-null bins would hide behind a pure sinusoid.
@@ -607,7 +608,7 @@ mod tests {
             let mut reference = vec![0.0f32; SPIRAL_BIN_COUNT];
             resample_to_log_grid(
                 &spectrum,
-                sample_rate / window.size as f32,
+                sample_rate.hz() / window.size as f32,
                 Hz::A4_STANDARD,
                 &mut reference,
             );
@@ -641,12 +642,12 @@ mod tests {
     #[test]
     fn the_ladder_is_eight_octave_spaced_rungs() {
         assert_eq!(
-            window_ladder(48_000.0, Hz::A4_STANDARD),
+            window_ladder(SampleRate(48_000), Hz::A4_STANDARD),
             vec![128, 256, 512, 1024, 2048, 4096, 8192, 16384],
             "48 kHz: N_max = 16384 = 341 ms"
         );
         assert_eq!(
-            window_ladder(44_100.0, Hz::A4_STANDARD),
+            window_ladder(SampleRate(44_100), Hz::A4_STANDARD),
             vec![64, 128, 256, 512, 1024, 2048, 4096, 8192],
             "44.1 kHz: Camacho's `round` lands the whole ladder an octave down — the corpus \
              measures a shorter-windowed detector than a 48 kHz device runs, on purpose"
@@ -662,8 +663,9 @@ mod tests {
     /// about rounding is worth checking at more than one operating point.
     #[test]
     fn the_ladder_explains_every_candidate() {
-        for sample_rate in [8_000.0f32, 16_000.0, 22_050.0, 44_100.0, 48_000.0, 96_000.0] {
-            let rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
+        // `sample_rate` — голое число только для сообщений ассертов.
+        for sample_rate in [8_000, 16_000, 22_050, 44_100, 48_000, 96_000] {
+            let rtswipe = RtSwipe::new(SampleRate(sample_rate), Hz::A4_STANDARD);
             let candidates = tracked_bins(SPIRAL_BIN_COUNT, MIN_MIDI, BINS_PER_SEMITONE).unwrap();
             for bin in candidates {
                 let taps = &rtswipe.lambda[bin];
@@ -700,7 +702,7 @@ mod tests {
     /// above needs redoing rather than quoting.
     #[test]
     fn the_norm_sets_the_scale_not_the_ranking() {
-        let sample_rate = 48_000.0f32;
+        let sample_rate = SampleRate(48_000);
         let rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         // A4: its ideal window is 8·48000/440 = 873 samples, so it is blended from the 512-
         // and 1024-rungs — the two whose disparity the blend has to reconcile.
@@ -792,7 +794,7 @@ mod tests {
     /// If the frontend is what breaks it, the two tests disagree and say exactly where.
     #[test]
     fn violin_g_with_a_weak_fundamental_decides_g3() {
-        let frame = steady_frame(196.0, 48_000.0, &[0.08, 1.0, 0.7, 0.5, 0.4, 0.3, 0.22]);
+        let frame = steady_frame(196.0, SampleRate(48_000), &[0.08, 1.0, 0.7, 0.5, 0.4, 0.3, 0.22]);
         let (midi, strength) = frame.argmax().unwrap();
         println!("\n=== violin open G through the FFT ladder ===");
         println!("  verdict MIDI {midi:.2} (G3 = 55, phantom G4 = 67), strength {strength:.3}");
@@ -838,7 +840,7 @@ mod tests {
         println!("  truth   coarse peak    refined    error");
         for midi_truth in [36.0f32, 48.0, 60.0, 72.0, 84.0, 96.0] {
             let hz = Midi(midi_truth).to_hz(Hz::A4_STANDARD).0;
-            let frame = steady_frame(hz, 48_000.0, &[1.0, 0.5, 0.25]);
+            let frame = steady_frame(hz, SampleRate(48_000), &[1.0, 0.5, 0.25]);
             let (midi, _strength) = frame.argmax().unwrap();
             // The curve's own peak bin, before `refine_on_partials` reads the fine pitch off
             // the column: it separates "the kernel chose the wrong series" from "the series
@@ -871,7 +873,7 @@ mod tests {
 
         use rustfft::FftPlanner;
 
-        let sample_rate = 48_000.0f32;
+        let sample_rate = SampleRate(48_000);
         let mut driven = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         driven.process_samples(&tone(233.0, sample_rate, 0.8, &[1.0, 0.7, 0.5, 0.3]));
         let start = driven.history.len();
@@ -935,7 +937,7 @@ mod tests {
     /// not a bound to defend.
     #[test]
     fn what_does_the_ladder_cost_in_delay() {
-        let rtswipe = RtSwipe::new(48_000.0, Hz::A4_STANDARD);
+        let rtswipe = RtSwipe::new(SampleRate(48_000), Hz::A4_STANDARD);
         println!("\n=== RT-SWIPE delay = half the blended window (4 periods) ===");
         println!("  the bank pays 8–29 ms flat; pYIN pays ~128 ms");
         for (name, hz) in [

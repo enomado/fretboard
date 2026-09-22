@@ -48,6 +48,7 @@ use crate::audio::dsp::rtswipe::RtSwipe;
 use crate::audio::dsp::segmenter::NoteSegmenter;
 use crate::audio::dsp::spectrum::spectrum_bars_for_window;
 use crate::audio::dsp::swipe::SalienceFrame;
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     AnalysisSettings,
     AudioStatus,
@@ -245,7 +246,7 @@ pub(crate) struct ResonatorPipeline {
     /// asking) — deliberately: while parked nothing downstream of it runs either, and
     /// a clock that ran on regardless would expire the held note of whatever phrase
     /// was playing when the panel was closed. It is monotonic whenever it is read.
-    sample_rate:  f32,
+    sample_rate:  SampleRate,
     samples_seen: u64,
 }
 
@@ -253,7 +254,7 @@ pub(crate) struct AnalysisPipeline {
     buffer:        VecDeque<f32>,
     last_analysis: Instant,
     planner:       FftPlanner<f32>,
-    sample_rate:   f32,
+    sample_rate:   SampleRate,
     // Probabilistic-YIN tracker: the octave-robust, HMM-smoothed pitch source that
     // replaced plain YIN + the `smooth_frequency` EMA. Stateful (carries the
     // Viterbi trellis across frames), so it lives on the per-stream pipeline.
@@ -288,7 +289,7 @@ struct AnalysisFrame {
 }
 
 impl ResonatorPipeline {
-    pub(crate) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(sample_rate: SampleRate) -> Self {
         // A4 = 440 until the first settings sync tells us the user's concert pitch; the bank
         // starts the same way (`ResonatorViewSettings::default`), and `sync_settings` rebuilds
         // both the instant a real value arrives.
@@ -351,7 +352,7 @@ impl ResonatorPipeline {
             },
             analysis_settings.resonator.history,
             level,
-            self.samples_seen as f64 / self.sample_rate as f64,
+            self.samples_seen as f64 / self.sample_rate.0 as f64,
         );
     }
 
@@ -400,7 +401,7 @@ impl ResonatorPipeline {
 }
 
 impl AnalysisPipeline {
-    pub(crate) fn new(sample_rate: f32) -> Self {
+    pub(crate) fn new(sample_rate: SampleRate) -> Self {
         Self {
             buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
             last_analysis: Instant::now() - ANALYSIS_INTERVAL,
@@ -512,7 +513,7 @@ fn smoothed_level(previous: f32, current: f32) -> f32 {
 
 fn analyze_window(
     window: &[f32],
-    sample_rate: f32,
+    sample_rate: SampleRate,
     settings: &AnalysisSettings,
     planner: &mut FftPlanner<f32>,
     pitch: Option<PitchEstimate>,
@@ -760,12 +761,12 @@ mod tests {
 
     /// A bowed-string-ish tone: a fundamental plus the partials that make the bank's
     /// harmonic scoring do real work.
-    fn violin_tone(frequency_hz: f32, sample_rate: f32, len: usize) -> Vec<f32> {
+    fn violin_tone(frequency_hz: f32, sample_rate: SampleRate, len: usize) -> Vec<f32> {
         use std::f32::consts::TAU;
         let partials = [1.0f32, 0.8, 0.6, 0.35, 0.2];
         (0..len)
             .map(|i| {
-                let t = i as f32 / sample_rate;
+                let t = i as f32 / sample_rate.hz();
                 partials
                     .iter()
                     .enumerate()
@@ -788,7 +789,7 @@ mod tests {
     }
 
     impl Rig {
-        fn new(sample_rate: f32) -> Self {
+        fn new(sample_rate: SampleRate) -> Self {
             let shared = Arc::new(Mutex::new(SharedState::new()));
             shared.lock().unwrap().reset();
             Self {
@@ -807,8 +808,9 @@ mod tests {
         /// on `Instant::elapsed`, so audio shovelled in with no wall-clock passing would
         /// be analysed once and never again. Sleeping per chunk keeps wall time ≥ audio
         /// time, which is the condition the real capture always satisfies.
-        fn feed(&mut self, samples: &[f32], sample_rate: f32) {
-            let chunk = (sample_rate / 100.0) as usize; // 10 ms, as a device callback would
+        fn feed(&mut self, samples: &[f32], sample_rate: SampleRate) {
+            // 10 ms, as a device callback would
+            let chunk = sample_rate.samples_in(Duration::from_millis(10));
             for c in samples.chunks(chunk) {
                 self.analysis.push_samples(
                     c.iter().copied(),
@@ -824,7 +826,7 @@ mod tests {
                     &self.gain,
                     &self.level,
                 );
-                thread::sleep(Duration::from_secs_f32(c.len() as f32 / sample_rate));
+                thread::sleep(sample_rate.duration_of(c.len()));
             }
         }
 
@@ -851,7 +853,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "PoisonError")]
     fn a_poisoned_settings_lock_panics_instead_of_using_defaults() {
-        let rig = Rig::new(48_000.0);
+        let rig = Rig::new(SampleRate(48_000));
         let settings = rig.settings.clone();
         thread::spawn(move || {
             let _guard = settings.lock().unwrap();
@@ -861,9 +863,9 @@ mod tests {
         .unwrap_err();
         assert!(rig.settings.is_poisoned());
 
-        let mut analysis = AnalysisPipeline::new(48_000.0);
+        let mut analysis = AnalysisPipeline::new(SampleRate(48_000));
         analysis.push_samples(
-            violin_tone(440.0, 48_000.0, 1024),
+            violin_tone(440.0, SampleRate(48_000), 1024),
             &rig.shared,
             &rig.settings,
             &rig.gain,
@@ -890,7 +892,7 @@ mod tests {
     fn real_violin_through_the_whole_engine() {
         let path = format!("{}/testdata/g_open_slow_strokes.wav", env!("CARGO_MANIFEST_DIR"));
         let mut reader = hound::WavReader::open(&path).unwrap();
-        let sr = reader.spec().sample_rate as f32;
+        let sr = SampleRate(reader.spec().sample_rate);
         let samples: Vec<f32> = reader
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / 32768.0)
@@ -908,7 +910,7 @@ mod tests {
         let line = rig.note_line();
 
         println!("\n=== g_open_slow_strokes through the real engine ===");
-        println!("  audio fed          : {:.1} s", samples.len() as f32 / sr);
+        println!("  audio fed          : {:.1} s", samples.len() as f32 / sr.hz());
         println!("  frames (last ~2 s) : {}", frames.len());
         println!("  ...scored by SWIPE′: {scored}");
         println!("  ...with a pitch    : {voiced}");
@@ -922,7 +924,7 @@ mod tests {
         assert!(
             voiced > 0,
             "the engine heard a violin for {:.1} s and decided no pitch, ever",
-            samples.len() as f32 / sr
+            samples.len() as f32 / sr.hz()
         );
     }
 
@@ -938,12 +940,12 @@ mod tests {
     /// staff would simply stay empty.
     #[test]
     fn engine_writes_a_played_note_end_to_end() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let mut rig = Rig::new(sr);
 
         // Play A4 (69) long enough to clear the analysis window (the level gate cannot
         // open until the first 6144-sample window has been measured) and MIN_NOTE.
-        rig.feed(&violin_tone(440.0, sr, (sr * 0.4) as usize), sr);
+        rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
         let line = rig.note_line();
         assert_eq!(
             line.current.map(|n| n.midi),
@@ -959,7 +961,7 @@ mod tests {
         // ~500 ms to decay below `MELODY_LEVEL_GATE` after the sound has actually
         // stopped. Everything the bank invents in that window is passed through as
         // melody — see `release_ghosts_are_written_after_a_note` for what that costs.
-        rig.feed(&vec![0.0f32; (sr * 0.7) as usize], sr);
+        rig.feed(&vec![0.0f32; (sr.hz() * 0.7) as usize], sr);
         let line = rig.note_line();
         assert!(line.current.is_none(), "the note should have been released");
         assert!(
@@ -979,7 +981,7 @@ mod tests {
     fn rtswipe_real_violin_through_the_whole_engine() {
         let path = format!("{}/testdata/g_open_fast_strokes.wav", env!("CARGO_MANIFEST_DIR"));
         let mut reader = hound::WavReader::open(&path).unwrap();
-        let sr = reader.spec().sample_rate as f32;
+        let sr = SampleRate(reader.spec().sample_rate);
         let samples: Vec<f32> = reader
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / 32768.0)
@@ -992,7 +994,7 @@ mod tests {
         let frames = rig.melody_since(None);
         let voiced = frames.iter().filter(|f| f.pitch.is_some()).count();
         println!("\n=== g_open_fast_strokes · RT-SWIPE · through the real engine ===");
-        println!("  audio fed          : {:.1} s", samples.len() as f32 / sr);
+        println!("  audio fed          : {:.1} s", samples.len() as f32 / sr.hz());
         println!("  frames (last ~2 s) : {}", frames.len());
         println!("  ...with a pitch    : {voiced}");
         assert!(
@@ -1013,12 +1015,12 @@ mod tests {
     /// a user who picked RT-SWIPE — the staff would stay empty while the spectrum still moved.
     #[test]
     fn engine_decodes_with_the_rtswipe_frontend() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let mut rig = Rig::new(sr);
         rig.settings.lock().unwrap().resonator.frontend = PitchFrontend::RtSwipe;
 
         // Same A4 as the bank twin. RT-SWIPE reads A4 in ~9 ms, so 0.4 s is ample.
-        rig.feed(&violin_tone(440.0, sr, (sr * 0.4) as usize), sr);
+        rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
         let line = rig.note_line();
         assert_eq!(
             line.current.map(|n| n.midi),
@@ -1057,7 +1059,7 @@ mod tests {
         };
         use crate::core_types::pitch::PNote;
 
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let mut rig = Rig::new(sr);
         {
             let mut s = rig.settings.lock().unwrap();
@@ -1066,7 +1068,7 @@ mod tests {
             s.resonator.min_midi = PNote::new(36).unwrap();
             s.resonator.max_midi = PNote::new(96).unwrap();
         }
-        rig.feed(&violin_tone(440.0, sr, (sr * 0.4) as usize), sr);
+        rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
 
         let salience = rig
             .melody_since(None)
@@ -1109,9 +1111,9 @@ mod tests {
     ///   a *drain* would have it steal frames from the roll.
     #[test]
     fn the_melody_history_is_published_on_the_audio_clock() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let mut rig = Rig::new(sr);
-        rig.feed(&violin_tone(440.0, sr, (sr * 0.5) as usize), sr);
+        rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.5) as usize), sr);
 
         let all = rig.melody_since(None);
         assert!(
@@ -1188,10 +1190,10 @@ mod tests {
     /// see the plan's handoff.
     #[test]
     fn release_ghosts_are_written_after_a_note() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let mut rig = Rig::new(sr);
-        rig.feed(&violin_tone(440.0, sr, (sr * 0.4) as usize), sr);
-        rig.feed(&vec![0.0f32; (sr * 0.7) as usize], sr);
+        rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
+        rig.feed(&vec![0.0f32; (sr.hz() * 0.7) as usize], sr);
 
         let ghosts: Vec<i32> = rig
             .note_line()
@@ -1218,11 +1220,11 @@ mod tests {
     /// hypothetical — they are what Phase 1.1 was reported for.
     #[test]
     fn the_silence_gate_keeps_room_noise_off_the_line() {
-        let sr = 48_000.0f32;
+        let sr = SampleRate(48_000);
         let mut rig = Rig::new(sr);
 
         // A tone far below the gate: the bank will still find a "fundamental" in it.
-        let noise: Vec<f32> = violin_tone(440.0, sr, (sr * 0.6) as usize)
+        let noise: Vec<f32> = violin_tone(440.0, sr, (sr.hz() * 0.6) as usize)
             .iter()
             .map(|s| s * 0.0005)
             .collect();

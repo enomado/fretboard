@@ -45,6 +45,7 @@ use crate::audio::core::{
     SharedState,
     set_shared_error,
 };
+use crate::audio::sample_rate::SampleRate;
 
 const PULSE_CAPTURE_LATENCY_MS: u32 = 20;
 const PULSE_CAPTURE_PROCESS_MS: u32 = 10;
@@ -196,12 +197,12 @@ where
 
 pub(super) fn build_pulse_input(
     input_id: &str,
-    sample_rate: u32,
+    sample_rate: SampleRate,
     mut fanout: InputFanout,
     shared: Arc<Mutex<SharedState>>,
 ) -> Result<PulseInputCapture, String> {
     let pulse_device = input_id.strip_prefix(PULSE_INPUT_ID_PREFIX).unwrap_or(input_id);
-    let rate = sample_rate.to_string();
+    let rate = sample_rate.0.to_string();
     let latency_ms = PULSE_CAPTURE_LATENCY_MS.to_string();
     let process_ms = PULSE_CAPTURE_PROCESS_MS.to_string();
 

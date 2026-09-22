@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
+use crate::audio::sample_rate::SampleRate;
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::{
     Hz,
@@ -317,7 +318,7 @@ pub struct TakeReport {
     /// saw; resampling it to match the older takes would be processing, and the
     /// protocol in `testdata/README.md` forbids processing for exactly the reason
     /// it forbids AGC — it alters the quantity being measured.
-    pub sample_rate: u32,
+    pub sample_rate: SampleRate,
     pub samples:     u64,
     /// Samples the input callback captured but could not hand to the recorder,
     /// because the writer had fallen behind and the ring was full.
@@ -333,7 +334,7 @@ pub struct TakeReport {
 
 impl TakeReport {
     pub fn seconds(&self) -> f32 {
-        self.samples as f32 / self.sample_rate as f32
+        self.samples as f32 / self.sample_rate.hz()
     }
 
     /// Whether this take can be used as ground truth. See [`Self::dropped`].
@@ -358,13 +359,13 @@ impl TakeReport {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TakeOnDisk {
     pub path:        PathBuf,
-    pub sample_rate: u32,
+    pub sample_rate: SampleRate,
     pub samples:     u64,
 }
 
 impl TakeOnDisk {
     pub fn seconds(&self) -> f32 {
-        self.samples as f32 / self.sample_rate as f32
+        self.samples as f32 / self.sample_rate.hz()
     }
 }
 
