@@ -271,7 +271,8 @@ end-to-end octave 152 → 104 ms, and the layer stays whole until the gate opens
 
 ### Landmines
 
-- **The bank is park-gated.** Any panel reading `melody_pitch` must call
+- **The bank is park-gated.** Any panel reading the melody line (`melody_since`) or the
+  note line must call
   `AudioEngine::request_resonator()` every frame or it sits at "play a note…" forever.
   YIN runs unconditionally; the bank does not.
 - **`audio::dsp` is private, in every build** (see `audio/mod.rs`) — 1.9 closed the
@@ -308,7 +309,8 @@ you play the violin, **writes what you play** onto the staff in real time — wi
 passive "mirror" (see what you played) into an active trainer (play *this*, get
 scored).
 
-Pitch source is `TunerReading::melody_pitch` — the resonator bank's fast fine pitch
+Pitch source is the melody line (`MelodyFrame::pitch`, read through
+`AudioEngine::melody_since`; it was `TunerReading::melody_pitch` until 2026-09-22) — the resonator bank's fast fine pitch
 with its octave pinned by pYIN (`audio::dsp::melody`). **Not** `frequency_hz`: that is
 pYIN alone, which is the right tool for the tuner (steady) and the wrong one for a
 trainer (it cannot follow a note change in under ~128 ms). See

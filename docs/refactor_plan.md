@@ -456,7 +456,14 @@ NEWTYPE CANDIDATES; остаток (если есть) перечислен в �
   Ф1 сняла с этого места глотание отравления, но сам фолбек `Option<String>` → пустая
   строка остался в отчёте `code_smell option-crutch`. Это доменный вопрос (что значит
   реплей без выбранного входа и кто читает `selected_id`), а не механика замка.
-- **`TunerReading::fast_pitch` и `::melody_pitch` никто не читает** (найдено в Ф6а,
+- ✅ **Снесены** («refactor(audio): снять fast_pitch/melody_pitch с TunerReading — читателей
+  нет»): оба поля `TunerReading`, `SharedState::fast_pitch`/`melody_pitch` (жили только ради
+  них), `ResonatorSnapshot::fundamental` (единственный рабочий читатель — `fast_pitch`);
+  `SalienceFrame::argmax` стал `#[cfg(test)]` — это зонд тестов и базлайн Витерби, тесты
+  берут его через `#[cfg(test)] ResonatorSnapshot::fundamental()`. Тест тишины теперь
+  смотрит все кадры `melody_since`, а не последний `melody_pitch`. Доки (`note_detection.md`,
+  «Landmines») переведены на `melody_since`. Исходная запись:
+  **`TunerReading::fast_pitch` и `::melody_pitch` никто не читает** (найдено в Ф6а,
   2026-09-22, `rg '\.(fast|melody)_pitch' src`): движок пишет их в `core.rs:613`, `:745`,
   а вне `audio/core.rs` нет ни одного чтения — панели берут высоту из `MelodyFrame`.
   Док-комментарии в `audio/types.rs:25-43` описывают их как вход для панелей. Либо снести

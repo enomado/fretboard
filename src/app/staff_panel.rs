@@ -177,9 +177,9 @@ impl App {
     pub(super) fn draw_staff_card(&mut self, ui: &mut Ui) {
         // Live panel: keep repainting so the notation tracks the audio thread.
         ui.ctx().request_repaint();
-        // The played-note source is now the resonator bank (`fast_pitch`), and the
-        // bank only runs while a consumer keeps asking for it — without this it
-        // parks and `fast_pitch` stays `None` ("play a note…" forever).
+        // The written line (`TunerReading::note_line`) is cut from the resonator bank's
+        // melody, and the bank only runs while a consumer keeps asking for it — without
+        // this it parks and the line never gets a note ("play a note…" forever).
         self.audio.request_resonator();
 
         let settings = self.audio.analysis_settings();

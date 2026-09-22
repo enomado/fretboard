@@ -79,18 +79,11 @@ pub(crate) struct ResonatorViewSettings {
 pub(crate) struct ResonatorSnapshot {
     pub(crate) spectrum:    Vec<f32>,
     pub(crate) note_labels: Vec<String>,
-    /// Fast played-note prior for this snapshot: `(fractional_midi, strength)` of
-    /// the harmonic fundamental, or `None` when the bank is quiet. Rides to the UI
-    /// on `TunerReading::fast_pitch`.
-    ///
-    /// This is the frame's **own** opinion, weighing nothing but itself. It stays that way
-    /// on purpose even though [`Self::salience`] now supports a better one: `dsp::melody`
-    /// borrows pYIN's octave to *check* the bank, and a bank reading that had already been
-    /// smoothed against its own past would be a worse witness, not a better one.
-    pub(crate) fundamental: Option<(f32, f32)>,
-    /// The evidence behind [`Self::fundamental`] — the whole salience curve, for the
-    /// consumer that decodes a *path* rather than a frame. `None` for a column with no
-    /// energy at all.
+    /// The bank's SWIPE′ salience curve for this column, for the consumer that decodes
+    /// a *path* rather than a frame (`dsp::melody`). `None` for a column with no energy
+    /// at all. The frame's own argmax is not carried: nothing in production reads a
+    /// single-frame opinion any more (it used to ride out as `TunerReading::fast_pitch`
+    /// with no reader) — the tests take it with [`SalienceFrame::argmax`].
     ///
     /// Deliberately not stored in `SharedState`: it is one frame's working material for
     /// `dsp::melody` — the `magnitudes` it carries for [`SalienceFrame::refine_on_partials`]
@@ -99,6 +92,15 @@ pub(crate) struct ResonatorSnapshot {
     /// frame *decoded the note* (bank or RT-SWIPE), not always this one, which is why the
     /// snapshot no longer carries a pre-baked heat of its own.
     pub(crate) salience:    Option<SalienceFrame>,
+}
+
+#[cfg(test)]
+impl ResonatorSnapshot {
+    /// The column's own single-frame opinion, `(fractional_midi, strength)` — the argmax of
+    /// [`Self::salience`]. The tests' probe of the bank; see [`SalienceFrame::argmax`].
+    pub(crate) fn fundamental(&self) -> Option<(f32, f32)> {
+        self.salience.as_ref().and_then(SalienceFrame::argmax)
+    }
 }
 
 #[derive(Debug)]
@@ -347,12 +349,10 @@ fn resonator_snapshot(
             settings.bins_per_semitone as f32,
             swipe_bank,
         );
-        let fundamental = salience.as_ref().and_then(|s| s.argmax());
         normalize_bars(&mut spectrum, settings.gamma);
         return ResonatorSnapshot {
             spectrum,
             note_labels: settings.note_labels(style),
-            fundamental,
             salience,
         };
     }
@@ -396,12 +396,10 @@ fn resonator_snapshot(
         OUTPUT_BINS_PER_SEMITONE as f32,
         swipe_output,
     );
-    let fundamental = salience.as_ref().and_then(|s| s.argmax());
     normalize_bars(&mut spectrum, settings.gamma);
     ResonatorSnapshot {
         spectrum,
         note_labels: settings.note_labels(style),
-        fundamental,
         salience,
     }
 }
@@ -468,7 +466,7 @@ mod tests {
                 an.process_samples(&new[fed..fed + take], true);
                 fed += take;
                 let snap = an.snapshot(true, AccidentalStyle::Sharps);
-                if let Some((midi, _strength)) = snap.fundamental
+                if let Some((midi, _strength)) = snap.fundamental()
                     && (midi - target_midi).abs() < 0.5
                 {
                     return fed as f32 / sr.hz() * 1000.0;
@@ -574,10 +572,9 @@ mod tests {
         );
     }
 
-    /// End-to-end through the production path (analyzer → snapshot → fundamental):
+    /// End-to-end through the production path (analyzer → snapshot → salience):
     /// a harmonic-rich tone like a bowed string must resolve to its *fundamental*
-    /// (A4 = 69), not an overtone, and land in-range. This is what feeds the staff's
-    /// `TunerReading::fast_pitch`.
+    /// (A4 = 69), not an overtone, and land in-range.
     #[test]
     fn fundamental_on_harmonic_tone_resolves_to_root() {
         let sr = SampleRate(44_100);
@@ -595,7 +592,7 @@ mod tests {
             .collect();
         an.process_samples(&sig, true);
         let snap = an.snapshot(true, AccidentalStyle::Sharps);
-        let (midi, strength) = snap.fundamental.expect("fundamental should be detected");
+        let (midi, strength) = snap.fundamental().expect("fundamental should be detected");
         assert!((midi - 69.0).abs() < 0.2, "expected ~A4 (69), got {midi}");
         // `strength` changed meaning with `dsp::swipe`: it used to be the fundamental
         // bin's own magnitude against `FUNDAMENTAL_FLOOR` — a quantity that reads ~0 for
@@ -622,7 +619,7 @@ mod tests {
         noisy.process_samples(&noise, true);
         let noise_strength = noisy
             .snapshot(true, AccidentalStyle::Sharps)
-            .fundamental
+            .fundamental()
             .map(|(_, s)| s)
             .unwrap_or(0.0);
         assert!(

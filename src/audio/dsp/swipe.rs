@@ -465,9 +465,10 @@ impl SalienceFrame {
     /// This frame's own best guess, weighing nothing but this frame — the per-frame argmax
     /// over the pitch domain, as `(fractional_midi, pitch_strength)`.
     ///
-    /// Kept as the bank's *raw* opinion (it rides to the UI as `TunerReading::fast_pitch`,
-    /// and `dsp::melody` needs an unsmoothed witness to cross-examine) and as the honest
-    /// baseline the Viterbi is measured against.
+    /// Kept as the honest baseline the Viterbi is measured against, and as the tests'
+    /// single-frame probe. Test-only: production decodes a *path* over the whole curve
+    /// (`dsp::melody`), and the one production reader this had —
+    /// `TunerReading::fast_pitch` — had no reader of its own and was removed.
     ///
     /// This is what replaced `analysis_math::resonator_fundamental`, and the differences are
     /// consequences of the algorithm rather than choices:
@@ -488,6 +489,7 @@ impl SalienceFrame {
     /// series at all. Silence is **not** decided here — the engine gates the melody on
     /// `level` upstream (`core::MELODY_LEVEL_GATE`), and a second opinion here would just be
     /// a magic number in a new place.
+    #[cfg(test)]
     pub(crate) fn argmax(&self) -> Option<(f32, f32)> {
         let (peak_bin, &peak) = self.curve[self.tracked_bins()?]
             .iter()
@@ -953,7 +955,7 @@ mod tests {
                 // where nothing in C1..C8 scores positive is a frame that looks like no
                 // harmonic series at all. The old comb, searching the whole display
                 // column down to C0, always found *something* to crown.
-                let Some((new_midi, _)) = snapshot.fundamental else {
+                let Some((new_midi, _)) = snapshot.fundamental() else {
                     new_none += 1;
                     continue;
                 };
@@ -1161,7 +1163,7 @@ mod low_register_probe {
             analyzer.process_samples(&samples[fed..fed + hop], true);
             fed += hop;
             let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
-            let Some((midi, _)) = snapshot.fundamental else {
+            let Some((midi, _)) = snapshot.fundamental() else {
                 continue;
             };
             // Skip the first second: the bank starts empty and needs to charge, so the

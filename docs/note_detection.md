@@ -92,13 +92,11 @@ flowchart TD
     subgraph FAST["Plane B — fast &amp; fine · every 16 ms · per-sample IIR"]
         B --> BANK["dsp::resonator::OnePoleBank<br/>leaky resonators · 5/semitone · C0..C8<br/>+ Δφ reassignment + coherence gate"]
         BANK --> SWIPE["dsp::swipe::SalienceFrame<br/>SWIPE′ salience · the whole curve<br/>peaks reward, valleys punish"]
-        SWIPE --> ARGMAX["·argmax() → fast_pitch<br/><i>the frame's own raw opinion</i>"]
     end
 
     HMM -->|"octave anchor<br/>(midi, clarity)"| MELODY
     SWIPE -->|"the salience CURVE<br/>(a scalar cannot express a tie)"| MELODY
     LVL -->|"silence gate"| MELODY
-    ARGMAX --> FP["TunerReading::fast_pitch"]
     MELODY["dsp::melody::MelodyTracker<br/><b>the only octave decision</b><br/>SalienceDecoder (Viterbi over the curve)<br/>+ repair layer: snap · leap hysteresis · slip gate"]
 
     MELODY --> SEG
@@ -106,7 +104,7 @@ flowchart TD
     SEG["dsp::segmenter::NoteSegmenter<br/><b>the only note-boundary decision</b><br/>glitch · release grace · cents EMA<br/><i>clocked off the sample count</i>"]
 
     HMM --> FREQ["TunerReading::frequency_hz + clarity"]
-    MELODY --> MP["TunerReading::melody_pitch"]
+    MELODY --> MP["MelodyFrame::pitch<br/>via AudioEngine::melody_since"]
     SEG --> NL["TunerReading::note_line"]
     BANK --> HEAT["TunerReading::resonator_*"]
 
@@ -125,8 +123,9 @@ flowchart TD
 Both shaded boxes are **in the engine, on audio clocks**. Nothing below them decides
 anything; the panels draw what they are handed (§3).
 
-**Read the split as: `melody_pitch` is for panels that answer "what am I playing right
-now"; `frequency_hz` is for panels that answer "am I in tune".** They want opposite
+**Read the split as: the melody line (`MelodyFrame::pitch`, read as history through
+`melody_since`) is for panels that answer "what am I playing right now"; `frequency_hz`
+is for panels that answer "am I in tune".** They want opposite
 things — prompt vs steady — and that is why there are two.
 
 ---
@@ -141,7 +140,8 @@ on the slow one.
 
 The bank is **park-gated**: it only runs while a consumer keeps calling
 `AudioEngine::request_resonator()` every frame (a CPU saving — it is per-sample IIR).
-YIN runs unconditionally. **A panel that reads `melody_pitch` must request the bank**,
+YIN runs unconditionally. **A panel that reads the melody line or the note line must
+request the bank**,
 or it will sit at "play a note…" forever. The staff and pitch roll both do.
 
 ### Stage 1A — pYIN (slow, sure)
@@ -176,7 +176,7 @@ load-bearing:
 | | |
 |---|---|
 | Cadence | 16 ms (`ResonatorSettings::update_ms`), fed per sample |
-| Output | the **salience curve**, + `fast_pitch` = `(fractional_midi, strength)`, + the heat column |
+| Output | the **salience curve**, + the heat column |
 
 A bank of leaky one-pole resonators, 5 per semitone across C0..C8, plus Δφ
 **instantaneous-frequency reassignment** (super-resolution, with a coherence gate that
@@ -191,10 +191,10 @@ Two things about the output are easy to miss and both are deliberate:
   scalar cannot express a tie. So `ResonatorSnapshot::salience` carries the whole curve
   (plus the raw column it was scored from, since the fine pitch is read off the winning
   series' loudest partial and continuity may pick a different series than the argmax did).
-- **`fast_pitch` stays the frame's own raw opinion**, unsmoothed. `dsp::melody` borrows
-  pYIN's octave to *cross-examine* the bank, and a witness already smoothed against its
-  own past is a worse witness, not a better one. (This is the same error as Phase 1.5's
-  fusion, in a new place: a mirror cannot be a witness.)
+- **The argmax is not published.** It used to ride out as `TunerReading::fast_pitch`,
+  the frame's own raw opinion, but no panel ever read it and it was removed (refactor
+  follow-ups, 2026-09-22). `SalienceFrame::argmax` survives as the tests' probe and the
+  honest baseline the Viterbi is measured against.
 
 ### Stage 2 — the decode (`dsp::melody::MelodyTracker`)
 
@@ -290,7 +290,8 @@ the same code behaved differently at 30 fps and 60 fps:
 came off it last (`MelodyHistory`, below); what the UI frame decides now is only when
 the pixels happen.
 
-That last step was filed as cosmetic and was not. A panel sampling `melody_pitch` once
+That last step was filed as cosmetic and was not. A panel sampling `melody_pitch` (since
+removed from `TunerReading`) once
 per repaint makes the **renderer the sampler**: the bank publishes at ~62 Hz, so a
 60 fps panel dropped a few percent of its frames and a 30 fps one dropped **half** —
 decimating exactly the trills and vibrato the fast path exists for, and making both
@@ -493,7 +494,7 @@ front end under the same trellis:
    question to answer first is not "what weight?" but "is the anchor still independent
    evidence?"
 3. **The octave is decided in `dsp::melody`, once.** Not in a panel, not per-consumer.
-   If a new panel needs a melody line, it reads `melody_pitch`.
+   If a new panel needs a melody line, it reads `melody_since` (`MelodyFrame::pitch`).
 4. **Anything specified in seconds runs on an audio clock**, at a stated cadence — not
    per UI frame (§4).
 5. **Range bounds move together** (§5), and a ceiling gets a test, because it fails

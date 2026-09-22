@@ -27,25 +27,12 @@ pub struct TunerReading {
     pub resonator_waterfall:   Vec<Vec<f32>>,
     pub resonator_note_labels: Vec<String>,
     pub note_labels:           Vec<String>,
-    /// The fast played-note prior: `(fractional_midi, strength)` of the harmonic
-    /// fundamental the resonator bank hears right now, or `None` when the bank is
-    /// quiet. Published at the bank's fast cadence (~16 ms). This is the raw bank
-    /// reading, octave and all — [`Self::melody_pitch`] is the one to draw notes
-    /// from.
-    pub fast_pitch:            Option<(f32, f32)>,
-    /// The played note for the melody panels (staff, pitch roll):
-    /// `(fractional_midi, strength)`, or `None` when the bank is parked/quiet.
-    ///
-    /// The bank's fast fine pitch with its octave pinned by pYIN — see
-    /// [`crate::audio::dsp::melody`] for why the two sources are married this way
-    /// round. Published at the bank's ~16 ms cadence and re-stamped by the 40 ms
-    /// pYIN path, so it never blanks.
-    ///
-    /// Do **not** draw the melody line from [`Self::frequency_hz`]: that is pYIN
-    /// alone, which is pinned to its analysis window and cannot follow a note change
-    /// in under ~128 ms (measured). It is the right source for the tuner and the
-    /// fretboard, where a steady reading beats a prompt one.
-    pub melody_pitch:          Option<(f32, f32)>,
+    // The melody line is deliberately NOT on the reading: an instant sampled per UI
+    // frame decimates the bank's ~16 ms frames (see `SharedState::melody_history`).
+    // Panels read it as history — `AudioEngine::melody_since` → [`MelodyFrame::pitch`].
+    // Nor should it be drawn from [`Self::frequency_hz`]: that is pYIN alone, pinned
+    // to its analysis window and ~128 ms behind a note change (measured) — the right
+    // source for the tuner and the fretboard, where a steady reading beats a prompt one.
     /// Monotonic count of detected note onsets (attacks). Consumed by the engine's
     /// own [`crate::audio::dsp::segmenter`] to split a re-bowed repeat of the same
     /// pitch instead of merging it into the held note; carried here because the two

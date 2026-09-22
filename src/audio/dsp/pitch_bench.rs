@@ -344,13 +344,13 @@ fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> V
         // timestamp. What the *truth* was at that moment depends on the lag — see the
         // function's docs; the bank is driven once and every lag reads off the same frame.
         let seconds = fed as f32 / sample_rate.hz();
-        let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
+        let fundamental = analyzer.snapshot(true, AccidentalStyle::Sharps).fundamental();
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
                 tally,
                 scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
-                snapshot.fundamental,
+                fundamental,
             );
         }
     }

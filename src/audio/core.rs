@@ -101,11 +101,6 @@ pub(crate) struct SharedState {
     pub(crate) resonator_spectrum:  Vec<f32>,
     pub(crate) resonator_waterfall: VecDeque<Vec<f32>>,
     pub(crate) resonator_labels:    Vec<String>,
-    /// Latest fast played-note prior from the resonator bank, kept on the shared
-    /// state so both publish paths (the fast 16 ms snapshot and the 40 ms YIN
-    /// reading) stamp the *same* value onto `TunerReading::fast_pitch` — otherwise
-    /// the 40 ms path would blank it every frame it rebuilds the reading.
-    pub(crate) fast_pitch:          Option<(f32, f32)>,
     /// pYIN's octave opinion for the melody line: `(fractional_midi, voiced
     /// probability)`, or `None` before the first reading.
     ///
@@ -118,16 +113,13 @@ pub(crate) struct SharedState {
     /// bank's ~16 ms publish path, which is the cadence its leap/slip hysteresis is
     /// counted in — see [`MelodyTracker`].
     pub(crate) melody:              MelodyTracker,
-    /// Last note [`Self::melody`] produced, kept so the 40 ms pYIN path can re-stamp
-    /// it onto the reading it rebuilds instead of recomputing (which would
-    /// double-count the hysteresis) or blanking it.
-    pub(crate) melody_pitch:        Option<(f32, f32)>,
     /// Cuts the melody line into written notes. Like [`Self::melody`], driven **only**
     /// by the bank's publish path — its note timers are specified in seconds, so the
     /// cadence it is called at is what fixes their timescale. See [`NoteSegmenter`].
     pub(crate) segmenter:           NoteSegmenter,
-    /// Last line [`Self::segmenter`] produced, re-stamped by the 40 ms path for the
-    /// same reason as [`Self::melody_pitch`].
+    /// Last line [`Self::segmenter`] produced, kept so the 40 ms pYIN path can re-stamp
+    /// it onto the reading it rebuilds instead of recomputing (which would
+    /// double-count the segmenter's timers) or blanking it.
     pub(crate) note_line:           NoteLine,
     /// The engine's monotonic attack counter, written by the 40 ms analysis path and
     /// read by the 16 ms bank path (which is what feeds it to [`Self::segmenter`]).
@@ -138,7 +130,7 @@ pub(crate) struct SharedState {
     /// Every bank frame of the melody line, for the panels that draw its *history*
     /// rather than its instant — read with [`SharedState::melody_since`].
     ///
-    /// It exists because a panel sampling `melody_pitch` once per UI frame does not
+    /// It exists because a panel sampling the melody once per UI frame does not
     /// see the melody: the bank publishes at ~62 Hz, so a 60 fps panel silently drops
     /// a few percent of its frames and a 30 fps one drops **half**. The trills and
     /// vibrato that are the whole point of the fast path were being decimated by the
@@ -166,10 +158,8 @@ impl SharedState {
             resonator_spectrum:  Vec::new(),
             resonator_waterfall: VecDeque::with_capacity(WATERFALL_HISTORY),
             resonator_labels:    Vec::new(),
-            fast_pitch:          None,
             octave_anchor:       None,
             melody:              MelodyTracker::default(),
-            melody_pitch:        None,
             segmenter:           NoteSegmenter::default(),
             note_line:           NoteLine::default(),
             onset_seq:           0,
@@ -197,10 +187,8 @@ impl SharedState {
         self.resonator_spectrum.clear();
         self.resonator_waterfall.clear();
         self.resonator_labels.clear();
-        self.fast_pitch = None;
         self.octave_anchor = None;
         self.melody = MelodyTracker::default();
-        self.melody_pitch = None;
         self.segmenter = NoteSegmenter::default();
         self.note_line = NoteLine::default();
         self.onset_seq = 0;
@@ -374,14 +362,12 @@ impl ResonatorPipeline {
         state.resonator_spectrum.clear();
         state.resonator_waterfall.clear();
         state.resonator_labels = self.analyzer.note_labels(settings.accidental);
-        state.fast_pitch = None;
         // The bank's grid just changed under us, so the melody line's octave
         // dispute is about a reading that no longer exists — start it fresh
         // rather than let it carry into the rebuilt bank. The same goes for the
         // note being held: it was heard through the old grid, and its timers are
         // about to be stamped from a clock that kept running across the rebuild.
         state.melody = MelodyTracker::default();
-        state.melody_pitch = None;
         state.segmenter = NoteSegmenter::default();
         state.note_line = NoteLine::default();
         // The heat columns in the history are the old grid's: a different length,
@@ -393,8 +379,6 @@ impl ResonatorPipeline {
             reading.resonator_spectrum.clear();
             reading.resonator_waterfall.clear();
             reading.resonator_note_labels = resonator_labels;
-            reading.fast_pitch = None;
-            reading.melody_pitch = None;
             reading.note_line = NoteLine::default();
         }
     }
@@ -582,10 +566,9 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
     state.onset_seq = frame.onset_seq;
     // Re-stamp what the bank path last computed: this path rebuilds the whole
     // reading every 40 ms, so without this it would blank the bank's 16 ms values.
-    // Deliberately NOT recomputed here — the hysteresis in `MelodyTracker` and the
-    // note timers in `NoteSegmenter` are both counted in *bank* frames, and driving
-    // them from this path too would double-count every one of them.
-    let melody_pitch = state.melody_pitch;
+    // Deliberately NOT recomputed here — the note timers in `NoteSegmenter` are
+    // counted in *bank* frames, and driving them from this path too would
+    // double-count every one of them.
     let note_line = state.note_line.clone();
 
     let (note_name, cents) = frequency_to_note(smoothed_frequency, frame.concert_pitch_hz, frame.accidental);
@@ -615,8 +598,6 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
         resonator_waterfall: state.resonator_waterfall.iter().cloned().collect(),
         resonator_note_labels: state.resonator_labels.clone(),
         note_labels: note_bucket_labels(frame.accidental),
-        fast_pitch: state.fast_pitch,
-        melody_pitch,
         onset_seq: frame.onset_seq,
         note_line,
     });
@@ -661,22 +642,18 @@ fn publish_resonator_snapshot(
     let mut state = shared.lock().unwrap();
     state.resonator_spectrum = snapshot.spectrum;
     state.resonator_labels = snapshot.note_labels;
-    state.fast_pitch = snapshot.fundamental;
     let resonator_spectrum = state.resonator_spectrum.clone();
     let resonator_labels = state.resonator_labels.clone();
-    // `fast_pitch` stays on the reading raw, octave and all — it is the bank's own
-    // reading. What the melody is built from is gated: below the gate the bank is
-    // reporting the shape of room noise, and feeding that to the tracker keeps its
-    // hysteresis alive through every rest.
+    // What the melody is built from is gated: below the gate the bank is reporting
+    // the shape of room noise, and feeding that to the tracker keeps its hysteresis
+    // alive through every rest.
     //
-    // The melody is handed the frame's whole **salience curve**, not the argmax above:
+    // The melody is handed the frame's whole **salience curve**, not its argmax:
     // the errors left on a real violin are 4–6% near-ties, and a scalar cannot express a
     // tie for continuity to break. See `dsp::melody::SalienceDecoder`.
-    let fast_pitch = state.fast_pitch;
+    //
     // The salience the note is decoded from: RT-SWIPE's frame when it is the chosen
-    // frontend, the bank's own otherwise. `fast_pitch` above stays the bank's raw argmax
-    // regardless — it is the bank's reading for the tuner and the octave cross-check, not
-    // the melody's decision.
+    // frontend, the bank's own otherwise.
     let melody_source = melody_override.as_ref().or(snapshot.salience.as_ref());
     // The roll's salience layer, from the frame that actually decided the note — so it
     // mirrors the *chosen* detector, not always the bank. Built here rather than in the
@@ -696,7 +673,7 @@ fn publish_resonator_snapshot(
     // The melody line's whole latency win happens here: the bank publishes every
     // ~16 ms, so the played note is refreshed at the bank's cadence instead of
     // waiting for the 40 ms pYIN rebuild (which is itself ~128 ms behind). This
-    // is also the only caller allowed to drive the tracker — see `melody_pitch`.
+    // is also the only caller allowed to drive the tracker — see `SharedState::melody`.
     //
     // `now_seconds` is the **audio** clock, and the tracker's Viterbi measures its frame
     // length off it. That is not incidental: the bank's publish cadence is a user-facing
@@ -705,7 +682,6 @@ fn publish_resonator_snapshot(
     // `dsp::trellis`.
     let octave_anchor = state.octave_anchor;
     let melody_pitch = state.melody.update(bank, octave_anchor, now_seconds, frontend);
-    state.melody_pitch = melody_pitch;
     // …and the note the melody line is sounding is cut into written notes right
     // here too, on the sample clock. `None` covers silence and a rejected slip
     // alike, which is what the segmenter's release grace is built to absorb.
@@ -747,8 +723,6 @@ fn publish_resonator_snapshot(
         reading.resonator_spectrum = resonator_spectrum;
         reading.resonator_waterfall = resonator_waterfall;
         reading.resonator_note_labels = resonator_labels;
-        reading.fast_pitch = fast_pitch;
-        reading.melody_pitch = melody_pitch;
         reading.note_line = note_line;
     }
 }
@@ -1215,8 +1189,8 @@ mod tests {
     /// The silence gate moved out of the panels and into `publish_resonator_snapshot`
     /// with this change, so this is the test that it is still connected at all. It has
     /// to be an *absolute* level check: the bank's column is normalized to its own max,
-    /// so it reports a confident-looking fundamental for near-silence, and `fast_pitch`
-    /// alone can never distinguish the two. Ghost notes off the noise floor are not
+    /// so it reports a confident-looking fundamental for near-silence, and the bank's
+    /// argmax alone can never distinguish the two. Ghost notes off the noise floor are not
     /// hypothetical — they are what Phase 1.1 was reported for.
     #[test]
     fn the_silence_gate_keeps_room_noise_off_the_line() {
@@ -1236,8 +1210,10 @@ mod tests {
             level < MELODY_LEVEL_GATE,
             "the rig must actually be below the gate"
         );
+        let frames = state.melody_since(None);
+        assert!(!frames.is_empty(), "the bank must actually have published");
         assert!(
-            state.melody_pitch.is_none(),
+            frames.iter().all(|f| f.pitch.is_none()),
             "room noise reached the melody line at level {level}"
         );
         let line = &state.reading.as_ref().unwrap().note_line;

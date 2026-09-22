@@ -626,7 +626,7 @@ mod beta_sweep {
             fed += hop;
             let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
             if fed as f32 / sample_rate.hz() >= 1.0 {
-                verdicts.push(snapshot.fundamental.map(|(midi, _)| midi));
+                verdicts.push(snapshot.fundamental().map(|(midi, _)| midi));
             }
         }
         verdicts
