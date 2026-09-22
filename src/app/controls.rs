@@ -665,7 +665,7 @@ impl App {
                 *changed = true;
             }
             ui.label(
-                RichText::new(midi_label(settings.resonator.min_midi, settings.accidental))
+                RichText::new(settings.accidental.midi_name(settings.resonator.min_midi))
                     .color(color::TEXT_VALUE)
                     .monospace(),
             );
@@ -684,7 +684,7 @@ impl App {
                 *changed = true;
             }
             ui.label(
-                RichText::new(midi_label(settings.resonator.max_midi, settings.accidental))
+                RichText::new(settings.accidental.midi_name(settings.resonator.max_midi))
                     .color(color::TEXT_VALUE)
                     .monospace(),
             );
@@ -952,7 +952,3 @@ const RESONATOR_PARAM_HELP: &[(&str, &str)] = &[
          mirror images. Off = plain per-bin magnitudes at nominal pitch.",
     ),
 ];
-
-fn midi_label(midi: PNote, style: AccidentalStyle) -> String {
-    style.midi_name(midi.as_u8() as i32)
-}

@@ -476,7 +476,14 @@ NEWTYPE CANDIDATES; остаток (если есть) перечислен в �
   `Option<SampleRate>`, но потребитель — строка UI `app/controls.rs:330` («Input rate: {} Hz»,
   сейчас печатает «0 Hz» до старта), а что показывать вместо нуля — решение по UI, не
   механика фазы. Геттеры оставлены на примитивах как граница с UI.
-- **`AccidentalStyle::midi_name(midi: i32)`** (`core_types/note.rs:62`, найдено в Ф6в,
+- ✅ **Сделано** («refactor(types): midi_name принимает PNote»): `midi_name(PNote)`, обёртки
+  `drone_panel::note_name` и `controls::midi_label` (жили ради каста) сняты. Рамка живого ролла
+  **может** уйти ниже 0: `reframe` центрирует `MIN_SPAN = 14` на высоте, а банк отдаёт высоты
+  от MIDI 12 (призраки `release_ghosts_…` — 12, 13), ⇒ `lo ≈ 5`, ещё ниже с `VIEW_PAD`. Поэтому
+  ряды пианоролла не доказывают диапазон, а проверяют его: `impl TryFrom<i32> for PNote`, ряд
+  вне 0..=127 не подписывается (затенение и линия остаются). Баг октавы снят типом: у `u8`
+  усечение `/ 12` и есть пол. Тест `midi_name_spans_the_whole_midi_range` (C-1, B-1, C0, G9).
+  Исходная запись: **`AccidentalStyle::midi_name(midi: i32)`** (`core_types/note.rs:62`, найдено в Ф6в,
   2026-09-22): семь вызовов, пять из них кастуют в `i32` уже типизированное значение
   (`PNote` в `controls.rs:957`, `note.rs:264`, `staff_panel.rs` чип ноты, `analysis_math.rs`
   ×2; `u8` в `drone_panel.rs:329`), и только `pianoroll.rs` (`draw_rows`, `draw_right_scale`)

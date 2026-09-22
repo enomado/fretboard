@@ -51,7 +51,10 @@ use eframe::egui::{
 
 use crate::audio::types::BankRange;
 use crate::core_types::note::AccidentalStyle;
-use crate::core_types::pitch::Midi;
+use crate::core_types::pitch::{
+    Midi,
+    PNote,
+};
 use crate::ui::theme::intonation_color;
 use crate::ui::tokens::color;
 
@@ -416,6 +419,11 @@ fn draw_right_scale(
     let x = plot.right() + 6.0;
 
     for midi in lo..=hi {
+        // The padded view can run past MIDI 0..=127; a row out there is not a note
+        // and has no name to show.
+        let Ok(note) = PNote::try_from(midi) else {
+            continue;
+        };
         let pc = midi.rem_euclid(12);
         // Mirror the left gutter's density: every row when tall enough, else only C.
         if row_h < 9.0 && pc != 0 {
@@ -440,7 +448,7 @@ fn draw_right_scale(
         painter.text(
             pos2(x, map.y_of(midi as f32)),
             Align2::LEFT_CENTER,
-            style.midi_name(midi),
+            style.midi_name(note),
             FontId::proportional(size),
             label_heat_color(energy),
         );
@@ -504,8 +512,11 @@ fn draw_rows(
         );
 
         // Label the row when it is tall enough to read; always label C so there is
-        // an octave anchor even in a zoomed-out (many-row) view.
-        if row_h >= LABEL_MIN_ROW_H || pc == 0 {
+        // an octave anchor even in a zoomed-out (many-row) view. The padded view can
+        // run past MIDI 0..=127: such a row keeps its shading but has no name.
+        if let Ok(note) = PNote::try_from(midi)
+            && (row_h >= LABEL_MIN_ROW_H || pc == 0)
+        {
             let (color, size) = if pc == 0 {
                 (LABEL_OCTAVE, (row_h * 0.72).clamp(9.0, 13.0))
             } else {
@@ -514,7 +525,7 @@ fn draw_rows(
             painter.text(
                 pos2(rect.left() + LABEL_W - 6.0, center_y),
                 Align2::RIGHT_CENTER,
-                style.midi_name(midi),
+                style.midi_name(note),
                 FontId::proportional(size),
                 color,
             );

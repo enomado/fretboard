@@ -93,6 +93,19 @@ impl TryFrom<u8> for PNote {
     }
 }
 
+/// For integer grid rows that may run past the MIDI range (a roll's view is framed
+/// with padding around the played pitch, and nothing stops that padding going below 0).
+impl TryFrom<i32> for PNote {
+    type Error = &'static str;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        u8::try_from(value)
+            .ok()
+            .and_then(PNote::new)
+            .ok_or("MIDI pitch out of range 0..=127")
+    }
+}
+
 impl PNote {
     pub const MIN: u8 = 0;
     pub const MAX: u8 = 127;

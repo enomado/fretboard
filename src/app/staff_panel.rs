@@ -253,11 +253,7 @@ fn draw_card_header(ui: &mut Ui, line: &NoteLine, style: AccidentalStyle) {
                     Some(note) => {
                         pill_colored(
                             ui,
-                            &format!(
-                                "{}  {:+.0}\u{00A2}",
-                                style.midi_name(note.midi.as_u8() as i32),
-                                note.cents
-                            ),
+                            &format!("{}  {:+.0}\u{00A2}", style.midi_name(note.midi), note.cents),
                             PILL_INK_ON_INTONATION,
                             intonation_color(note.cents),
                         )

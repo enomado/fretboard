@@ -264,7 +264,7 @@ fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) ->
                 };
                 let text_color = if selected { VALUE_COLOR } else { KEY_LABEL };
                 let button =
-                    egui::Button::new(RichText::new(note_name(midi, style)).size(11.0).color(text_color))
+                    egui::Button::new(RichText::new(style.midi_name(note)).size(11.0).color(text_color))
                         .min_size(vec2(34.0, 24.0))
                         .fill(fill)
                         .stroke(Stroke::new(1.0_f32, stroke))
@@ -325,15 +325,11 @@ fn quick_button(ui: &mut Ui, label: &str) -> egui::Response {
     ui.add(SegmentedButton::action(label).min_width(64.0))
 }
 
-fn note_name(midi: u8, style: AccidentalStyle) -> String {
-    style.midi_name(midi as i32)
-}
-
 /// Краткая сводка набора нот для строки транспорта, напр. «A2 · E3 · A3».
 fn chord_summary(notes: &[PNote], style: AccidentalStyle) -> String {
     notes
         .iter()
-        .map(|n| note_name(n.as_u8(), style))
+        .map(|&n| style.midi_name(n))
         .collect::<Vec<_>>()
         .join(" · ")
 }

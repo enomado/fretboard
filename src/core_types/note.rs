@@ -58,11 +58,16 @@ impl AccidentalStyle {
         table[pc % 12]
     }
 
-    /// A full name with octave for a MIDI note, e.g. `"C#4"` / `"Db4"`.
-    pub fn midi_name(self, midi: i32) -> String {
-        let pc = midi.rem_euclid(12) as usize;
-        let octave = midi / 12 - 1;
-        format!("{}{}", self.pitch_class_name(pc), octave)
+    /// A full name with octave for a MIDI note, e.g. `"C#4"` / `"Db4"`; MIDI 0 is `"C-1"`.
+    ///
+    /// Takes [`PNote`], not a raw integer: the note is non-negative by construction, so
+    /// the truncating `/ 12` below is the floor it has to be. (With `i32` it was not —
+    /// MIDI −1 came out as octave −1 instead of −2 — and a roll row outside 0..=127
+    /// has no name to give anyway; see `ui::pianoroll`.)
+    pub fn midi_name(self, note: PNote) -> String {
+        let midi = note.as_u8();
+        let octave = i32::from(midi / 12) - 1;
+        format!("{}{}", self.pitch_class_name(usize::from(midi % 12)), octave)
     }
 }
 
@@ -261,7 +266,7 @@ impl ANote {
     /// pitch (ignoring however `self.ass` happened to be spelled). Used by the
     /// display surfaces that honour the global sharps/flats toggle.
     pub fn name_styled(&self, style: AccidentalStyle) -> String {
-        style.midi_name(self.to_pitch().as_u8() as i32)
+        style.midi_name(self.to_pitch())
     }
 
     fn simple(&self) -> PCNote {
@@ -289,6 +294,19 @@ mod tests {
 
             assert_eq!(pitch.to_anote().name(), note);
         }
+    }
+
+    /// Both ends of the MIDI range, and the octave boundary under C0 where a truncating
+    /// division on a signed note used to be off by one.
+    #[test]
+    fn midi_name_spans_the_whole_midi_range() {
+        let name = |midi: u8, style: AccidentalStyle| style.midi_name(PNote::new(midi).unwrap());
+        assert_eq!(name(0, AccidentalStyle::Sharps), "C-1");
+        assert_eq!(name(11, AccidentalStyle::Sharps), "B-1");
+        assert_eq!(name(12, AccidentalStyle::Sharps), "C0");
+        assert_eq!(name(61, AccidentalStyle::Sharps), "C#4");
+        assert_eq!(name(61, AccidentalStyle::Flats), "Db4");
+        assert_eq!(name(127, AccidentalStyle::Sharps), "G9");
     }
 
     #[test]
