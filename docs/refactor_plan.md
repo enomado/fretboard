@@ -12,6 +12,8 @@
    [violin_trainer_plan.md](violin_trainer_plan.md) (там же сказано, почему `cargo clippy`
    печатает 3 предупреждения манифеста и это не код; до Ф5 было 4).
 2. Взять **первую фазу без ✅** в таблице статуса. Порядок важен: см. «Зависимости».
+   Разведка Ф6в (свежие номера строк, две опровергнутые посылки, слепота регулярки DoD) —
+   в [HANDOFF_refactor_2026-09-22.md](HANDOFF_refactor_2026-09-22.md).
 3. После коммита фазы — поставить ✅ + тему коммита в таблицу (SHA не писать: история
    этого репо уже переписывалась, см. `memory/doc_shas_died_in_history_rewrite.md`).
 
@@ -367,7 +369,8 @@ NEWTYPE CANDIDATES; остаток (если есть) перечислен в �
 - `ResonatorViewSettings.min_midi/max_midi` → `BankRange` (с `serde(transparent)` на
   `PNote`, если его ещё нет, — проверить формат тестом совместимости из общих правил).
 
-**DoD.** `rg -n 'min_midi: (usize|i32)|max_midi: (usize|i32)' src` → 0.
+**DoD.** `rg -n 'min_midi:\s+(usize|i32)|max_midi:\s+(usize|i32)' src` → 0 (`\s+`, а не
+пробел: иначе выровненные поля `ResonatorViewSettings` проходят мимо — см. хендофф 09-22).
 `rg -n 'struct BankRange' src` → 1.
 
 ## Ф7 — снять реэкспорты `audio/mod.rs`
