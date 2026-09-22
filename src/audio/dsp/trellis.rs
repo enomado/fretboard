@@ -52,6 +52,13 @@
 //! the per-frame constants swing by. Both numbers come out of
 //! `tests::the_rates_are_dt_invariant_where_the_per_frame_constants_were_not`, which
 //! measures the old kernel on the same sweep rather than taking the new one's word for it.
+//!
+//! The kernel is only half of it. [`PitchTrellis::step`] adds the emissions' log-likelihood
+//! once per frame, so a caller whose cadence moves has to charge its evidence per second
+//! too, or the transitions are per second and the evidence per frame — and the slider is
+//! back in charge of how fast the path gives in. The bank's caller does
+//! (`melody::BETA_CALIBRATION_DT`, 2026-09-23: before it, a played octave was never
+//! followed at 30 ms cadence and up). pYIN's caller runs at a fixed 40 ms and does not need to.
 
 /// Which bin of a [`PitchGrid`] the trellis is in.
 ///

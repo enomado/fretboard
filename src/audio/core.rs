@@ -1205,16 +1205,24 @@ mod tests {
     /// on the wall-clock rig: A4 → ghosts at MIDI 16, 12, 13, 80, 76.)
     ///
     /// **The ghost depends on the bank's publish cadence**, which is a user slider
-    /// (`ResonatorSettings::update_ms`, 8..80 ms). Measured 2026-09-23 on the audio-clock
-    /// rig (10 ms chunks, so the cadence is `update_ms` rounded up to whole chunks):
-    /// `update_ms` 8 and 10 → one ghost, MIDI 24; 16, 20, 30, 40, 60, 80 → none. So the
-    /// test pins the cadence at 10 ms explicitly. It used to get there by accident: the
-    /// rig paced wall time with `thread::sleep`, and the per-chunk overhead usually pushed
-    /// each 10 ms chunk past the 16 ms gate — usually, which is why it flaked under load.
-    /// That a cadence slider decides whether a ghost is written is a defect of its own
-    /// (a frame-counted piece in the repair layer — `OctaveGate`'s 5-frame median is 50 ms
-    /// at 10 ms and 100 ms at 20 ms — is the suspect, not verified); see the plan's
-    /// «Попутные находки».
+    /// (`ResonatorSettings::update_ms`, 8..80 ms). Measured on the audio-clock rig (10 ms
+    /// chunks, so the cadence is `update_ms` rounded up to whole chunks): `update_ms` 8 and
+    /// 10 → one ghost; 16, 20, 30, 40, 60, 80 → none. So the test pins the cadence at 10 ms
+    /// explicitly. It used to get there by accident: the rig paced wall time with
+    /// `thread::sleep`, and the per-chunk overhead usually pushed each 10 ms chunk past the
+    /// 16 ms gate — usually, which is why it flaked under load.
+    ///
+    /// Tracing that dependency found the main lever upstream of the repair layer: the
+    /// decoder's β was charged per *frame* (`dsp::melody::BETA_CALIBRATION_DT`), so the
+    /// junk overturned the held A4 after 30 ms at 10 ms cadence and not before the gate
+    /// closed at 20. Fixed; A4 now holds to ~0.51 s at every cadence. What is left
+    /// (2026-09-23, ghost now MIDI **81**, was 24): the decoder moves to A5 — the partial
+    /// that rings longest — and at 10 ms stays there until the gate closes, while at 20 ms
+    /// it moves on to the junk after 80 ms and `OctaveGate` rejects that. Two frame-counted
+    /// pieces decide it: `OctaveGate`'s 5-frame median (20 ms of rejection at 10 ms
+    /// cadence, 40 at 20), and the max-product trellis, whose leap and voicing-switch costs
+    /// carry `ln(1/(λ·dt))` — ~0.7 nats dearer at 10 ms than at 20, which on a near-tie is
+    /// tens of ms. See the plan's «Попутные находки».
     ///
     /// **How bad this is live is not yet known**, and this test cannot say: it cuts the
     /// tone off instantly, which no instrument does. A real note decays over hundreds

@@ -123,6 +123,24 @@ const SALIENCE_BETA_BANK: f32 = 40.0;
 /// not β's to fix) and pays for it in latency, which is the exact trade the two sweeps price.
 const SALIENCE_BETA_RTSWIPE: f32 = 20.0;
 
+/// The frame length both βs were swept at — `beta_sweep` steps every take at this hop — and
+/// therefore the frame length a β's "nats per unit salience" is **per**.
+///
+/// A β is a rate of evidence, and it has to be charged per *second*, not per frame, for the
+/// same reason the trellis's transitions are (`super::trellis`, module docs): the bank
+/// publishes every `ResonatorSettings::update_ms`, a user slider spanning 8..80 ms. Charged
+/// per frame, halving the cadence doubles the evidence the decoder hears each second, while
+/// the transitions it weighs that evidence against stay put — so the slider decided how fast
+/// the path gives in. Measured (2026-09-23, `core::tests::release_ghosts_…`): on a cut A4 the
+/// bank's junk (MIDI 24) overturned the held note after 30 ms at 10 ms cadence and never
+/// before the level gate closed at 20 ms — a ghost note written or not by a display knob.
+///
+/// Consecutive frames are not independent looks at the signal either: the bank's resonators
+/// ring for longer than any frame, so a 10 ms frame is mostly the previous one again. Scaling
+/// the exponent by `dt / BETA_CALIBRATION_DT` makes a second of the same spectrum worth the
+/// same nats however it is sliced, and leaves both βs exactly as swept at this cadence.
+const BETA_CALIBRATION_DT: f32 = 0.016;
+
 /// The exchange rate for a given frontend — the one place the two βs are chosen between, so a
 /// caller passes *which frontend*, never a bare number it might pick wrong.
 pub(crate) fn salience_beta(frontend: PitchFrontend) -> f32 {
@@ -297,9 +315,14 @@ impl SalienceDecoder {
             // Nothing in C1..C8 looks like a harmonic series at all.
             return None;
         }
+        // β is per `BETA_CALIBRATION_DT` of signal; this frame covers `dt` of it.
+        let nats_per_salience = self.beta * dt / BETA_CALIBRATION_DT;
         for state in 0..trellis.grid().n_pitch() {
             let salience = frame.salience_at(offset + state);
-            emissions.set_state(PitchState(state), ((salience - max_salience) * self.beta).exp());
+            emissions.set_state(
+                PitchState(state),
+                ((salience - max_salience) * nats_per_salience).exp(),
+            );
         }
         // Voicing is the *level gate's* job, upstream (`core::MELODY_LEVEL_GATE`) — SWIPE′'s
         // absolute scale is not a confidence and must never be thresholded as one (design
@@ -583,9 +606,9 @@ mod beta_sweep {
 
         let mut analyzer = ResonatorAnalyzer::new(sample_rate);
         let mut decoder = SalienceDecoder::with_beta(beta);
-        // The bank's own ~16 ms publish cadence — the rate `MelodyTracker` is contractually
-        // driven at, and what the decoder measures its `dt` against.
-        let hop = (sample_rate.hz() * 0.016) as usize;
+        // The bank's default publish cadence — and, by definition, the frame length the β
+        // measured here is per (`BETA_CALIBRATION_DT`).
+        let hop = (sample_rate.hz() * BETA_CALIBRATION_DT) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
@@ -618,7 +641,7 @@ mod beta_sweep {
             .collect();
 
         let mut analyzer = ResonatorAnalyzer::new(sample_rate);
-        let hop = (sample_rate.hz() * 0.016) as usize;
+        let hop = (sample_rate.hz() * BETA_CALIBRATION_DT) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
@@ -648,7 +671,7 @@ mod beta_sweep {
             .collect();
 
         let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
-        let hop = (sample_rate.hz() * 0.016) as usize;
+        let hop = (sample_rate.hz() * BETA_CALIBRATION_DT) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
@@ -680,7 +703,7 @@ mod beta_sweep {
 
         let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         let mut decoder = SalienceDecoder::with_beta(beta);
-        let hop = (sample_rate.hz() * 0.016) as usize;
+        let hop = (sample_rate.hz() * BETA_CALIBRATION_DT) as usize;
         let mut verdicts = Vec::new();
         let mut fed = 0usize;
         while fed + hop <= samples.len() {
@@ -780,7 +803,7 @@ mod beta_sweep {
         let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0;
         let mut rtswipe = RtSwipe::new(sample_rate, Hz::A4_STANDARD);
         let mut decoder = SalienceDecoder::with_beta(beta);
-        let hop = (sample_rate.hz() * 0.016) as usize;
+        let hop = (sample_rate.hz() * BETA_CALIBRATION_DT) as usize;
         let mut fed = 0usize;
         while fed + hop <= signal.len() {
             rtswipe.process_samples(&signal[fed..fed + hop]);
@@ -1025,7 +1048,10 @@ mod beta_sweep {
     /// **The other edge of the trade, and the one that convicts a stuck needle.** A decoder
     /// that never moves scores beautifully on a take whose note never changes — which is
     /// three of the five takes above. Only this can tell "it is right" from "it is stuck".
-    fn change_latency_ms(from_hz: f32, to_hz: f32, beta: f32) -> f32 {
+    ///
+    /// `frame_dt` is the bank's publish cadence to decode at — `BETA_CALIBRATION_DT` for the
+    /// sweep; others for [`note_change_latency_is_a_time_not_a_frame_count`].
+    fn change_latency_ms(from_hz: f32, to_hz: f32, beta: f32, frame_dt: f32) -> f32 {
         let sample_rate = SampleRate(48_000);
         let hold = (sample_rate.hz() * 0.6) as usize;
         let mut signal = violin_tone(from_hz, sample_rate, hold);
@@ -1034,7 +1060,7 @@ mod beta_sweep {
         let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0;
         let mut analyzer = ResonatorAnalyzer::new(sample_rate);
         let mut decoder = SalienceDecoder::with_beta(beta);
-        let hop = (sample_rate.hz() * 0.016) as usize;
+        let hop = (sample_rate.hz() * frame_dt) as usize;
         let mut fed = 0usize;
         while fed + hop <= signal.len() {
             analyzer.process_samples(&signal[fed..fed + hop], true);
@@ -1076,7 +1102,7 @@ mod beta_sweep {
         for beta in CANDIDATES {
             print!("{beta:<16.1}");
             for (_, from, to) in cases {
-                let ms = change_latency_ms(from, to, beta);
+                let ms = change_latency_ms(from, to, beta, BETA_CALIBRATION_DT);
                 if ms.is_finite() {
                     print!("{ms:>16.0}");
                 } else {
@@ -1084,6 +1110,34 @@ mod beta_sweep {
                 }
             }
             println!();
+        }
+    }
+
+    /// REGRESSION: a **played** octave is followed at every bank cadence the slider offers
+    /// (`ResonatorSettings::update_ms`, 8..80 ms) — the real-bank twin of
+    /// `tests::a_takeover_is_timed_in_seconds_not_in_frames`.
+    ///
+    /// With β charged per frame (see [`BETA_CALIBRATION_DT`]), a coarse cadence heard a
+    /// fraction of the evidence per second against the same leap cost. Measured 2026-09-23,
+    /// A4→A5, ms at 8/10/16/20/30/40/60/80 ms frames: 72 90 88 340 **never never never
+    /// never** — from 30 ms up, the octave the user played was simply not believed. The same
+    /// table with β per second: 88 230 88 140 270 80 180 280.
+    ///
+    /// Those numbers are not flat, and this does not pretend they are: A5's even partials are
+    /// A4's whole series, so the two are a near-tie on the bank's salience, and a tie's
+    /// takeover time is sensitive to where the frames happen to fall. So the bound is "is
+    /// followed, within half a second", which is what was broken — not the octave latency
+    /// budget, which `segmenter::end_to_end_latency_probe` holds at the default cadence.
+    #[test]
+    fn a_played_octave_is_followed_at_every_cadence() {
+        for frame_dt in [0.008f32, 0.016, 0.030, 0.040, 0.060, 0.080] {
+            let ms = change_latency_ms(440.0, 880.0, SALIENCE_BETA_BANK, frame_dt);
+            assert!(
+                ms <= 500.0,
+                "A4->A5 at {:.0} ms bank frames: followed after {ms} ms — the cadence slider is \
+                 deciding whether a played octave is heard",
+                frame_dt * 1000.0
+            );
         }
     }
 
@@ -1181,6 +1235,73 @@ mod tests {
             (midi - 69.0).abs() < 0.5,
             "decoded {midi} on a C0..C6 bank; A4 is inside it and should be found"
         );
+    }
+
+    /// REGRESSION: how long sustained evidence takes to move the path is a **time**, and the
+    /// bank's publish cadence — `ResonatorSettings::update_ms`, a user slider over 8..80 ms —
+    /// must not decide it.
+    ///
+    /// β used to be charged per frame while the trellis's transitions were already rates per
+    /// second, so a takeover cost a fixed number of *frames*: measured here, 24 ms at 8 ms
+    /// frames and 240 ms at 80 — ×10 across the slider, three frames every time. Live, the
+    /// fine end let the bank's release junk overturn a held note fast enough to be written
+    /// as a ghost (`core::tests::release_ghosts_…`), and the coarse end never followed a
+    /// played octave at all (the bank twin in `beta_sweep`). See [`BETA_CALIBRATION_DT`].
+    ///
+    /// Synthetic on purpose: two fixed humps and nothing else, so the only thing that differs
+    /// between the runs is the frame length. The tolerance is one frame of the coarser
+    /// cadence — a takeover is only observable on a frame boundary, and at 80 ms nothing can
+    /// report one sooner than 80 ms after it.
+    #[test]
+    fn a_takeover_is_timed_in_seconds_not_in_frames() {
+        let bps = SPIRAL_BINS_PER_SEMITONE as f32;
+        let min_midi = 12.0f32;
+        let len = ((108.0 - min_midi) * bps) as usize + 1;
+        // A4 and A5 as two small triangular humps: `a` and `b` are their saliences.
+        let frame = |a: f32, b: f32| {
+            let mut curve = vec![0.0f32; len];
+            for (midi, peak) in [(69.0f32, a), (81.0, b)] {
+                let centre = ((midi - min_midi) * bps) as usize;
+                for offset in 0..=4usize {
+                    let s = peak * (1.0 - offset as f32 / 5.0);
+                    curve[centre - offset] = s;
+                    curve[centre + offset] = s;
+                }
+            }
+            SalienceFrame::from_curve(curve.clone(), curve, min_midi, bps)
+        };
+        // Held A4, then A5 leads by 0.1 — a clear lead, so the takeover is quick and the
+        // frame-count law shows at full size rather than behind a ceiling.
+        let takeover_ms = |dt: f64| {
+            let mut decoder = SalienceDecoder::default();
+            let mut t = 0.0f64;
+            while t < 0.3 {
+                t += dt;
+                decoder.decode(&frame(1.0, 0.9), t);
+            }
+            let change = t;
+            while t < change + 2.0 {
+                t += dt;
+                let (midi, _) = decoder.decode(&frame(0.9, 1.0), t).unwrap();
+                if (midi - 81.0).abs() < 0.5 {
+                    return ((t - change) * 1000.0) as f32;
+                }
+            }
+            panic!("A5 never took over at {:.0} ms frames", dt * 1000.0);
+        };
+
+        let reference = takeover_ms(BETA_CALIBRATION_DT as f64);
+        for dt in [0.008f32, 0.040, 0.080] {
+            let ms = takeover_ms(dt as f64);
+            let slack = dt.max(BETA_CALIBRATION_DT) * 1000.0;
+            assert!(
+                (ms - reference).abs() <= slack,
+                "A5 took over after {ms:.0} ms at {:.0} ms frames but {reference:.0} ms at {:.0} — \
+                 the cadence slider is deciding how fast the decoder believes evidence",
+                dt * 1000.0,
+                BETA_CALIBRATION_DT * 1000.0
+            );
+        }
     }
 
     /// The bank's fine pitch (and therefore its cents) survives a snap untouched —
