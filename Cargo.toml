@@ -1,6 +1,6 @@
 [package]
 name = "fretboard"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 # The bin target is named distinctly from the lib so the wasm/web build can
 # disambiguate. On wasm `cargo` emits BOTH this bin's wasm and the lib's cdylib
