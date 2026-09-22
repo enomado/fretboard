@@ -332,7 +332,7 @@ mod native {
         let _ = stream.pause();
         drop(stream);
 
-        let stats = stats.lock().map(|stats| stats.clone()).unwrap_or_default();
+        let stats = stats.lock().unwrap().clone();
         let status = if stats.samples == 0 { "silent" } else { "ok" }.to_owned();
         ProbeResult {
             candidate,
@@ -356,11 +356,10 @@ mod native {
             .build_input_stream(
                 *config,
                 move |data: &[T], _| {
-                    if let Ok(mut stats) = stats.lock() {
-                        for frame in data.chunks(channels) {
-                            if let Some(raw) = frame.first() {
-                                stats.push(f32::from_sample(*raw));
-                            }
+                    let mut stats = stats.lock().unwrap();
+                    for frame in data.chunks(channels) {
+                        if let Some(raw) = frame.first() {
+                            stats.push(f32::from_sample(*raw));
                         }
                     }
                 },

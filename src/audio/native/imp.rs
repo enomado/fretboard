@@ -18,6 +18,7 @@ use std::sync::mpsc::{
 use std::sync::{
     Arc,
     Mutex,
+    TryLockError,
 };
 use std::thread::{
     self,
@@ -297,14 +298,11 @@ impl AudioEngine {
     }
 
     pub fn status(&self) -> AudioStatus {
-        self.shared
-            .lock()
-            .map(|g| g.status.clone())
-            .unwrap_or_else(|_| AudioStatus::Error("Audio state lock poisoned".to_owned()))
+        self.shared.lock().unwrap().status.clone()
     }
 
     pub fn reading(&self) -> Option<TunerReading> {
-        self.shared.lock().ok().and_then(|g| g.reading.clone())
+        self.shared.lock().unwrap().reading.clone()
     }
 
     /// The melody line's recent history: every bank frame newer than `after`,
@@ -319,32 +317,26 @@ impl AudioEngine {
     /// (half of them at 30 fps). Like every consumer of the bank, the caller must be
     /// calling [`Self::request_resonator`] or the history simply stops growing.
     pub fn melody_since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
-        self.shared
-            .lock()
-            .map(|g| g.melody_since(after))
-            .unwrap_or_default()
+        self.shared.lock().unwrap().melody_since(after)
     }
 
     pub fn resonator_reading(&self) -> Option<ResonatorReading> {
-        self.shared.lock().ok().and_then(|g| {
-            (!g.resonator_spectrum.is_empty()).then(|| {
-                ResonatorReading {
-                    spectrum:    g.resonator_spectrum.clone(),
-                    waterfall:   g.resonator_waterfall.iter().cloned().collect(),
-                    note_labels: g.resonator_labels.clone(),
-                }
-            })
+        let g = self.shared.lock().unwrap();
+        (!g.resonator_spectrum.is_empty()).then(|| {
+            ResonatorReading {
+                spectrum:    g.resonator_spectrum.clone(),
+                waterfall:   g.resonator_waterfall.iter().cloned().collect(),
+                note_labels: g.resonator_labels.clone(),
+            }
         })
     }
 
     pub fn analysis_settings(&self) -> AnalysisSettings {
-        self.settings.lock().map(|g| g.clone()).unwrap_or_default()
+        self.settings.lock().unwrap().clone()
     }
 
     pub fn set_analysis_settings(&self, settings: AnalysisSettings) {
-        if let Ok(mut guard) = self.settings.lock() {
-            *guard = settings.sanitized();
-        }
+        *self.settings.lock().unwrap() = settings.sanitized();
     }
 
     pub fn input_gain(&self) -> f32 {
@@ -369,8 +361,11 @@ impl AudioEngine {
     pub fn input_waveform(&self) -> Vec<f32> {
         self.shared
             .lock()
-            .map(|g| g.input_waveform.iter().copied().collect())
-            .unwrap_or_default()
+            .unwrap()
+            .input_waveform
+            .iter()
+            .copied()
+            .collect()
     }
 
     pub fn monitor_enabled(&self) -> bool {
@@ -412,7 +407,7 @@ impl AudioEngine {
     }
 
     pub fn selected_input_id(&self) -> Option<String> {
-        self.selected_input_id.lock().ok().and_then(|g| g.clone())
+        self.selected_input_id.lock().unwrap().clone()
     }
 
     pub fn set_selected_input_id(&self, input_id: Option<String>) {
@@ -429,16 +424,14 @@ impl AudioEngine {
 
     /// Снимок текущего состояния дрона (для отрисовки/правки в UI).
     pub fn drone_state(&self) -> DroneState {
-        self.drone.lock().map(|g| g.clone()).unwrap_or_default()
+        self.drone.lock().unwrap().clone()
     }
 
     /// Заменить состояние дрона целиком. Реалтайм-колбэк подхватит его на
     /// ближайшем блоке — менять ноты/темп/режим можно прямо во время игры,
     /// перезапуск стрима не нужен.
     pub fn set_drone_state(&self, state: DroneState) {
-        if let Ok(mut guard) = self.drone.lock() {
-            *guard = state.sanitized();
-        }
+        *self.drone.lock().unwrap() = state.sanitized();
     }
 
     pub fn drone_playing(&self) -> bool {
@@ -461,9 +454,7 @@ impl AudioEngine {
     /// (Scale Finder, Resonator *) зовут это каждый кадр, пока видимы; пока
     /// зовут — воркер молотит, перестали (панель закрылась) — паркуется.
     pub fn request_resonator(&self) {
-        if let Ok(mut until) = self.resonator_wanted.lock() {
-            *until = Instant::now() + RESONATOR_PARK_GRACE;
-        }
+        *self.resonator_wanted.lock().unwrap() = Instant::now() + RESONATOR_PARK_GRACE;
     }
 
     /// Начать писать дубль в `path`. Идемпотентно по пути: повторный вызов с
@@ -651,9 +642,7 @@ impl AudioContext {
         // Единственная воронка всех отказов аудио-треда ⇒ единственное место, где
         // нужен лог: на Android причина иначе не наблюдаема вообще (см. `audio_alog`).
         audio_alog(&format!("audio error: {msg}"));
-        if let Ok(mut s) = self.shared.lock() {
-            s.status = AudioStatus::Error(msg.to_owned());
-        }
+        self.shared.lock().unwrap().status = AudioStatus::Error(msg.to_owned());
     }
 
     fn reset_shared_for_test_tone(&self) {
@@ -662,9 +651,7 @@ impl AudioContext {
     }
 
     fn reset_shared_state(&self) {
-        if let Ok(mut s) = self.shared.lock() {
-            s.reset();
-        }
+        self.shared.lock().unwrap().reset();
     }
 
     fn play_test_note(&self, midi: PNote) {
@@ -713,8 +700,11 @@ impl AudioContext {
                 move |data: &mut [f32], _| {
                     // try_lock: если UI прямо сейчас пишет состояние, держим
                     // прошлый снимок — реалтайм-колбэк никогда не блокируется.
-                    if let Ok(guard) = drone.try_lock() {
-                        synth.adopt(&guard);
+                    // Отравленный замок — не «занято»: писавший поток уже упал.
+                    match drone.try_lock() {
+                        Ok(guard) => synth.adopt(&guard),
+                        Err(TryLockError::WouldBlock) => {}
+                        Err(TryLockError::Poisoned(e)) => panic!("{e}"),
                     }
                     for frame in data.chunks_mut(channels) {
                         let sample = synth.next_sample();
@@ -905,9 +895,7 @@ impl AudioContext {
         self.input_sample_rate.store(sample_rate, Ordering::Relaxed);
         self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
         self.reset_shared_state();
-        if let Ok(mut sel) = self.selected_input_id.lock() {
-            *sel = Some(selected_id.to_owned());
-        }
+        *self.selected_input_id.lock().unwrap() = Some(selected_id.to_owned());
     }
 
     /// Поднять capture, играющий дубль с диска вместо устройства.
@@ -955,12 +943,7 @@ impl AudioContext {
         self.monitor_output_rate.store(output_rate, Ordering::Relaxed);
         self.reset_shared_state();
 
-        let selected_id = self
-            .selected_input_id
-            .lock()
-            .ok()
-            .and_then(|sel| sel.clone())
-            .unwrap_or_default();
+        let selected_id = self.selected_input_id.lock().unwrap().clone().unwrap_or_default();
 
         self.replay.publish(ReplayStatus::Playing {
             path,
@@ -1125,14 +1108,9 @@ fn start_resonator_worker(
         let mut batch: Vec<f32> = Vec::with_capacity(4096);
 
         while !stop_flag.load(Ordering::Relaxed) {
-            // Гейт: банк нужен, только пока UI двигает дедлайн. Замок не
-            // отравлен/в прошлом → считаем active=false (паркуемся). Если замок
-            // отравлен — на стороне безопасности молотим (lock().is_ok() == false
-            // ⇒ active=false здесь; но это практически недостижимо).
-            let active = resonator_wanted
-                .lock()
-                .map(|until| Instant::now() < *until)
-                .unwrap_or(false);
+            // Гейт: банк нужен, только пока UI двигает дедлайн вперёд; дедлайн в
+            // прошлом ⇒ паркуемся.
+            let active = Instant::now() < *resonator_wanted.lock().unwrap();
 
             batch.clear();
             for _ in 0..4096 {
@@ -1426,7 +1404,7 @@ fn play_test_note_thread(
     let sample_rate = config.sample_rate as f32;
     let channels = usize::from(config.channels);
     // Тест-нота звучит по текущему камертону, чтобы совпадать с анализом.
-    let reference_hz = settings.lock().map(|g| g.concert_pitch_hz).unwrap_or(440.0);
+    let reference_hz = settings.lock().unwrap().concert_pitch_hz;
     let frequency = midi_to_hz(midi.as_u8() as f32, reference_hz);
     let total_samples = (sample_rate * TEST_TONE_DURATION.as_secs_f32()) as usize;
     let samples = Arc::new(test_tone_samples(frequency, sample_rate, total_samples));

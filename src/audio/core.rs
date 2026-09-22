@@ -214,9 +214,7 @@ impl SharedState {
 // it's dead code in wasm builds — silence the lint rather than split the module.
 #[allow(dead_code)]
 pub(crate) fn set_shared_error(shared: &Arc<Mutex<SharedState>>, msg: &str) {
-    if let Ok(mut state) = shared.lock() {
-        state.status = AudioStatus::Error(msg.to_owned());
-    }
+    shared.lock().unwrap().status = AudioStatus::Error(msg.to_owned());
 }
 
 // ------------------------------------------------------------------
@@ -309,7 +307,7 @@ impl ResonatorPipeline {
         input_gain: &Arc<AtomicU32>,
         input_level: &Arc<AtomicU32>,
     ) {
-        let analysis_settings = settings.lock().map(|g| g.clone()).unwrap_or_default().sanitized();
+        let analysis_settings = settings.lock().unwrap().clone().sanitized();
         self.sync_settings(&analysis_settings, shared);
 
         let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
@@ -367,33 +365,32 @@ impl ResonatorPipeline {
             self.rtswipe = RtSwipe::new(self.sample_rate, settings.concert_pitch_hz);
             self.rtswipe_ref = settings.concert_pitch_hz;
         }
-        if let Ok(mut state) = shared.lock() {
-            state.resonator_spectrum.clear();
-            state.resonator_waterfall.clear();
-            state.resonator_labels = self.analyzer.note_labels(settings.accidental);
-            state.fast_pitch = None;
-            // The bank's grid just changed under us, so the melody line's octave
-            // dispute is about a reading that no longer exists — start it fresh
-            // rather than let it carry into the rebuilt bank. The same goes for the
-            // note being held: it was heard through the old grid, and its timers are
-            // about to be stamped from a clock that kept running across the rebuild.
-            state.melody = MelodyTracker::default();
-            state.melody_pitch = None;
-            state.segmenter = NoteSegmenter::default();
-            state.note_line = NoteLine::default();
-            // The heat columns in the history are the old grid's: a different length,
-            // and a different bin→pitch mapping. A panel drawing them against the new
-            // grid's `min_midi..max_midi` would paint them at the wrong pitch.
-            state.melody_history.clear();
-            let resonator_labels = state.resonator_labels.clone();
-            if let Some(reading) = state.reading.as_mut() {
-                reading.resonator_spectrum.clear();
-                reading.resonator_waterfall.clear();
-                reading.resonator_note_labels = resonator_labels;
-                reading.fast_pitch = None;
-                reading.melody_pitch = None;
-                reading.note_line = NoteLine::default();
-            }
+        let mut state = shared.lock().unwrap();
+        state.resonator_spectrum.clear();
+        state.resonator_waterfall.clear();
+        state.resonator_labels = self.analyzer.note_labels(settings.accidental);
+        state.fast_pitch = None;
+        // The bank's grid just changed under us, so the melody line's octave
+        // dispute is about a reading that no longer exists — start it fresh
+        // rather than let it carry into the rebuilt bank. The same goes for the
+        // note being held: it was heard through the old grid, and its timers are
+        // about to be stamped from a clock that kept running across the rebuild.
+        state.melody = MelodyTracker::default();
+        state.melody_pitch = None;
+        state.segmenter = NoteSegmenter::default();
+        state.note_line = NoteLine::default();
+        // The heat columns in the history are the old grid's: a different length,
+        // and a different bin→pitch mapping. A panel drawing them against the new
+        // grid's `min_midi..max_midi` would paint them at the wrong pitch.
+        state.melody_history.clear();
+        let resonator_labels = state.resonator_labels.clone();
+        if let Some(reading) = state.reading.as_mut() {
+            reading.resonator_spectrum.clear();
+            reading.resonator_waterfall.clear();
+            reading.resonator_note_labels = resonator_labels;
+            reading.fast_pitch = None;
+            reading.melody_pitch = None;
+            reading.note_line = NoteLine::default();
         }
     }
 }
@@ -419,7 +416,7 @@ impl AnalysisPipeline {
         input_gain: &Arc<AtomicU32>,
         input_level: &Arc<AtomicU32>,
     ) {
-        let analysis_settings = settings.lock().map(|g| g.clone()).unwrap_or_default().sanitized();
+        let analysis_settings = settings.lock().unwrap().clone().sanitized();
         let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
         let mut recent: Vec<f32> = Vec::new();
 
@@ -535,11 +532,10 @@ fn append_input_waveform(shared: &Arc<Mutex<SharedState>>, samples: &[f32]) {
     if samples.is_empty() {
         return;
     }
-    if let Ok(mut state) = shared.lock() {
-        state.input_waveform.extend(samples.iter().copied());
-        while state.input_waveform.len() > INPUT_WAVEFORM_HISTORY {
-            state.input_waveform.pop_front();
-        }
+    let mut state = shared.lock().unwrap();
+    state.input_waveform.extend(samples.iter().copied());
+    while state.input_waveform.len() > INPUT_WAVEFORM_HISTORY {
+        state.input_waveform.pop_front();
     }
 }
 
@@ -551,77 +547,75 @@ fn push_limited_history<T>(history: &mut VecDeque<T>, item: T, max_len: usize) {
 }
 
 fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFrame) {
-    if let Ok(mut state) = shared.lock() {
-        // pYIN's HMM already smooths and octave-stabilises the pitch, so we take its
-        // frequency verbatim (no more EMA). `smoothed_frequency` is now just the
-        // last voiced pitch, held through a brief unvoiced gap so the note doesn't
-        // blink out between frames.
-        let (smoothed_frequency, clarity) = match frame.pitch {
-            Some(pitch) => {
-                state.smoothed_frequency = Some(pitch.frequency_hz);
-                (pitch.frequency_hz, pitch.clarity)
-            }
-            None => {
-                let Some(sf) = state.smoothed_frequency else {
-                    return;
-                };
-                (sf, 0.0)
-            }
-        };
+    let mut state = shared.lock().unwrap();
+    // pYIN's HMM already smooths and octave-stabilises the pitch, so we take its
+    // frequency verbatim (no more EMA). `smoothed_frequency` is now just the
+    // last voiced pitch, held through a brief unvoiced gap so the note doesn't
+    // blink out between frames.
+    let (smoothed_frequency, clarity) = match frame.pitch {
+        Some(pitch) => {
+            state.smoothed_frequency = Some(pitch.frequency_hz);
+            (pitch.frequency_hz, pitch.clarity)
+        }
+        None => {
+            let Some(sf) = state.smoothed_frequency else {
+                return;
+            };
+            (sf, 0.0)
+        }
+    };
 
-        // pYIN's octave opinion for the melody line. Stored as MIDI against the
-        // concert pitch it was measured with, so the 16 ms bank path can snap to it
-        // without reaching for the settings. Clarity is pYIN's voiced probability,
-        // which is what decides whether the opinion is worth taking at all.
-        let anchor_midi = 69.0 + 12.0 * (smoothed_frequency / frame.concert_pitch_hz).log2();
-        state.octave_anchor = Some((anchor_midi, clarity));
-        // Hand the attack counter to the bank path, which is what feeds it to the
-        // segmenter. Onsets are found on this plane (off the window RMS) but consumed
-        // on that one, so like `octave_anchor` the value has to cross between them.
-        state.onset_seq = frame.onset_seq;
-        // Re-stamp what the bank path last computed: this path rebuilds the whole
-        // reading every 40 ms, so without this it would blank the bank's 16 ms values.
-        // Deliberately NOT recomputed here — the hysteresis in `MelodyTracker` and the
-        // note timers in `NoteSegmenter` are both counted in *bank* frames, and driving
-        // them from this path too would double-count every one of them.
-        let melody_pitch = state.melody_pitch;
-        let note_line = state.note_line.clone();
+    // pYIN's octave opinion for the melody line. Stored as MIDI against the
+    // concert pitch it was measured with, so the 16 ms bank path can snap to it
+    // without reaching for the settings. Clarity is pYIN's voiced probability,
+    // which is what decides whether the opinion is worth taking at all.
+    let anchor_midi = 69.0 + 12.0 * (smoothed_frequency / frame.concert_pitch_hz).log2();
+    state.octave_anchor = Some((anchor_midi, clarity));
+    // Hand the attack counter to the bank path, which is what feeds it to the
+    // segmenter. Onsets are found on this plane (off the window RMS) but consumed
+    // on that one, so like `octave_anchor` the value has to cross between them.
+    state.onset_seq = frame.onset_seq;
+    // Re-stamp what the bank path last computed: this path rebuilds the whole
+    // reading every 40 ms, so without this it would blank the bank's 16 ms values.
+    // Deliberately NOT recomputed here — the hysteresis in `MelodyTracker` and the
+    // note timers in `NoteSegmenter` are both counted in *bank* frames, and driving
+    // them from this path too would double-count every one of them.
+    let melody_pitch = state.melody_pitch;
+    let note_line = state.note_line.clone();
 
-        let (note_name, cents) =
-            frequency_to_note(smoothed_frequency, frame.concert_pitch_hz, frame.accidental);
-        push_limited_history(&mut state.waterfall, frame.spectrum.clone(), WATERFALL_HISTORY);
-        push_limited_history(
-            &mut state.note_waterfall,
-            frame.note_spectrum.clone(),
-            WATERFALL_HISTORY,
-        );
-        push_limited_history(
-            &mut state.spiral_waterfall,
-            frame.spiral_spectrum.clone(),
-            WATERFALL_HISTORY,
-        );
-        state.reading = Some(TunerReading {
-            frequency_hz: smoothed_frequency,
-            note_name,
-            cents,
-            clarity,
-            spectrum: frame.spectrum,
-            waterfall: state.waterfall.iter().cloned().collect(),
-            note_spectrum: frame.note_spectrum,
-            note_waterfall: state.note_waterfall.iter().cloned().collect(),
-            spiral_spectrum: frame.spiral_spectrum,
-            spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
-            resonator_spectrum: state.resonator_spectrum.clone(),
-            resonator_waterfall: state.resonator_waterfall.iter().cloned().collect(),
-            resonator_note_labels: state.resonator_labels.clone(),
-            note_labels: note_bucket_labels(frame.accidental),
-            fast_pitch: state.fast_pitch,
-            melody_pitch,
-            onset_seq: frame.onset_seq,
-            note_line,
-        });
-        state.status = AudioStatus::Listening;
-    }
+    let (note_name, cents) = frequency_to_note(smoothed_frequency, frame.concert_pitch_hz, frame.accidental);
+    push_limited_history(&mut state.waterfall, frame.spectrum.clone(), WATERFALL_HISTORY);
+    push_limited_history(
+        &mut state.note_waterfall,
+        frame.note_spectrum.clone(),
+        WATERFALL_HISTORY,
+    );
+    push_limited_history(
+        &mut state.spiral_waterfall,
+        frame.spiral_spectrum.clone(),
+        WATERFALL_HISTORY,
+    );
+    state.reading = Some(TunerReading {
+        frequency_hz: smoothed_frequency,
+        note_name,
+        cents,
+        clarity,
+        spectrum: frame.spectrum,
+        waterfall: state.waterfall.iter().cloned().collect(),
+        note_spectrum: frame.note_spectrum,
+        note_waterfall: state.note_waterfall.iter().cloned().collect(),
+        spiral_spectrum: frame.spiral_spectrum,
+        spiral_waterfall: state.spiral_waterfall.iter().cloned().collect(),
+        resonator_spectrum: state.resonator_spectrum.clone(),
+        resonator_waterfall: state.resonator_waterfall.iter().cloned().collect(),
+        resonator_note_labels: state.resonator_labels.clone(),
+        note_labels: note_bucket_labels(frame.accidental),
+        fast_pitch: state.fast_pitch,
+        melody_pitch,
+        onset_seq: frame.onset_seq,
+        note_line,
+    });
+    state.status = AudioStatus::Listening;
 }
 
 /// Publish one bank frame: the heat column, the melody line's note, and the written
@@ -659,99 +653,98 @@ fn publish_resonator_snapshot(
         frontend,
         gamma,
     } = front;
-    if let Ok(mut state) = shared.lock() {
-        state.resonator_spectrum = snapshot.spectrum;
-        state.resonator_labels = snapshot.note_labels;
-        state.fast_pitch = snapshot.fundamental;
-        let resonator_spectrum = state.resonator_spectrum.clone();
-        let resonator_labels = state.resonator_labels.clone();
-        // `fast_pitch` stays on the reading raw, octave and all — it is the bank's own
-        // reading. What the melody is built from is gated: below the gate the bank is
-        // reporting the shape of room noise, and feeding that to the tracker keeps its
-        // hysteresis alive through every rest.
-        //
-        // The melody is handed the frame's whole **salience curve**, not the argmax above:
-        // the errors left on a real violin are 4–6% near-ties, and a scalar cannot express a
-        // tie for continuity to break. See `dsp::melody::SalienceDecoder`.
-        let fast_pitch = state.fast_pitch;
-        // The salience the note is decoded from: RT-SWIPE's frame when it is the chosen
-        // frontend, the bank's own otherwise. `fast_pitch` above stays the bank's raw argmax
-        // regardless — it is the bank's reading for the tuner and the octave cross-check, not
-        // the melody's decision.
-        let melody_source = melody_override.as_ref().or(snapshot.salience.as_ref());
-        // The roll's salience layer, from the frame that actually decided the note — so it
-        // mirrors the *chosen* detector, not always the bank. Built here rather than in the
-        // snapshot (which only ever knows the bank) and on the frame's **own** grid: the bank
-        // and RT-SWIPE frames disagree about it (a user-narrowed bank vs the fixed pitch
-        // domain), and painting one on the other's grid lands the curve at the wrong pitch.
-        // Ungated on purpose — the display gate is the panel's (`HEAT_LEVEL_GATE`), the same
-        // rule the raw `heat` above is left ungated for. See `SalienceHeat`.
-        let salience_heat = melody_source.map(|frame| {
-            SalienceHeat {
-                data:              frame.display_heat(gamma),
-                min_midi:          frame.min_midi(),
-                bins_per_semitone: frame.bins_per_semitone(),
-            }
-        });
-        let bank = (level >= MELODY_LEVEL_GATE).then_some(melody_source).flatten();
-        // The melody line's whole latency win happens here: the bank publishes every
-        // ~16 ms, so the played note is refreshed at the bank's cadence instead of
-        // waiting for the 40 ms pYIN rebuild (which is itself ~128 ms behind). This
-        // is also the only caller allowed to drive the tracker — see `melody_pitch`.
-        //
-        // `now_seconds` is the **audio** clock, and the tracker's Viterbi measures its frame
-        // length off it. That is not incidental: the bank's publish cadence is a user-facing
-        // slider (`ResonatorSettings::update_ms`, 8..80 ms), and a continuity model with
-        // per-frame costs would hand that slider the detector's smoothing — see
-        // `dsp::trellis`.
-        let octave_anchor = state.octave_anchor;
-        let melody_pitch = state.melody.update(bank, octave_anchor, now_seconds, frontend);
-        state.melody_pitch = melody_pitch;
-        // …and the note the melody line is sounding is cut into written notes right
-        // here too, on the sample clock. `None` covers silence and a rejected slip
-        // alike, which is what the segmenter's release grace is built to absorb.
-        let onset_seq = state.onset_seq;
-        let note_line = state
-            .segmenter
-            .update(melody_pitch.map(|(midi, _)| midi), onset_seq, now_seconds);
-        state.note_line = note_line.clone();
-        // Everything this frame decided, kept as one record for the panels that draw a
-        // history. Stamped with the SAMPLE clock — the same `now_seconds` the segmenter
-        // just measured the note with, so the line a panel plots and the notes the
-        // engine wrote are on one ruler. See `MelodyFrame::t` for why not `seq`.
-        let seq = state.melody_seq;
-        state.melody_seq += 1;
-        state.melody_history.push(MelodyFrame {
-            seq,
-            t: now_seconds,
-            pitch: melody_pitch.map(|(midi, _)| midi),
-            level,
-            heat: resonator_spectrum.clone(),
-            // The scorer's own view of this same column, for the roll's debug layer. Taken
-            // from the snapshot rather than re-scored: re-running SWIPE′ for the picture
-            // would make the picture a *different* frame's evidence, drawn under a line it
-            // did not decide — which is the exact failure the 1:1 alignment above exists to
-            // rule out.
-            // Raw, exactly like `heat` above: the display gate is the panel's
-            // (`HEAT_LEVEL_GATE`), not the engine's. `MELODY_LEVEL_GATE` gated the copy the
-            // *decoder* saw and has no business deciding a picture.
-            salience: salience_heat,
-        });
-        push_limited_history(
-            &mut state.resonator_waterfall,
-            resonator_spectrum.clone(),
-            history_len,
-        );
-        let resonator_waterfall: Vec<Vec<f32>> = state.resonator_waterfall.iter().cloned().collect();
-
-        if let Some(reading) = state.reading.as_mut() {
-            reading.resonator_spectrum = resonator_spectrum;
-            reading.resonator_waterfall = resonator_waterfall;
-            reading.resonator_note_labels = resonator_labels;
-            reading.fast_pitch = fast_pitch;
-            reading.melody_pitch = melody_pitch;
-            reading.note_line = note_line;
+    let mut state = shared.lock().unwrap();
+    state.resonator_spectrum = snapshot.spectrum;
+    state.resonator_labels = snapshot.note_labels;
+    state.fast_pitch = snapshot.fundamental;
+    let resonator_spectrum = state.resonator_spectrum.clone();
+    let resonator_labels = state.resonator_labels.clone();
+    // `fast_pitch` stays on the reading raw, octave and all — it is the bank's own
+    // reading. What the melody is built from is gated: below the gate the bank is
+    // reporting the shape of room noise, and feeding that to the tracker keeps its
+    // hysteresis alive through every rest.
+    //
+    // The melody is handed the frame's whole **salience curve**, not the argmax above:
+    // the errors left on a real violin are 4–6% near-ties, and a scalar cannot express a
+    // tie for continuity to break. See `dsp::melody::SalienceDecoder`.
+    let fast_pitch = state.fast_pitch;
+    // The salience the note is decoded from: RT-SWIPE's frame when it is the chosen
+    // frontend, the bank's own otherwise. `fast_pitch` above stays the bank's raw argmax
+    // regardless — it is the bank's reading for the tuner and the octave cross-check, not
+    // the melody's decision.
+    let melody_source = melody_override.as_ref().or(snapshot.salience.as_ref());
+    // The roll's salience layer, from the frame that actually decided the note — so it
+    // mirrors the *chosen* detector, not always the bank. Built here rather than in the
+    // snapshot (which only ever knows the bank) and on the frame's **own** grid: the bank
+    // and RT-SWIPE frames disagree about it (a user-narrowed bank vs the fixed pitch
+    // domain), and painting one on the other's grid lands the curve at the wrong pitch.
+    // Ungated on purpose — the display gate is the panel's (`HEAT_LEVEL_GATE`), the same
+    // rule the raw `heat` above is left ungated for. See `SalienceHeat`.
+    let salience_heat = melody_source.map(|frame| {
+        SalienceHeat {
+            data:              frame.display_heat(gamma),
+            min_midi:          frame.min_midi(),
+            bins_per_semitone: frame.bins_per_semitone(),
         }
+    });
+    let bank = (level >= MELODY_LEVEL_GATE).then_some(melody_source).flatten();
+    // The melody line's whole latency win happens here: the bank publishes every
+    // ~16 ms, so the played note is refreshed at the bank's cadence instead of
+    // waiting for the 40 ms pYIN rebuild (which is itself ~128 ms behind). This
+    // is also the only caller allowed to drive the tracker — see `melody_pitch`.
+    //
+    // `now_seconds` is the **audio** clock, and the tracker's Viterbi measures its frame
+    // length off it. That is not incidental: the bank's publish cadence is a user-facing
+    // slider (`ResonatorSettings::update_ms`, 8..80 ms), and a continuity model with
+    // per-frame costs would hand that slider the detector's smoothing — see
+    // `dsp::trellis`.
+    let octave_anchor = state.octave_anchor;
+    let melody_pitch = state.melody.update(bank, octave_anchor, now_seconds, frontend);
+    state.melody_pitch = melody_pitch;
+    // …and the note the melody line is sounding is cut into written notes right
+    // here too, on the sample clock. `None` covers silence and a rejected slip
+    // alike, which is what the segmenter's release grace is built to absorb.
+    let onset_seq = state.onset_seq;
+    let note_line = state
+        .segmenter
+        .update(melody_pitch.map(|(midi, _)| midi), onset_seq, now_seconds);
+    state.note_line = note_line.clone();
+    // Everything this frame decided, kept as one record for the panels that draw a
+    // history. Stamped with the SAMPLE clock — the same `now_seconds` the segmenter
+    // just measured the note with, so the line a panel plots and the notes the
+    // engine wrote are on one ruler. See `MelodyFrame::t` for why not `seq`.
+    let seq = state.melody_seq;
+    state.melody_seq += 1;
+    state.melody_history.push(MelodyFrame {
+        seq,
+        t: now_seconds,
+        pitch: melody_pitch.map(|(midi, _)| midi),
+        level,
+        heat: resonator_spectrum.clone(),
+        // The scorer's own view of this same column, for the roll's debug layer. Taken
+        // from the snapshot rather than re-scored: re-running SWIPE′ for the picture
+        // would make the picture a *different* frame's evidence, drawn under a line it
+        // did not decide — which is the exact failure the 1:1 alignment above exists to
+        // rule out.
+        // Raw, exactly like `heat` above: the display gate is the panel's
+        // (`HEAT_LEVEL_GATE`), not the engine's. `MELODY_LEVEL_GATE` gated the copy the
+        // *decoder* saw and has no business deciding a picture.
+        salience: salience_heat,
+    });
+    push_limited_history(
+        &mut state.resonator_waterfall,
+        resonator_spectrum.clone(),
+        history_len,
+    );
+    let resonator_waterfall: Vec<Vec<f32>> = state.resonator_waterfall.iter().cloned().collect();
+
+    if let Some(reading) = state.reading.as_mut() {
+        reading.resonator_spectrum = resonator_spectrum;
+        reading.resonator_waterfall = resonator_waterfall;
+        reading.resonator_note_labels = resonator_labels;
+        reading.fast_pitch = fast_pitch;
+        reading.melody_pitch = melody_pitch;
+        reading.note_line = note_line;
     }
 }
 
@@ -844,6 +837,34 @@ mod tests {
                 .map(|r| r.note_line.clone())
                 .unwrap_or_default()
         }
+    }
+
+    /// REGRESSION: a poisoned settings lock is a panic, not a silent fall-back to defaults.
+    ///
+    /// Poisoned means another thread already died holding the guard mid-write. The
+    /// pipeline used to take `unwrap_or_default()` there and carry on with default
+    /// settings — the app kept running, the first panic was hidden, and nothing said so.
+    #[test]
+    #[should_panic(expected = "PoisonError")]
+    fn a_poisoned_settings_lock_panics_instead_of_using_defaults() {
+        let rig = Rig::new(48_000.0);
+        let settings = rig.settings.clone();
+        thread::spawn(move || {
+            let _guard = settings.lock().unwrap();
+            panic!("writer dies holding the settings guard");
+        })
+        .join()
+        .unwrap_err();
+        assert!(rig.settings.is_poisoned());
+
+        let mut analysis = AnalysisPipeline::new(48_000.0);
+        analysis.push_samples(
+            violin_tone(440.0, 48_000.0, 1024),
+            &rig.shared,
+            &rig.settings,
+            &rig.gain,
+            &rig.level,
+        );
     }
 
     /// DIAGNOSTIC: does the engine put notes on the line for a **real violin**, through the

@@ -35,7 +35,6 @@ use crate::audio::core::{
 };
 use crate::audio::types::{
     AnalysisSettings,
-    AudioStatus,
     ResonatorReading,
 };
 use crate::audio::worker_proto::{
@@ -107,9 +106,7 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
                 AnalysisPipeline::new(sample_rate),
                 ResonatorPipeline::new(sample_rate),
             ));
-            if let Ok(mut shared) = state.shared.lock() {
-                shared.reset();
-            }
+            state.shared.lock().unwrap().reset();
         }
         ToWorker::Samples(samples) => {
             let Some((analysis, resonator)) = state.pipelines.as_mut() else {
@@ -136,9 +133,7 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
             post(scope, &snapshot);
         }
         ToWorker::Settings(settings) => {
-            if let Ok(mut guard) = state.settings.lock() {
-                *guard = (*settings).sanitized();
-            }
+            *state.settings.lock().unwrap() = (*settings).sanitized();
         }
         ToWorker::Gain(gain) => {
             state.input_gain.store(gain.to_bits(), Ordering::Relaxed);
@@ -155,31 +150,21 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
 
 fn snapshot(state: &mut WorkerState) -> FromWorker {
     let level = f32::from_bits(state.input_level.load(Ordering::Relaxed));
-    let (status, reading, resonator, waveform, melody) = match state.shared.lock() {
-        Ok(shared) => {
-            (
-                shared.status.clone(),
-                shared.reading.clone(),
-                (!shared.resonator_spectrum.is_empty()).then(|| {
-                    ResonatorReading {
-                        spectrum:    shared.resonator_spectrum.clone(),
-                        waterfall:   shared.resonator_waterfall.iter().cloned().collect(),
-                        note_labels: shared.resonator_labels.clone(),
-                    }
-                }),
-                shared.input_waveform.iter().copied().collect(),
-                shared.melody_since(state.melody_posted),
-            )
-        }
-        Err(_) => {
-            (
-                AudioStatus::Error("worker state poisoned".to_owned()),
-                None,
-                None,
-                Vec::new(),
-                Vec::new(),
-            )
-        }
+    let (status, reading, resonator, waveform, melody) = {
+        let shared = state.shared.lock().unwrap();
+        (
+            shared.status.clone(),
+            shared.reading.clone(),
+            (!shared.resonator_spectrum.is_empty()).then(|| {
+                ResonatorReading {
+                    spectrum:    shared.resonator_spectrum.clone(),
+                    waterfall:   shared.resonator_waterfall.iter().cloned().collect(),
+                    note_labels: shared.resonator_labels.clone(),
+                }
+            }),
+            shared.input_waveform.iter().copied().collect(),
+            shared.melody_since(state.melody_posted),
+        )
     };
     // Advance the cursor only over what is actually going on the wire, so a snapshot
     // that found nothing new (the usual case — posts are per sample block, publishes
