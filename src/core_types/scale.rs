@@ -1,12 +1,9 @@
-use eframe::egui::Color32;
 use itertools::Itertools;
 
-use super::pitch::PNote;
 use crate::core_types::pitch::{
     Interval,
     PCNote,
 };
-use crate::ui::fretboard::draw::Mark;
 
 #[derive(Debug, Clone)]
 pub struct Scale {
@@ -14,26 +11,6 @@ pub struct Scale {
     pub intervals: Vec<Interval>, // интервалы в полутонах от корня
 
     pcs_set: Vec<PCNote>, // для быстрого contains
-}
-
-impl Mark for &Scale {
-    fn mark(&self, note: &PNote) -> Color32 {
-        mark_some_scale(note, self)
-    }
-}
-
-fn mark_some_scale(note: &PNote, scale: &Scale) -> Color32 {
-    // let scale = Scale::minor(PCNote::from_note(Note::A, Accidental::Natural));
-    // let scale = Scale::blues_minor_pentatonic(PCNote::from_note(Note::A, Accidental::Natural));
-
-    let (_, pc_note) = note.to_pc();
-
-    match scale.degree(pc_note).map(|s| s.0) {
-        Some(1) => Color32::from_rgb(210, 166, 136), // I ступень
-        Some(5) => Color32::from_rgb(184, 146, 115), // квинта
-        Some(_) => Color32::from_rgb(198, 188, 145), // прочие ступени
-        None => Color32::from_rgb(117, 120, 122),    // нет в гамме
-    }
 }
 
 impl Scale {

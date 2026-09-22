@@ -23,6 +23,23 @@ pub trait Mark {
     fn mark(&self, note: &PNote) -> Color32;
 }
 
+impl Mark for &Scale {
+    fn mark(&self, note: &PNote) -> Color32 {
+        mark_some_scale(note, self)
+    }
+}
+
+fn mark_some_scale(note: &PNote, scale: &Scale) -> Color32 {
+    let (_, pc_note) = note.to_pc();
+
+    match scale.degree(pc_note).map(|s| s.0) {
+        Some(1) => Color32::from_rgb(210, 166, 136), // I ступень
+        Some(5) => Color32::from_rgb(184, 146, 115), // квинта
+        Some(_) => Color32::from_rgb(198, 188, 145), // прочие ступени
+        None => Color32::from_rgb(117, 120, 122),    // нет в гамме
+    }
+}
+
 pub fn draw_fretboard<F>(painter: egui::Painter, fretboard: &Fretboard, mark: F, style: AccidentalStyle)
 where
     F: Mark,
