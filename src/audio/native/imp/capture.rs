@@ -88,7 +88,13 @@ pub(super) struct ActiveCapture {
     ///
     /// `None` на replay-пути: писать нечего (см. `build_replay_capture`).
     pub(super) recorder:      Option<AnalysisWorker>,
-    pub(super) selected_id:   String,
+    /// The input this capture is rebuilt onto (a monitor toggle re-creates it), in
+    /// `build_capture`'s own terms: the live paths hold the device they opened; the
+    /// replay path holds the user's device choice (`selected_input_id`), which is
+    /// `None` until a live input has ever come up — and `None` there means what it means
+    /// to `build_capture`: the default input, as at startup. (It used to be a `String`
+    /// with `""` for that case, and the rebuild then asked for a device named `""`.)
+    pub(super) selected_id:   Option<String>,
 }
 
 impl ActiveCapture {

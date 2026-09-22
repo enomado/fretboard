@@ -372,13 +372,15 @@ impl AudioEngine {
             .store(gain.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
 
-    pub fn current_input_sample_rate(&self) -> u32 {
-        self.input_sample_rate.load(Ordering::Relaxed)
+    /// `None` until a capture has come up (the atomic starts at 0 — see
+    /// `AudioContext::store_capture_rates` for the encoding).
+    pub fn current_input_sample_rate(&self) -> Option<SampleRate> {
+        decode_rate(self.input_sample_rate.load(Ordering::Relaxed))
     }
 
-    pub fn monitor_output_sample_rate(&self) -> Option<u32> {
-        let rate = self.monitor_output_rate.load(Ordering::Relaxed);
-        if rate == 0 { None } else { Some(rate) }
+    /// `None` while no monitor output is running.
+    pub fn monitor_output_sample_rate(&self) -> Option<SampleRate> {
+        decode_rate(self.monitor_output_rate.load(Ordering::Relaxed))
     }
 
     pub fn default_output_device_name(&self) -> Option<String> {
@@ -502,6 +504,12 @@ impl Drop for AudioEngine {
     }
 }
 
+/// Обратная сторона кодировки `AudioContext::store_capture_rates`: 0 в атомике частоты —
+/// «частоты нет», а не частота.
+fn decode_rate(raw: u32) -> Option<SampleRate> {
+    (raw != 0).then_some(SampleRate(raw))
+}
+
 // ------------------------------------------------------------------
 // Audio-тред: единственный владелец cpal::Stream.
 // ------------------------------------------------------------------
@@ -534,7 +542,7 @@ fn audio_thread_main(rx: Receiver<Command>, ctx: AudioContext) {
                 // так мы без гонок привязываем output-stream к ring-буферу,
                 // который входной callback наполняет.
                 if let Some(cap) = current.take() {
-                    let id = Some(cap.selected_id.clone());
+                    let id = cap.selected_id.clone();
                     cap.shutdown();
                     match ctx.build_capture(id) {
                         Ok(cap) => current = Some(cap),
@@ -777,7 +785,7 @@ impl AudioContext {
             analysis,
             resonator,
             recorder,
-            selected_id,
+            selected_id: Some(selected_id),
         })
     }
 
@@ -814,7 +822,7 @@ impl AudioContext {
             analysis,
             resonator,
             recorder,
-            selected_id,
+            selected_id: Some(selected_id),
         })
     }
 
@@ -895,9 +903,10 @@ impl AudioContext {
         *self.selected_input_id.lock().unwrap() = Some(selected_id.to_owned());
     }
 
-    /// Опубликовать частоты поднятого capture для UI. Атомик держит голый `u32`, и
-    /// «монитора нет» кодируется в нём нулём — это кодировка канала, а не частота:
-    /// `AudioEngine::monitor_output_sample_rate` раскодирует 0 обратно в `None`.
+    /// Опубликовать частоты поднятого capture для UI. Атомики держат голый `u32`, и
+    /// «частоты нет» (монитора нет / capture ещё не поднимался — атомик входа стартует
+    /// с 0) кодируется в них нулём — это кодировка канала, а не частота: геттеры
+    /// `AudioEngine` раскодируют 0 обратно в `None` через [`decode_rate`].
     fn store_capture_rates(&self, sample_rate: SampleRate, output_rate: Option<SampleRate>) {
         self.input_sample_rate.store(sample_rate.0, Ordering::Relaxed);
         self.monitor_output_rate
@@ -920,8 +929,9 @@ impl AudioContext {
     /// - **Рекордера нет** (`InputFanout::recorder = None`), см. `replay`.
     /// - **`selected_input_id` не трогаем.** Это выбор УСТРОЙСТВА, к которому
     ///   реплей вернётся по стопу; реплей не устройство и не выбор. Отсюда же
-    ///   `selected_id` капчура — ID живого входа, а не путь дубля: смена
-    ///   монитора посреди реплея пересоберёт живой вход, что и правильно.
+    ///   `selected_id` капчура — выбор живого входа (`None`, пока ни один не
+    ///   поднимался ⇒ дефолтный), а не путь дубля: смена монитора посреди
+    ///   реплея пересоберёт живой вход, что и правильно.
     /// - **Монитор — есть.** Дубль надо СЛЫШАТЬ: разметка границ нот идёт по
     ///   звуку, а не по картинке (это же и есть защита от зеркала).
     fn build_replay_capture(&self, path: PathBuf) -> Result<ActiveCapture, String> {
@@ -948,7 +958,8 @@ impl AudioContext {
         self.store_capture_rates(sample_rate, output_rate);
         self.reset_shared_state();
 
-        let selected_id = self.selected_input_id.lock().unwrap().clone().unwrap_or_default();
+        // `None` = no live input has come up yet; a rebuild then takes the default one.
+        let selected_id = self.selected_input_id.lock().unwrap().clone();
 
         self.replay.publish(ReplayStatus::Playing {
             path,

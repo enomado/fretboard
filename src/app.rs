@@ -33,6 +33,7 @@ use eframe::{
 use web_time::Instant;
 
 use crate::audio::AudioEngine;
+use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     AudioInputKind,
     AudioInputOption,
@@ -573,12 +574,21 @@ fn is_compat_input_path(input_id: &str) -> bool {
     .any(|needle| lowered.contains(needle))
 }
 
-fn monitor_output_debug_label(output_name: Option<&str>, output_sample_rate: Option<u32>) -> String {
+fn monitor_output_debug_label(output_name: Option<&str>, output_sample_rate: Option<SampleRate>) -> String {
     match (output_name, output_sample_rate) {
-        (Some(name), Some(rate)) => format!("{name} • {} Hz", rate),
+        (Some(name), Some(rate)) => format!("{name} • {} Hz", rate.0),
         (Some(name), None) => format!("{name} • idle"),
-        (None, Some(rate)) => format!("Unknown output • {} Hz", rate),
+        (None, Some(rate)) => format!("Unknown output • {} Hz", rate.0),
         (None, None) => "No active monitor output".to_owned(),
+    }
+}
+
+/// The capture's rate for the Controls debug block; `idle` before any capture has come
+/// up — the same word the monitor line uses for "no rate" (it printed "0 Hz" there).
+fn input_rate_debug_label(input_sample_rate: Option<SampleRate>) -> String {
+    match input_sample_rate {
+        Some(rate) => format!("Input rate: {} Hz", rate.0),
+        None => "Input rate: idle".to_owned(),
     }
 }
 
@@ -646,5 +656,24 @@ impl eframe::App for App {
     /// snapshot of preferences to RON (eframe's `set_value` uses `ron::ser`).
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, &self.snapshot_persistent());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SampleRate,
+        input_rate_debug_label,
+    };
+
+    /// REGRESSION: before any capture has come up there is no rate, and the line says so
+    /// in the monitor line's word for it — it used to print the atomic's 0 as "0 Hz".
+    #[test]
+    fn input_rate_before_capture_reads_idle_not_zero_hz() {
+        assert_eq!(input_rate_debug_label(None), "Input rate: idle");
+        assert_eq!(
+            input_rate_debug_label(Some(SampleRate(48_000))),
+            "Input rate: 48000 Hz"
+        );
     }
 }

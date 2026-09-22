@@ -20,6 +20,7 @@ use super::{
     format_sample_count,
     input_path_class_label,
     input_path_detail,
+    input_rate_debug_label,
     input_source_debug_label,
     input_supports_monitor,
     monitor_output_debug_label,
@@ -327,7 +328,7 @@ impl App {
                                 .size(12.0),
                         );
                         ui.label(
-                            RichText::new(format!("Input rate: {} Hz", input_sample_rate))
+                            RichText::new(input_rate_debug_label(input_sample_rate))
                                 .color(color::TEXT_HINT)
                                 .size(12.0)
                                 .monospace(),

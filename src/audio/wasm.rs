@@ -128,7 +128,8 @@ struct Inner {
     available:           RefCell<Vec<AudioInputOption>>,
     selected_input_id:   RefCell<Option<String>>,
     capture:             RefCell<Option<Capture>>,
-    sample_rate:         Cell<u32>,
+    /// Частота поднятого capture; `None`, пока он не поднимался.
+    sample_rate:         Cell<Option<SampleRate>>,
     // Состояние дрона держим, чтобы UI на wasm работал и персистился; синтеза
     // нет (Web Audio output-граф дрона ещё не реализован) — методы инертны.
     drone:               RefCell<DroneState>,
@@ -184,7 +185,7 @@ impl AudioEngine {
             available: RefCell::new(default_inputs()),
             selected_input_id: RefCell::new(None),
             capture: RefCell::new(None),
-            sample_rate: Cell::new(0),
+            sample_rate: Cell::new(None),
             drone: RefCell::new(DroneState::default()),
             last_resonator_post: Cell::new(Instant::now() - RESONATOR_POST_INTERVAL),
             _on_message: on_message,
@@ -263,11 +264,11 @@ impl AudioEngine {
     pub fn set_monitor_gain(&self, _gain: f32) {
     }
 
-    pub fn current_input_sample_rate(&self) -> u32 {
+    pub fn current_input_sample_rate(&self) -> Option<SampleRate> {
         self.inner.sample_rate.get()
     }
 
-    pub fn monitor_output_sample_rate(&self) -> Option<u32> {
+    pub fn monitor_output_sample_rate(&self) -> Option<SampleRate> {
         None
     }
 
@@ -574,7 +575,7 @@ async fn run_capture(inner: Rc<Inner>, worker: web_sys::Worker, id: Option<Strin
     );
     post_msg(&worker, &ToWorker::Gain(inner.input_gain.get()));
 
-    inner.sample_rate.set(sample_rate.0);
+    inner.sample_rate.set(Some(sample_rate));
     inner.latest.borrow_mut().status = Some(AudioStatus::Listening);
     *inner.capture.borrow_mut() = Some(Capture {
         ctx,

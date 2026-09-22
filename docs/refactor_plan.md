@@ -461,7 +461,14 @@ NEWTYPE CANDIDATES; остаток (если есть) перечислен в �
   расходятся иначе. 2 падения на 6 прогонов `cargo test --release --lib`, одно из них — на
   коде ДО правок Ф1. Лечение — не ослаблять assert (тест это прямо запрещает), а убрать
   стенное время из `Rig` (часы пайплайна вместо `Instant::elapsed`) или починить сам баг.
-- **`ActiveCapture.selected_id: String` с `""` вместо «устройство не выбрано»**
+- ✅ **Сделано** («fix(audio): Option вместо "" и 0 в захвате — selected_id и частота входа»):
+  `ActiveCapture.selected_id: Option<String>`. Единственный читатель — пересборка при
+  переключении монитора (`audio_thread_main`, `SetMonitorEnabled`), и это был **живой баг**:
+  если живой вход ни разу не поднимался, переключение монитора посреди реплея звало
+  `build_capture(Some(""))` — устройство с ID `""` — вместо дефолтного входа. Теперь `None`
+  значит ровно то, что значит для `build_capture` (дефолтный вход, как на старте) — так же, как
+  уже делали `StopReplay` и откат неудачного реплея. Теста нет: путь требует живого cpal-устройства.
+  Исходная запись: **`ActiveCapture.selected_id: String` с `""` вместо «устройство не выбрано»**
   (`audio/native/imp.rs:946`, `build_replay_capture`: `….clone().unwrap_or_default()`).
   Ф1 сняла с этого места глотание отравления, но сам фолбек `Option<String>` → пустая
   строка остался в отчёте `code_smell option-crutch`. Это доменный вопрос (что значит
@@ -479,7 +486,13 @@ NEWTYPE CANDIDATES; остаток (если есть) перечислен в �
   Док-комментарии в `audio/types.rs:25-43` описывают их как вход для панелей. Либо снести
   поля (и копирование в воркер-протоколе), либо найти потребителя — в Ф6а не трогали,
   поэтому они и остались `(f32, f32)`, а не `(Midi, f32)`.
-- **`current_input_sample_rate()` отдаёт `u32`, где 0 = «capture не поднят»** (найдено в
+- ✅ **Сделано** (тот же коммит): оба геттера — `current_input_sample_rate()` и
+  `monitor_output_sample_rate()` — отдают `Option<SampleRate>` на обеих платформах (натив
+  раскодирует 0 атомика одной `decode_rate`, wasm держит `Cell<Option<SampleRate>>`). Что
+  показывать — решение не понадобилось: строка монитора рядом уже печатает отсутствие частоты
+  словом `idle` (`app.rs`, `monitor_output_debug_label`), вход взял его же — «Input rate: idle»
+  вместо «0 Hz». Тест `input_rate_before_capture_reads_idle_not_zero_hz`.
+  Исходная запись: **`current_input_sample_rate()` отдаёт `u32`, где 0 = «capture не поднят»** (найдено в
   Ф6б, 2026-09-22): `audio/native/imp.rs` (`AudioEngine::current_input_sample_rate`, атомик
   `input_sample_rate` стартует с 0) и `audio/wasm.rs` (`Cell<u32>` с 0). Соседний
   `monitor_output_sample_rate()` тот же ноль уже раскодирует в `Option`. Честная форма —
