@@ -160,11 +160,7 @@ pub(super) fn rank(
         candidate.probability = probability;
     }
 
-    candidates.sort_by(|a, b| {
-        b.blended
-            .partial_cmp(&a.blended)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    candidates.sort_by(|a, b| b.blended.total_cmp(&a.blended));
 
     Some(Ranking {
         chroma,

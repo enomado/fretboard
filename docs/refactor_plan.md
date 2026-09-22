@@ -23,7 +23,7 @@
 | Ф2 | Один цикл аудио-воркера вместо двух копий | ✅ «refactor(audio): один цикл аудио-воркера вместо двух копий» |
 | Ф3 | `core_types` не зависит от UI (`Scale` → `Mark`) | ✅ «refactor(ui): impl Mark for Scale переезжает к трейту — core_types без egui» |
 | Ф4 | Распил `audio/native/imp.rs` по швам | ✅ «refactor(audio): распил native/imp.rs — drone, workers, capture, output» (⚠ `imp.rs` = 1038, не < 1000 — см. раздел фазы) |
-| Ф5 | Мелочи: `total_cmp`, мёртвая `egui` в workspace | ⬜ |
+| Ф5 | Мелочи: `total_cmp`, мёртвая `egui` в workspace | ✅ «chore: total_cmp в ранжировании гамм, мёртвая egui из workspace» |
 | Ф6а | `Hz` / `Midi` + единственная конверсия | ⬜ |
 | Ф6б | `SampleRate` | ⬜ |
 | Ф6в | Целые MIDI-ноты и единый `BankRange` | ⬜ |
@@ -200,7 +200,8 @@ ui::fretboard::draw`), и единственное место, где `core_type
 `audio_thread_main` (`:507-605`), `AudioContext` + `impl` (`:607-951`), `mod tests`
 (`:953-1038`, 85 строк; кода без тестов — 952). Пятый распил сверх таблицы не
 придумывался. Если порог важен, естественный кандидат — методы `AudioContext`, собирающие
-три пути захвата (`build_capture`/`build_pulse_capture`/`build_replay_capture`) → в
+пути захвата (`build_capture`/`build_cpal_capture`/`build_pulse_capture`/`build_replay_capture`,
+`imp.rs:713-951`) → в
 `capture.rs`; это решение хозяина, не механика фазы.
 Механика: `item_mv` из `bur/rust_app/tools/mod_mv` + ручная доводка (он копирует `use`
 источника относительными путями и теряет свободные `//`-комментарии над элементом:

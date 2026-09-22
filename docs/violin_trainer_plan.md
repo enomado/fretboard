@@ -289,11 +289,11 @@ end-to-end octave 152 → 104 ms, and the layer stays whole until the gate opens
 - **The binary is `fretboard-app`, not `fretboard`** (`[[bin]]` in `Cargo.toml`; the
   lib keeps the crate name so the wasm build can disambiguate). `target/debug/fretboard`
   does not exist and never will.
-- **`cargo clippy --all-targets` prints 4 manifest warnings that are not code lints**
+- **`cargo clippy --all-targets` prints 3 manifest warnings that are not code lints**
   (seen 2026-09-22 on the dep refresh; nightly cargo lints, independent of dep versions):
-  `cargo::unused_workspace_dependencies` on `[workspace.dependencies] egui` in
-  `Cargo.toml` (nothing inherits it — `eframe` re-exports egui), and
-  `cargo::non_kebab_case_bins` on `src/bin/{dsp_worker,font_probe,mic_probe}.rs`.
+  `cargo::non_kebab_case_bins` on `src/bin/{dsp_worker,font_probe,mic_probe}.rs`. (The
+  fourth, `cargo::unused_workspace_dependencies` on an unused `[workspace.dependencies]
+  egui`, went with that entry in refactor Ф5.)
   Renaming the bins is not free: trunk/the web worker may address `dsp_worker` by
   name — check `index.html` before touching it. "Clippy clean" means no code warnings.
 - **Do not drive the user's live sway session** to verify a render — `swaymsg cursor`
