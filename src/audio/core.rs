@@ -300,6 +300,25 @@ impl ResonatorPipeline {
         input_gain: &Arc<AtomicU32>,
         input_level: &Arc<AtomicU32>,
     ) {
+        self.push_samples_at(samples, Instant::now(), shared, settings, input_gain, input_level);
+    }
+
+    /// [`Self::push_samples`] with the publish gate's clock passed in rather than read.
+    ///
+    /// The gate (`update_ms` between publishes) is on the *wall* clock in production —
+    /// see `MelodyFrame::t`. Taking `now` as an argument is what lets the test rig drive it
+    /// off the sample count instead: a rig that paced wall time with `thread::sleep` made
+    /// the publish cadence, and with it the frame-counted hysteresis downstream, depend on
+    /// how far the sleep overslept under a loaded test runner.
+    pub(crate) fn push_samples_at(
+        &mut self,
+        samples: impl IntoIterator<Item = f32>,
+        now: Instant,
+        shared: &Arc<Mutex<SharedState>>,
+        settings: &Arc<Mutex<AnalysisSettings>>,
+        input_gain: &Arc<AtomicU32>,
+        input_level: &Arc<AtomicU32>,
+    ) {
         let analysis_settings = settings.lock().unwrap().clone().sanitized();
         self.sync_settings(&analysis_settings, shared);
 
@@ -314,10 +333,10 @@ impl ResonatorPipeline {
         self.rtswipe.process_samples(&samples);
 
         let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
-        if self.last_publish.elapsed() < publish_interval {
+        if now.duration_since(self.last_publish) < publish_interval {
             return;
         }
-        self.last_publish = Instant::now();
+        self.last_publish = now;
         let frontend = analysis_settings.resonator.frontend;
         // The note frontend RT-SWIPE offers this frame — scored only when it is the one that
         // will decide the note, so the bank path pays nothing for it. The bank's own snapshot
@@ -405,6 +424,20 @@ impl AnalysisPipeline {
         input_gain: &Arc<AtomicU32>,
         input_level: &Arc<AtomicU32>,
     ) {
+        self.push_samples_at(samples, Instant::now(), shared, settings, input_gain, input_level);
+    }
+
+    /// [`Self::push_samples`] with the analysis gate's clock passed in rather than read —
+    /// for the same reason as [`ResonatorPipeline::push_samples_at`].
+    pub(crate) fn push_samples_at(
+        &mut self,
+        samples: impl IntoIterator<Item = f32>,
+        now: Instant,
+        shared: &Arc<Mutex<SharedState>>,
+        settings: &Arc<Mutex<AnalysisSettings>>,
+        input_gain: &Arc<AtomicU32>,
+        input_level: &Arc<AtomicU32>,
+    ) {
         let analysis_settings = settings.lock().unwrap().clone().sanitized();
         let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
         let mut recent: Vec<f32> = Vec::new();
@@ -424,11 +457,11 @@ impl AnalysisPipeline {
         }
 
         if self.buffer.len() < analysis_settings.window_size
-            || self.last_analysis.elapsed() < ANALYSIS_INTERVAL
+            || now.duration_since(self.last_analysis) < ANALYSIS_INTERVAL
         {
             return;
         }
-        self.last_analysis = Instant::now();
+        self.last_analysis = now;
 
         let start = self.buffer.len().saturating_sub(analysis_settings.window_size);
         let window: Vec<f32> = self.buffer.iter().skip(start).copied().collect();
@@ -760,6 +793,10 @@ mod tests {
         settings:  Arc<Mutex<AnalysisSettings>>,
         gain:      Arc<AtomicU32>,
         level:     Arc<AtomicU32>,
+        /// The rig's clock: `start` plus the audio fed so far. Stands in for the wall
+        /// clock the pipelines' cadence gates read in production.
+        start:     Instant,
+        fed:       usize,
     }
 
     impl Rig {
@@ -773,34 +810,44 @@ mod tests {
                 settings: Arc::new(Mutex::new(AnalysisSettings::default())),
                 gain: Arc::new(AtomicU32::new(1.0f32.to_bits())),
                 level: Arc::new(AtomicU32::new(0.0f32.to_bits())),
+                // After the pipelines are built: each starts its gate one interval in the
+                // past, so the first chunk is analysed, as it is live.
+                start: Instant::now(),
+                fed: 0,
             }
         }
 
-        /// Feed both planes at ~real time, as the two workers do.
+        /// Feed both planes in 10 ms chunks, as a device callback would, each stamped
+        /// with the moment its last sample arrived — **audio** time, not wall time.
         ///
-        /// The sleep is load-bearing, not politeness: both pipelines gate their cadence
-        /// on `Instant::elapsed`, so audio shovelled in with no wall-clock passing would
-        /// be analysed once and never again. Sleeping per chunk keeps wall time ≥ audio
-        /// time, which is the condition the real capture always satisfies.
+        /// Both pipelines gate their cadence on the clock they are handed. This rig used
+        /// to pace the real one with `thread::sleep`, and a sleep only ever oversleeps:
+        /// under a loaded test runner each 10 ms chunk took longer, every chunk passed
+        /// the bank's 16 ms gate instead of every second one, and the frame-counted
+        /// hysteresis downstream saw a different cadence — `release_ghosts_…` flaked on
+        /// it (3 of 7 runs at load ~30). Stamping chunks off the sample count is the
+        /// ideal capture, exactly, on any machine.
         fn feed(&mut self, samples: &[f32], sample_rate: SampleRate) {
-            // 10 ms, as a device callback would
             let chunk = sample_rate.samples_in(Duration::from_millis(10));
             for c in samples.chunks(chunk) {
-                self.analysis.push_samples(
+                self.fed += c.len();
+                let now = self.start + sample_rate.duration_of(self.fed);
+                self.analysis.push_samples_at(
                     c.iter().copied(),
+                    now,
                     &self.shared,
                     &self.settings,
                     &self.gain,
                     &self.level,
                 );
-                self.resonator.push_samples(
+                self.resonator.push_samples_at(
                     c.iter().copied(),
+                    now,
                     &self.shared,
                     &self.settings,
                     &self.gain,
                     &self.level,
                 );
-                thread::sleep(sample_rate.duration_of(c.len()));
             }
         }
 
@@ -1154,8 +1201,20 @@ mod tests {
     ///    onto the garbage (~50 ms) and passes it.
     ///
     /// So for ~400 ms the gate is open, the bank is inventing pitches, and each one
-    /// that holds for `MIN_NOTE_SECONDS` is written. Measured here: A4 → ghosts at MIDI
-    /// 16, 12, 13, 80, 76 on an instant cut.
+    /// that holds for `MIN_NOTE_SECONDS` is written. (Measured when this test was written,
+    /// on the wall-clock rig: A4 → ghosts at MIDI 16, 12, 13, 80, 76.)
+    ///
+    /// **The ghost depends on the bank's publish cadence**, which is a user slider
+    /// (`ResonatorSettings::update_ms`, 8..80 ms). Measured 2026-09-23 on the audio-clock
+    /// rig (10 ms chunks, so the cadence is `update_ms` rounded up to whole chunks):
+    /// `update_ms` 8 and 10 → one ghost, MIDI 24; 16, 20, 30, 40, 60, 80 → none. So the
+    /// test pins the cadence at 10 ms explicitly. It used to get there by accident: the
+    /// rig paced wall time with `thread::sleep`, and the per-chunk overhead usually pushed
+    /// each 10 ms chunk past the 16 ms gate — usually, which is why it flaked under load.
+    /// That a cadence slider decides whether a ghost is written is a defect of its own
+    /// (a frame-counted piece in the repair layer — `OctaveGate`'s 5-frame median is 50 ms
+    /// at 10 ms and 100 ms at 20 ms — is the suspect, not verified); see the plan's
+    /// «Попутные находки».
     ///
     /// **How bad this is live is not yet known**, and this test cannot say: it cuts the
     /// tone off instantly, which no instrument does. A real note decays over hundreds
@@ -1166,6 +1225,7 @@ mod tests {
     fn release_ghosts_are_written_after_a_note() {
         let sr = SampleRate(48_000);
         let mut rig = Rig::new(sr);
+        rig.settings.lock().unwrap().resonator.update_ms = 10;
         rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
         rig.feed(&vec![0.0f32; (sr.hz() * 0.7) as usize], sr);
 
