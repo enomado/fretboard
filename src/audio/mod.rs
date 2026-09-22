@@ -32,6 +32,7 @@ pub use types::{
     AudioInputKind,
     AudioInputOption,
     AudioStatus,
+    BankRange,
     DroneMode,
     DroneState,
     MelodyFrame,

@@ -59,9 +59,12 @@ pub struct TunerReading {
 }
 
 /// One finished note on the written line.
+///
+/// Rides the worker protocol (postcard), not the persisted settings: `PNote` put `u8` on
+/// that wire where `i32` was, and both ends come from the same wasm build.
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct StaffNote {
-    pub midi:  i32,
+    pub midi:  PNote,
     /// Deviation from equal temperament, cents. Kept per note so a written note's
     /// intonation stays visible after it has scrolled away from the playhead.
     pub cents: f32,
@@ -509,6 +512,53 @@ fn default_reassign() -> bool {
     true
 }
 
+/// The resonator bank's pitch span: the whole notes `lo..=hi` it has filters on. Bin
+/// `i` of a bank column sits at `lo + i / bins_per_semitone`, so this is what turns a
+/// heat bin's *index* into a pitch — and the bound outside which no evidence can exist.
+///
+/// One type for the bank itself (`dsp::resonator`) and for every panel that maps its
+/// columns. It lives here rather than in `dsp::resonator` because `audio::dsp` is
+/// private to the audio module (see `audio/mod.rs`) and the panels need it.
+///
+/// Fields are private so the invariant `lo < hi` holds by construction — see
+/// [`Self::new`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BankRange {
+    lo: PNote,
+    hi: PNote,
+}
+
+impl BankRange {
+    /// Panics unless `lo < hi`. Not a new rule — the source already keeps it:
+    /// [`ResonatorSettings::sanitized`] holds `max ≥ min + 6`, and the engine stores only
+    /// sanitized settings. The assert is the boundary guard for any other caller, and what
+    /// lets every mapping below divide by [`Self::semitones`] without checking it.
+    pub fn new(lo: PNote, hi: PNote) -> Self {
+        assert!(lo < hi, "empty resonator bank range {lo:?}..={hi:?}");
+        Self { lo, hi }
+    }
+
+    /// The lowest note the bank has a filter on — bin 0.
+    pub fn lo(self) -> PNote {
+        self.lo
+    }
+
+    /// The highest note the bank has a filter on — the last bin.
+    pub fn hi(self) -> PNote {
+        self.hi
+    }
+
+    /// How many semitones the bank spans; ≥ 1 by the constructor's invariant.
+    pub fn semitones(self) -> usize {
+        (self.hi.as_u8() - self.lo.as_u8()) as usize
+    }
+
+    /// [`Self::semitones`] as a float, for the painters that divide a column by it.
+    pub fn span_f32(self) -> f32 {
+        self.semitones() as f32
+    }
+}
+
 const MIN_WINDOW_SIZE: usize = 2048;
 const MAX_WINDOW_SIZE: usize = 16384;
 const MIN_FFT_SIZE: usize = 4096;
@@ -601,6 +651,12 @@ impl AnalysisSettings {
 }
 
 impl ResonatorSettings {
+    /// The span these settings put the bank on. Panics on settings that were never
+    /// sanitized into `min < max` — see [`BankRange::new`].
+    pub fn bank_range(&self) -> BankRange {
+        BankRange::new(self.min_midi, self.max_midi)
+    }
+
     pub(crate) fn sanitized(mut self) -> Self {
         // Clamp in raw-MIDI space (the newtype has no arithmetic), keeping the
         // invariant max ≥ min + 6, then rebuild the validated `PNote`s. The
@@ -754,6 +810,32 @@ impl DroneState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bank of one note has no span to map a bin across; `BankRange` refuses it at
+    /// construction, which is what lets the painters divide by `semitones()` unchecked.
+    #[test]
+    #[should_panic(expected = "empty resonator bank range")]
+    fn a_bank_range_of_one_note_is_refused() {
+        let a4 = PNote::new(69).unwrap();
+        let _ = BankRange::new(a4, a4);
+    }
+
+    /// The source of every panel's `BankRange` is sanitized settings, so sanitizing
+    /// must never leave a range `BankRange::new` refuses — an inverted pair included
+    /// (the two sliders are independent, and nothing stops min from passing max).
+    #[test]
+    fn sanitized_resonator_settings_always_make_a_bank_range() {
+        for (min, max) in [(84u8, 24u8), (60, 60), (10, 11), (108, 108), (12, 108)] {
+            let settings = ResonatorSettings {
+                min_midi: PNote::new(min).unwrap(),
+                max_midi: PNote::new(max).unwrap(),
+                ..ResonatorSettings::default()
+            }
+            .sanitized();
+            let bank = settings.bank_range();
+            assert!(bank.semitones() >= 6, "{min}..{max} → {bank:?}");
+        }
+    }
 
     #[test]
     fn analysis_settings_are_sanitized() {

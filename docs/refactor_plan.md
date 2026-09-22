@@ -12,8 +12,8 @@
    [violin_trainer_plan.md](violin_trainer_plan.md) (там же сказано, почему `cargo clippy`
    печатает 3 предупреждения манифеста и это не код; до Ф5 было 4).
 2. Взять **первую фазу без ✅** в таблице статуса. Порядок важен: см. «Зависимости».
-   Разведка Ф6в (свежие номера строк, две опровергнутые посылки, слепота регулярки DoD) —
-   в [HANDOFF_refactor_2026-09-22.md](HANDOFF_refactor_2026-09-22.md).
+   Ловушки гейта (rustfmt без `--edition`, `memory/` в `.gitignore`) — в
+   [HANDOFF_refactor_2026-09-22.md](HANDOFF_refactor_2026-09-22.md).
 3. После коммита фазы — поставить ✅ + тему коммита в таблицу (SHA не писать: история
    этого репо уже переписывалась, см. `memory/doc_shas_died_in_history_rewrite.md`).
 
@@ -28,12 +28,12 @@
 | Ф5 | Мелочи: `total_cmp`, мёртвая `egui` в workspace | ✅ «chore: total_cmp в ранжировании гамм, мёртвая egui из workspace» |
 | Ф6а | `Hz` / `Midi` + единственная конверсия | ✅ «refactor(types): Hz и Midi — одна конверсия частота↔высота» (см. «Итог» фазы) |
 | Ф6б | `SampleRate` | ✅ «refactor(audio): SampleRate — частота дискретизации отдельным типом» (см. «Итог» фазы) |
-| Ф6в | Целые MIDI-ноты и единый `BankRange` | ⬜ |
-| Ф7 | Снять 22 `pub use` из `audio/mod.rs` | ⬜ |
+| Ф6в | Целые MIDI-ноты и единый `BankRange` | ✅ «refactor(types): PNote для целых нот и один BankRange» (⚠ дом — `audio/types.rs`, не `dsp/resonator.rs`; см. «Итог» фазы) |
+| Ф7 | Снять 23 `pub use` из `audio/mod.rs` (22 + `BankRange` из Ф6в) | ⬜ |
 
 **Зависимости.** Ф2 после Ф1 (гейт резонатора переписывается в Ф1). Ф4 после Ф2 (воркеры
 переезжают один раз, уже слитыми). Ф6а → Ф6б → Ф6в строго по порядку. Ф7 последней:
-она трогает импорты в 13 файлах, и до неё Ф6 успеет их поменять — делать это дважды
+она трогает импорты в 14 файлах (после Ф6в), и до неё Ф6 успеет их поменять — делать это дважды
 незачем. Ф3 и Ф5 независимы, их можно брать когда угодно.
 
 ## Общие правила для всех фаз
@@ -373,14 +373,47 @@ NEWTYPE CANDIDATES; остаток (если есть) перечислен в �
 пробел: иначе выровненные поля `ResonatorViewSettings` проходят мимо — см. хендофф 09-22).
 `rg -n 'struct BankRange' src` → 1.
 
+**Итог (2026-09-22).** DoD: первый `rg` → 0, второй → 1 (`audio/types.rs`). `prim`: группы
+`midi: i32 ×7`, `min_midi: usize ×6`, `res_min_midi`/`res_max_midi: i32 ×3` и пары min/max
+(`staff_panel::BankRange`, `take_roll::BankRange`, `ResonatorViewSettings`,
+`resonator_note_labels`) → 0; новая строка одна — `BankRange(lo, hi: PNote)` сам. Тесты: lib
+191 → **195** (+2 `Midi::nearest_note` в `pitch.rs`, +2 `BankRange` в `types.rs`). Решения по
+ходу:
+- **Дом `BankRange` — `audio/types.rs`, а не `audio/dsp/resonator.rs`. Посылку опроверг код:**
+  `audio::dsp` приватен во всех сборках (`audio/mod.rs:3-13`, Landmine в
+  `violin_trainer_plan.md`), а тип нужен `app::staff_panel`, `app::take_roll` и `ui::pianoroll`.
+  Открывать `dsp` ради него — снять инвариант, который там прибит; `types.rs` — дом
+  `ResonatorSettings`, из которого диапазон собирается (`ResonatorSettings::bank_range()`).
+  Наружу — через `pub use` в `audio/mod.rs`, как остальные 22; Ф7 снимет все 23 разом.
+- **Инвариант строгий, `lo < hi`, а не `lo <= hi`, как было написано.** При `lo == hi`
+  `semitones() = 0`, и три рисовальщика по-прежнему должны были бы защищать деление — то есть
+  «вырожденного больше нет» не выполнялось бы. Источник даёт ≥ 6 полутонов (`sanitized`);
+  тест `sanitized_resonator_settings_always_make_a_bank_range` держит это и на перевёрнутой паре
+  ползунков (они независимы). Проверки `semitones() <= 0` (`staff_panel`) и
+  `res_max_midi <= res_min_midi` (`pianoroll` ×2) сняты. Поля приватные, геттеры
+  `lo()`/`hi()`; дробная координата — существующим `Midi::from(PNote)`.
+- **`StaffNote::midi: i32` → `PNote`** (хендофф велел решить на месте): иначе `NoteColumn` и
+  `staff::draw_note` собирали бы `PNote` из `i32` каждый кадр. Провод воркера (postcard) — `u8`
+  вместо `i32`, обе стороны из одной сборки; в персист `StaffNote` не попадает.
+- **`Midi::nearest_note() -> (PNote, центы)`** — округление до ближайшей ноты было скопировано
+  в `segmenter.rs` и `analysis_math::frequency_to_note`; теперь одна копия, вне 0..=127 и на NaN
+  паника. `frequency_to_note` в список плана не входил — вошёл как вторая копия той же формулы.
+- **`staff::midi_to_y` остался на `f32`** (граница рисования, решение Ф6а). Его два соседних
+  слота считает приватный `semitone_staff_step(i32)`: это позиции для интерполяции непрерывной
+  высоты, а не сыгранные ноты. Публичные `note_staff_step`/`note_letter`/`draw_note` — `PNote`.
+- Хрома (`fold_chroma`, `fold_bass_chroma`, `bin_midi`): начало сетки банка — `PNote`.
+  В тестах `take_roll` `const BANK` стал `fn bank()` (`PNote::new` не `const`).
+- **Не тронуто:** `AccidentalStyle::midi_name(i32)` — вне списка плана, см. «Попутные находки».
+
 ## Ф7 — снять реэкспорты `audio/mod.rs`
 
-**Проблема.** `src/audio/mod.rs:28-50` реэкспортирует 22 типа из приватного `mod types`
-вопреки запрету на `pub use`; импортёров — 13 файлов (`rg -l 'crate::audio::(\{|[A-Z])'
-src`; в памяти от 09-03 стояло 27 — пересчитать на старте).
+**Проблема.** `src/audio/mod.rs:29-53` реэкспортирует 23 типа (22 + `BankRange` из Ф6в) из
+приватного `mod types` вопреки запрету на `pub use`; импортёров — 14 файлов после Ф6в
+(`rg -l 'crate::audio::(\{|[A-Z])' src`; было 13, `ui/pianoroll.rs` добавился с `BankRange`;
+в памяти от 09-03 стояло 27 — пересчитать на старте).
 
 **Решение.**
-- `mod types` → `pub mod types`; импорты во всех 13 файлах → `crate::audio::types::X`.
+- `mod types` → `pub mod types`; импорты во всех 14 файлах → `crate::audio::types::X`.
 - `pub use worker::worker_entry` → `pub mod worker` (под тем же `cfg(wasm32)`), вызов в
   `src/bin/dsp_worker.rs:9` → `fretboard::audio::worker::worker_entry()`.
 - `pub use native::imp::AudioEngine` / `pub use wasm::AudioEngine` **остаются**: это
@@ -422,6 +455,15 @@ src`; в памяти от 09-03 стояло 27 — пересчитать на
   `Option<SampleRate>`, но потребитель — строка UI `app/controls.rs:330` («Input rate: {} Hz»,
   сейчас печатает «0 Hz» до старта), а что показывать вместо нуля — решение по UI, не
   механика фазы. Геттеры оставлены на примитивах как граница с UI.
+- **`AccidentalStyle::midi_name(midi: i32)`** (`core_types/note.rs:62`, найдено в Ф6в,
+  2026-09-22): семь вызовов, пять из них кастуют в `i32` уже типизированное значение
+  (`PNote` в `controls.rs:957`, `note.rs:264`, `staff_panel.rs` чип ноты, `analysis_math.rs`
+  ×2; `u8` в `drone_panel.rs:329`), и только `pianoroll.rs` (`draw_rows`, `draw_right_scale`)
+  зовёт с настоящими `i32` — рядами вида `view_lo.floor()..=view_hi.ceil()`. Кандидат на
+  `midi_name(PNote)`, но тогда ряды пианоролла должны доказать, что они внутри 0..=127. Там же:
+  октава считается `midi / 12 - 1`, а не `div_euclid`, — для отрицательного `midi` она на
+  единицу завышена. Доходят ли туда отрицательные ряды (ручной вид `take_roll` прижат к банку,
+  рамку живого ролла не проверял) — не выяснено.
 - **`try_lock` в колбэке дрона** (`imp.rs:704`, `build_drone_stream`) глотал и `WouldBlock`, и
   `Poisoned` одним `if let Ok`. Ф1 развела их: `WouldBlock` — держим прошлый снимок, как
   задумано; `Poisoned` — паника, как у всех `lock()`.

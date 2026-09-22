@@ -398,8 +398,7 @@ impl App {
 
         let settings = self.audio.analysis_settings();
         let style = settings.accidental;
-        let res_min_midi = settings.resonator.min_midi.as_u8() as i32;
-        let res_max_midi = settings.resonator.max_midi.as_u8() as i32;
+        let bank = settings.resonator.bank_range();
 
         // SOURCE = the engine's melody history, taken by cursor: every bank frame
         // published since the last repaint, each carrying the line's pitch, the heat
@@ -458,8 +457,7 @@ impl App {
                         &painter,
                         rect,
                         &[],
-                        res_min_midi,
-                        res_max_midi,
+                        bank,
                         self.pitch_roll.view_lo,
                         self.pitch_roll.view_hi,
                         LIVE_TIME_AXIS,
@@ -474,8 +472,7 @@ impl App {
                     &painter,
                     rect,
                     &self.pitch_roll.columns(now),
-                    res_min_midi,
-                    res_max_midi,
+                    bank,
                     self.pitch_roll.view_lo,
                     self.pitch_roll.view_hi,
                     LIVE_TIME_AXIS,

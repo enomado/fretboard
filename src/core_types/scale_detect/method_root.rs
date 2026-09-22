@@ -9,6 +9,7 @@ use super::chroma::{
     PITCH_CLASS_COUNT,
     fold_chroma_with,
 };
+use crate::core_types::pitch::PNote;
 
 // --- Бас-окно для улики корня: ниже FULL — полный вес, выше ZERO — игнор ---
 const BASS_FULL_MIDI: f32 = 36.0; // C2
@@ -24,7 +25,7 @@ fn bass_weight(midi: f32) -> f32 {
 }
 
 /// Бас-взвешенная chroma — улика корня: низкие ноты тяготеют к тонике.
-pub fn fold_bass_chroma(spectrum: &[f32], min_midi: usize, bins_per_semitone: usize) -> Chroma {
+pub fn fold_bass_chroma(spectrum: &[f32], min_midi: PNote, bins_per_semitone: usize) -> Chroma {
     fold_chroma_with(spectrum, min_midi, bins_per_semitone, bass_weight)
 }
 
@@ -82,7 +83,7 @@ mod tests {
         let mut spectrum = vec![0.0f32; 400];
         spectrum[0] = 1.0; // MIDI 12 — глубокий бас, полный вес
         spectrum[60 * 5 - 12 * 5] = 1.0; // MIDI 60 (C4) — на верхней границе, вес ~0
-        let bass = fold_bass_chroma(&spectrum, 12, 5);
+        let bass = fold_bass_chroma(&spectrum, PNote::new(12).unwrap(), 5);
         // MIDI 60 (C4) — снова C, но с нулевым бас-весом, вклад только от MIDI 12.
         assert!((bass[0] - 1.0).abs() < 0.05);
     }

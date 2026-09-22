@@ -17,11 +17,15 @@ use super::swipe::{
     SwipeKernel,
 };
 use crate::audio::sample_rate::SampleRate;
-use crate::audio::types::AnalysisSettings;
+use crate::audio::types::{
+    AnalysisSettings,
+    BankRange,
+};
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::{
     Hz,
     Midi,
+    PNote,
 };
 
 const RESONATOR_MIN_MIDI: usize = NOTE_BUCKET_MIN_MIDI;
@@ -61,8 +65,7 @@ const OUTPUT_BINS_PER_SEMITONE: usize = SPIRAL_BINS_PER_SEMITONE;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResonatorViewSettings {
-    min_midi:          usize,
-    max_midi:          usize,
+    bank:              BankRange,
     bins_per_semitone: usize,
     alpha_scale:       f32,
     beta_scale:        f32,
@@ -123,15 +126,20 @@ pub(crate) struct ResonatorAnalyzer {
 
 impl ResonatorViewSettings {
     pub(crate) fn note_labels(&self, style: AccidentalStyle) -> Vec<String> {
-        resonator_note_labels(self.min_midi, self.max_midi, style)
+        resonator_note_labels(self.bank, style)
+    }
+
+    /// Fractional MIDI of the bank's bin 0 — where every grid built on the bank starts.
+    fn lo_midi(&self) -> f32 {
+        Midi::from(self.bank.lo()).0
     }
 }
 
 impl Default for ResonatorViewSettings {
     fn default() -> Self {
+        let note = |midi: usize| PNote::new(u8::try_from(midi).unwrap()).unwrap();
         Self {
-            min_midi:          RESONATOR_MIN_MIDI,
-            max_midi:          RESONATOR_MAX_MIDI,
+            bank:              BankRange::new(note(RESONATOR_MIN_MIDI), note(RESONATOR_MAX_MIDI)),
             bins_per_semitone: RESONATOR_DEFAULT_BINS_PER_SEMITONE,
             alpha_scale:       1.0,
             beta_scale:        1.0,
@@ -145,10 +153,7 @@ impl Default for ResonatorViewSettings {
 impl From<&AnalysisSettings> for ResonatorViewSettings {
     fn from(s: &AnalysisSettings) -> Self {
         Self {
-            // Leave the typed-MIDI config behind here: the view-model uses these
-            // purely as bin-bucket offsets/iteration bounds (raw `usize` domain).
-            min_midi:          s.resonator.min_midi.as_u8() as usize,
-            max_midi:          s.resonator.max_midi.as_u8() as usize,
+            bank:              s.resonator.bank_range(),
             bins_per_semitone: s.resonator.bins,
             alpha_scale:       s.resonator.alpha,
             beta_scale:        s.resonator.beta,
@@ -281,10 +286,10 @@ impl ResonatorAnalyzer {
 fn build_resonator_bank(sample_rate: SampleRate, settings: &ResonatorViewSettings) -> OnePoleBank {
     // Граница с крейтом `resonators`: он знает частоту дискретизации только как `f32`.
     let sample_rate = sample_rate.hz();
-    let bin_count = (settings.max_midi - settings.min_midi) * settings.bins_per_semitone + 1;
+    let bin_count = settings.bank.semitones() * settings.bins_per_semitone + 1;
     let configs: Vec<ResonatorConfig> = (0..bin_count)
         .map(|i| {
-            let midi = settings.min_midi as f32 + i as f32 / settings.bins_per_semitone as f32;
+            let midi = settings.lo_midi() + i as f32 / settings.bins_per_semitone as f32;
             let frequency = Midi(midi).to_hz(settings.reference_hz).0;
             // Floor guards only alpha > 0 (a zero coefficient is a dead resonator);
             // it must sit well below base_alpha * min(slider). The old floor of 1e-4
@@ -338,7 +343,7 @@ fn resonator_snapshot(
         // SWIPE does its own warping (√), and it is not negotiable by the UI.
         let salience = SalienceFrame::score(
             &spectrum,
-            settings.min_midi as f32,
+            settings.lo_midi(),
             settings.bins_per_semitone as f32,
             swipe_bank,
         );
@@ -352,8 +357,7 @@ fn resonator_snapshot(
         };
     }
 
-    let semitone_span = settings.max_midi - settings.min_midi;
-    let out_len = semitone_span * OUTPUT_BINS_PER_SEMITONE + 1;
+    let out_len = settings.bank.semitones() * OUTPUT_BINS_PER_SEMITONE + 1;
     let mut spectrum = vec![0.0f32; out_len];
 
     for (i, &detuning) in detuning_hz.iter().enumerate() {
@@ -380,7 +384,7 @@ fn resonator_snapshot(
         let gate = (-0.5 * (ds / GATE_SIGMA_SEMITONES).powi(2)).exp();
 
         let midi = Hz(f_hat).to_midi(settings.reference_hz).0;
-        let position = (midi - settings.min_midi as f32) * OUTPUT_BINS_PER_SEMITONE as f32;
+        let position = (midi - settings.lo_midi()) * OUTPUT_BINS_PER_SEMITONE as f32;
         splat_linear(&mut spectrum, position, weight * gate);
     }
 
@@ -388,7 +392,7 @@ fn resonator_snapshot(
     // the display gets its `gamma` afterwards.
     let salience = SalienceFrame::score(
         &spectrum,
-        settings.min_midi as f32,
+        settings.lo_midi(),
         OUTPUT_BINS_PER_SEMITONE as f32,
         swipe_output,
     );
@@ -410,7 +414,7 @@ mod tests {
 
     /// MIDI of an output-grid bin index, given the analyzer's range/resolution.
     fn bin_midi(an: &ResonatorAnalyzer, idx: usize) -> f32 {
-        an.settings.min_midi as f32 + idx as f32 / OUTPUT_BINS_PER_SEMITONE as f32
+        an.settings.lo_midi() + idx as f32 / OUTPUT_BINS_PER_SEMITONE as f32
     }
 
     fn peak_index(spectrum: &[f32]) -> usize {
@@ -559,8 +563,8 @@ mod tests {
             .collect();
         an.process_samples(&sig, true);
 
-        // bank bin index nearest A4 (440): (69 - min_midi) * bins_per_semitone
-        let a4_bin = (69 - an.settings.min_midi) * an.settings.bins_per_semitone;
+        // bank bin index nearest A4 (440): (69 - lo) * bins_per_semitone
+        let a4_bin = (69 - an.settings.bank.lo().as_u8() as usize) * an.settings.bins_per_semitone;
         let det = an.detuning_hz[a4_bin];
         let expected = f - 440.0; // ~2.5 Hz sharp
         assert!(det > 0.0, "sharp tone should give positive detuning, got {det}");

@@ -55,6 +55,7 @@ use super::{
     pill_muted,
 };
 use crate::audio::{
+    BankRange,
     MelodyFrame,
     MelodyHistory,
     NoteLine,
@@ -64,7 +65,10 @@ use crate::core_types::note::{
     CIRCLE_OF_FIFTHS,
     KeySignature,
 };
-use crate::core_types::pitch::Midi;
+use crate::core_types::pitch::{
+    Midi,
+    PNote,
+};
 use crate::ui::segmented::{
     PillCombo,
     RowCaption,
@@ -220,10 +224,7 @@ impl App {
                 // itself rides the frames now (`MelodyFrame::heat`) rather than a
                 // second history off the reading — which is what let it drift from the
                 // trail drawn on top of it.
-                let bank = BankRange {
-                    min_midi: settings.resonator.min_midi.as_u8() as i32,
-                    max_midi: settings.resonator.max_midi.as_u8() as i32,
-                };
+                let bank = settings.resonator.bank_range();
                 draw_staff(&painter, rect, &self.staff, &note_line, style, bank);
             });
     }
@@ -252,7 +253,11 @@ fn draw_card_header(ui: &mut Ui, line: &NoteLine, style: AccidentalStyle) {
                     Some(note) => {
                         pill_colored(
                             ui,
-                            &format!("{}  {:+.0}\u{00A2}", style.midi_name(note.midi), note.cents),
+                            &format!(
+                                "{}  {:+.0}\u{00A2}",
+                                style.midi_name(note.midi.as_u8() as i32),
+                                note.cents
+                            ),
                             PILL_INK_ON_INTONATION,
                             intonation_color(note.cents),
                         )
@@ -418,7 +423,7 @@ fn draw_engraving(painter: &Painter, geom: &mut StaffGeom, clef: Clef, key: KeyS
 struct NoteColumn {
     /// Centre x of the notehead — and of the name above it.
     x:         f32,
-    midi:      i32,
+    midi:      PNote,
     cents:     f32,
     /// The note sounding right now: drawn larger, as the one being played.
     emphasize: bool,
@@ -441,7 +446,7 @@ struct NoteColumn {
 /// (each drawing pass skips them) but they still mean "something has been played", and
 /// [`draw_staff`] reads that to decide the empty-state hint.
 fn note_columns(line: &NoteLine, right_x: f32, advance: f32) -> Vec<NoteColumn> {
-    let mut items: Vec<(i32, f32, bool)> = line.history.iter().map(|n| (n.midi, n.cents, false)).collect();
+    let mut items: Vec<(PNote, f32, bool)> = line.history.iter().map(|n| (n.midi, n.cents, false)).collect();
     if let Some(note) = line.current {
         items.push((note.midi, note.cents, true));
     }
@@ -508,7 +513,7 @@ fn draw_note_names(
         if col.x < geom.notes_left {
             continue;
         }
-        let name = style.pitch_class_name(col.midi.rem_euclid(12) as usize);
+        let name = style.pitch_class_name(col.midi.to_pc().1.0 as usize);
         let name_size = if col.emphasize {
             geom.gap * 1.3
         } else {
@@ -591,23 +596,6 @@ impl TimeRuler {
     }
 }
 
-/// The resonator bank's pitch span, as the panel reads it: what a heat bin's *index*
-/// means. A newtype, so the two ends cannot be quietly swapped at a call site — the
-/// whole bin→pitch mapping is derived from their difference.
-#[derive(Clone, Copy)]
-struct BankRange {
-    min_midi: i32,
-    max_midi: i32,
-}
-
-impl BankRange {
-    /// How many semitones the bank spans. Zero or negative = a degenerate range and
-    /// nothing to map; the heat layer draws nothing rather than dividing by it.
-    fn semitones(&self) -> i32 {
-        self.max_midi - self.min_midi
-    }
-}
-
 /// One waterfall — the frame context both of its layers draw from.
 ///
 /// Everything that places a frame lives here and is therefore *shared by construction*:
@@ -687,11 +675,14 @@ impl Waterfall<'_> {
             .map(|f| f.heat.as_slice())
             .find(|c| !c.is_empty())
             .map_or(0, <[f32]>::len);
-        if n < 2 || bin_count < 2 || self.bank.semitones() <= 0 {
+        // No span check: `BankRange` is never empty (`lo < hi` by construction), so the
+        // division below is always by at least one semitone.
+        if n < 2 || bin_count < 2 {
             return;
         }
         // Derived, not assumed: (bins − 1) spread over the semitone span.
-        let bins_per_semitone = (bin_count - 1) as f32 / self.bank.semitones() as f32;
+        let bins_per_semitone = (bin_count - 1) as f32 / self.bank.span_f32();
+        let bank_lo = Midi::from(self.bank.lo()).0;
 
         // A cell is one *frame*, so it is as wide as the gap between frames — measured
         // rather than assumed (the bank's cadence is a user setting, 8..80 ms, and the
@@ -716,7 +707,7 @@ impl Waterfall<'_> {
                 if value < RES_WF_GATE {
                     continue;
                 }
-                let midi = self.bank.min_midi as f32 + bin as f32 / bins_per_semitone;
+                let midi = bank_lo + bin as f32 / bins_per_semitone;
                 let y = staff::midi_to_y(self.geom, self.style, self.clef, midi);
                 // Most of the bank's range sits off the selected clef's staff; clipping
                 // here keeps the strip to the visible lines and the cost low.
@@ -746,8 +737,11 @@ mod tests {
     use super::*;
     use crate::audio::StaffNote;
 
-    fn note(midi: i32) -> StaffNote {
-        StaffNote { midi, cents: 0.0 }
+    fn note(midi: u8) -> StaffNote {
+        StaffNote {
+            midi:  PNote::new(midi).unwrap(),
+            cents: 0.0,
+        }
     }
 
     /// A card-sized panel rect, the shape the staff is actually drawn in.
@@ -793,7 +787,7 @@ mod tests {
         assert!(!cols[0].emphasize);
         assert_eq!(cols[0].x, 668.0);
         assert!(cols[1].emphasize);
-        assert_eq!(cols[1].midi, 69);
+        assert_eq!(cols[1].midi.as_u8(), 69);
         assert_eq!(cols[1].x, 700.0);
     }
 

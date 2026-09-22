@@ -41,6 +41,10 @@ use crate::audio::types::{
     NoteLine,
     StaffNote,
 };
+use crate::core_types::pitch::{
+    Midi,
+    PNote,
+};
 
 /// A held note shorter than this (seconds) is discarded as a glitch, not written.
 const MIN_NOTE_SECONDS: f64 = 0.06;
@@ -61,7 +65,7 @@ const HISTORY_CAP: usize = 96;
 /// The note currently sounding, still accumulating. Timestamps are seconds on the
 /// **audio** clock (see the module docs), not the UI's.
 struct HeldNote {
-    midi:  i32,
+    midi:  PNote,
     cents: f32,
     onset: f64,
     last:  f64,
@@ -97,9 +101,7 @@ impl NoteSegmenter {
             Some(midi_f) => {
                 // Nearest semitone is the note; the fractional part is how far off
                 // equal temperament it was played.
-                let midi = midi_f.round();
-                let cents = (midi_f - midi) * 100.0;
-                let midi = midi as i32;
+                let (midi, cents) = Midi(midi_f).nearest_note();
 
                 // A fresh attack (onset counter moved) forces a new note even at the
                 // same pitch, so a re-bowed repeat isn't merged into the held note.
@@ -186,9 +188,10 @@ mod tests {
     /// cent — `midi_f` is an `f32`, so exact equality is not on offer and not wanted.
     const CENTS_EPS: f32 = 0.01;
 
-    /// The note sounding now, `(midi, cents)`.
-    fn current(line: &NoteLine) -> Option<(i32, f32)> {
-        line.current.map(|n| (n.midi, n.cents))
+    /// The note sounding now, `(midi, cents)` — the note as its raw number, so the tests
+    /// below can compare it to a literal.
+    fn current(line: &NoteLine) -> Option<(u8, f32)> {
+        line.current.map(|n| (n.midi.as_u8(), n.cents))
     }
 
     /// REGRESSION: the written line must show a note change promptly, end to end.
@@ -236,7 +239,7 @@ mod tests {
             let mut sig = violin_tone(from_hz, sr, hold);
             sig.extend(violin_tone(to_hz, sr, hold));
             let change_ms = hold as f32 / sr.hz() * 1000.0;
-            let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).0.round() as i32;
+            let target_midi = Hz(to_hz).to_midi(Hz::A4_STANDARD).nearest_note().0.as_u8();
 
             let mut tracker = PitchTracker::new();
             let mut bank = ResonatorAnalyzer::new(sr);
@@ -395,7 +398,7 @@ mod tests {
         let line = s.update(None, NO_ONSET, 0.10 + RELEASE_SECONDS + 0.01);
         assert!(line.current.is_none());
         assert_eq!(line.history.len(), 1);
-        assert_eq!(line.history[0].midi, 69);
+        assert_eq!(line.history[0].midi.as_u8(), 69);
         // EMA: 2*(1-0.25) + 4*0.25 = 2.5
         assert!((line.history[0].cents - 2.5).abs() < CENTS_EPS);
     }
@@ -408,7 +411,7 @@ mod tests {
         s.update(play(69, 0.0), NO_ONSET, 0.10);
         let line = s.update(play(71, 0.0), NO_ONSET, 0.12); // A4 → B4
         assert_eq!(line.history.len(), 1);
-        assert_eq!(line.history[0].midi, 69);
+        assert_eq!(line.history[0].midi.as_u8(), 69);
         assert_eq!(current(&line).unwrap().0, 71);
     }
 
@@ -455,7 +458,7 @@ mod tests {
             1,
             "the held note should survive the gap intact"
         );
-        assert_eq!(line.history[0].midi, 69);
+        assert_eq!(line.history[0].midi.as_u8(), 69);
     }
 
     /// A leap to a new octave is tracked — the line must not go deaf after a big
@@ -488,7 +491,7 @@ mod tests {
         assert!(line.history.is_empty());
         let line = s.update(play(69, 0.0), 2, 0.12); // NEW onset, same pitch → split
         assert_eq!(line.history.len(), 1, "the first stroke should be committed");
-        assert_eq!(line.history[0].midi, 69);
+        assert_eq!(line.history[0].midi.as_u8(), 69);
         assert_eq!(current(&line).unwrap().0, 69); // the second stroke is now current
     }
 

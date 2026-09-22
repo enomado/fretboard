@@ -49,6 +49,7 @@ use eframe::egui::{
     pos2,
 };
 
+use crate::audio::BankRange;
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::Midi;
 use crate::ui::theme::intonation_color;
@@ -256,8 +257,8 @@ impl RollMapping {
 /// Paint the pitch roll into `rect`.
 ///
 /// `columns` are the published bank frames oldest → newest, each carrying its own
-/// age, the line's pitch and the heat of that instant. `res_min_midi`/`res_max_midi`
-/// are the bank's pitch range, which maps each heat bin to a pitch. `view_lo`/
+/// age, the line's pitch and the heat of that instant. `bank` is the bank's pitch
+/// range, which maps each heat bin to a pitch. `view_lo`/
 /// `view_hi` are the fractional MIDI numbers at the bottom/top edges of the plot, so a
 /// rising melody scrolls the rows smoothly. `time` is the slice of time on screen —
 /// see [`TimeAxis`].
@@ -276,8 +277,7 @@ pub fn draw_pitch_roll(
     painter: &Painter,
     rect: Rect,
     columns: &[RollColumn<'_>],
-    res_min_midi: i32,
-    res_max_midi: i32,
+    bank: BankRange,
     view_lo: f32,
     view_hi: f32,
     time: TimeAxis,
@@ -292,20 +292,11 @@ pub fn draw_pitch_roll(
     // Layer order: grid rows + time ruler (bottom) → spectral heat → melody line.
     draw_rows(painter, rect, map, view_lo, view_hi, style);
     draw_time_grid(painter, map);
-    draw_heat(painter, map, columns, res_min_midi, res_max_midi);
+    draw_heat(painter, map, columns, bank);
     if show_line {
         draw_graph(painter, map, columns);
     }
-    draw_right_scale(
-        painter,
-        map,
-        view_lo,
-        view_hi,
-        style,
-        columns,
-        res_min_midi,
-        res_max_midi,
-    );
+    draw_right_scale(painter, map, view_lo, view_hi, style, columns, bank);
 }
 
 /// Roughly how many gridlines the ruler aims for across the plot. The step is then
@@ -403,20 +394,21 @@ fn draw_right_scale(
     view_hi: f32,
     style: AccidentalStyle,
     columns: &[RollColumn<'_>],
-    res_min_midi: i32,
-    res_max_midi: i32,
+    bank: BankRange,
 ) {
     let plot = map.plot();
     // "Now" = the newest *non-empty* column, so a one-frame dropout doesn't blink
     // the whole scale dark.
     let current = columns.iter().rev().map(|c| c.heat).find(|c| !c.is_empty());
     let bin_count = current.map_or(0, <[f32]>::len);
-    let mapped = bin_count >= 2 && res_max_midi > res_min_midi;
+    // Only the column can be too short to map; the bank is never empty (`lo < hi`).
+    let mapped = bin_count >= 2;
     let bins_per_semitone = if mapped {
-        (bin_count - 1) as f32 / (res_max_midi - res_min_midi) as f32
+        (bin_count - 1) as f32 / bank.span_f32()
     } else {
         1.0
     };
+    let bank_lo = Midi::from(bank.lo()).0;
 
     let row_h = map.px_per_semitone();
     let lo = view_lo.floor() as i32;
@@ -432,7 +424,7 @@ fn draw_right_scale(
         // Peak energy within ±½ semitone of this note in the current column.
         let energy = match current {
             Some(col) if mapped => {
-                let center = (midi as f32 - res_min_midi as f32) * bins_per_semitone;
+                let center = (midi as f32 - bank_lo) * bins_per_semitone;
                 let last = (col.len() - 1) as f32;
                 let b0 = (center - bins_per_semitone * 0.5).clamp(0.0, last) as usize;
                 let b1 = (center + bins_per_semitone * 0.5).clamp(0.0, last) as usize;
@@ -575,31 +567,26 @@ fn mean_gap_s(columns: &[RollColumn<'_>]) -> f32 {
 ///
 /// Bin → pitch: a column paints on its own [`RollColumn::grid`] when it has one (the
 /// salience layer, whose detector may not share the bank's span). The spectrum layer
-/// carries no grid and falls back to the bank: it spans `res_min_midi..=res_max_midi`,
+/// carries no grid and falls back to the bank: it spans `bank.lo()..=bank.hi()`,
 /// and bins-per-semitone is derived from a column's length (it changes with the
 /// reassignment toggle, so we read it rather than assume it), the same way the staff's
 /// waterfall does. A per-column grid is what keeps a mid-history frontend switch — old
 /// bank columns beside fresh RT-SWIPE ones, two grids in one draw — honest.
-fn draw_heat(
-    painter: &Painter,
-    map: RollMapping,
-    columns: &[RollColumn<'_>],
-    res_min_midi: i32,
-    res_max_midi: i32,
-) {
+fn draw_heat(painter: &Painter, map: RollMapping, columns: &[RollColumn<'_>], bank: BankRange) {
     let (plot, time) = (map.plot(), map.time);
     let bin_count = columns
         .iter()
         .map(|c| c.heat)
         .find(|c| !c.is_empty())
         .map_or(0, <[f32]>::len);
-    if bin_count < 2 || res_max_midi <= res_min_midi {
+    // Only the column can be too short to map; the bank is never empty (`lo < hi`).
+    if bin_count < 2 {
         return;
     }
     // The bank fallback, for columns with no grid of their own (the spectrum layer).
     let bank_grid = HeatGrid {
-        min_midi:          res_min_midi as f32,
-        bins_per_semitone: (bin_count - 1) as f32 / (res_max_midi - res_min_midi) as f32,
+        min_midi:          Midi::from(bank.lo()).0,
+        bins_per_semitone: (bin_count - 1) as f32 / bank.span_f32(),
     };
     // A cell is one *frame*, so it is as wide as the gap between frames — measured,
     // not assumed: the bank's cadence is a user setting (8..80 ms) and the publish

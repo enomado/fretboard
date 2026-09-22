@@ -49,7 +49,7 @@ impl ScaleSolver {
         if reading.resonator_spectrum.is_empty() {
             return;
         }
-        let min_midi = settings.resonator.min_midi.as_u8() as usize;
+        let min_midi = settings.resonator.min_midi;
         let bins = settings.resonator.bins;
         let chroma = fold_chroma(&reading.resonator_spectrum, min_midi, bins);
         let bass = fold_bass_chroma(&reading.resonator_spectrum, min_midi, bins);

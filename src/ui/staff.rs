@@ -34,6 +34,7 @@ use crate::core_types::note::{
     AccidentalStyle,
     KeySignature,
 };
+use crate::core_types::pitch::PNote;
 
 /// Placement of the staff inside a panel rect. All fields are screen pixels.
 pub struct StaffGeom {
@@ -281,10 +282,18 @@ fn spelling(pc: usize, style: AccidentalStyle) -> (i32, Accidental) {
 /// `step` is in diatonic slots (half-gaps) counted from the clef's bottom line.
 /// In treble E4=0, F5=8, middle C4=-2, open-G string G3=-5. Accidental is the
 /// sign to draw left of the notehead.
-pub fn note_staff_step(midi: i32, style: AccidentalStyle, clef: Clef) -> (i32, Accidental) {
-    let pc = midi.rem_euclid(12) as usize;
+pub fn note_staff_step(note: PNote, style: AccidentalStyle, clef: Clef) -> (i32, Accidental) {
+    semitone_staff_step(note.as_u8() as i32, style, clef)
+}
+
+/// [`note_staff_step`] for a bare semitone slot. Private: the only caller is
+/// [`midi_to_y`], whose slots are the two semitones either side of a *continuous* pitch
+/// — positions to interpolate between, not notes anyone played, so they are not asked
+/// to be valid [`PNote`]s.
+fn semitone_staff_step(semitone: i32, style: AccidentalStyle, clef: Clef) -> (i32, Accidental) {
+    let pc = semitone.rem_euclid(12) as usize;
     // Scientific octave: MIDI 60 = C4. `div_euclid` keeps this correct below 0.
-    let octave = midi.div_euclid(12) - 1;
+    let octave = semitone.div_euclid(12) - 1;
     let (letter, acc) = spelling(pc, style);
     // Diatonic index of this note vs. the diatonic index of the clef's bottom line.
     let diatonic = letter + 7 * octave;
@@ -294,8 +303,8 @@ pub fn note_staff_step(midi: i32, style: AccidentalStyle, clef: Clef) -> (i32, A
 /// The staff letter (0 = C … 6 = B) a MIDI note is spelled with in `style`. This
 /// is the letter whose vertical slot the note occupies — what a key signature
 /// keys its accidental off (see [`KeySignature::note_glyph`]).
-pub fn note_letter(midi: i32, style: AccidentalStyle) -> usize {
-    spelling(midi.rem_euclid(12) as usize, style).0 as usize
+pub fn note_letter(note: PNote, style: AccidentalStyle) -> usize {
+    spelling(note.to_pc().1.0 as usize, style).0 as usize
 }
 
 /// Even staff steps that need a ledger line for a note at `step`.
@@ -400,8 +409,8 @@ pub fn draw_key_signature(
 pub fn midi_to_y(geom: &StaffGeom, style: AccidentalStyle, clef: Clef, midi_f: f32) -> f32 {
     let m0 = midi_f.floor() as i32;
     let frac = midi_f - m0 as f32;
-    let y0 = geom.step_y(note_staff_step(m0, style, clef).0);
-    let y1 = geom.step_y(note_staff_step(m0 + 1, style, clef).0);
+    let y0 = geom.step_y(semitone_staff_step(m0, style, clef).0);
+    let y1 = geom.step_y(semitone_staff_step(m0 + 1, style, clef).0);
     y0 + (y1 - y0) * frac
 }
 
@@ -415,7 +424,7 @@ pub fn draw_note(
     painter: &Painter,
     geom: &StaffGeom,
     x: f32,
-    midi: i32,
+    note: PNote,
     style: AccidentalStyle,
     clef: Clef,
     key: KeySignature,
@@ -423,7 +432,7 @@ pub fn draw_note(
     staff_color: Color32,
     emphasize: bool,
 ) -> Pos2 {
-    let (step, acc) = note_staff_step(midi, style, clef);
+    let (step, acc) = note_staff_step(note, style, clef);
     let y = geom.step_y(step);
     let gap = geom.gap;
 
@@ -475,7 +484,7 @@ pub fn draw_note(
     // own accidental is drawn only when it deviates from the signature: in-key
     // notes carry nothing (the signature already implies them), a note contradicting
     // the signature gets a ♮, and a chromatic note outside the key gets its ♯/♭.
-    let letter = note_letter(midi, style);
+    let letter = note_letter(note, style);
     if let Some(glyph_acc) = key.note_glyph(letter, acc) {
         painter.text(
             pos2(x - rx - gap * 0.5, y),
@@ -508,48 +517,53 @@ fn filled_ellipse(painter: &Painter, center: Pos2, rx: f32, ry: f32, angle: f32,
 mod tests {
     use super::*;
 
+    /// A note by its MIDI number — the tests speak in numbers, the API in notes.
+    fn n(midi: u8) -> PNote {
+        PNote::new(midi).unwrap()
+    }
+
     #[test]
     fn staff_steps_match_treble_clef() {
         let sharp = AccidentalStyle::Sharps;
         let g = Clef::Treble;
         // Bottom line E4, G4 line, top line F5.
-        assert_eq!(note_staff_step(64, sharp, g).0, 0); // E4 bottom line
-        assert_eq!(note_staff_step(67, sharp, g).0, 2); // G4 (line 1)
-        assert_eq!(note_staff_step(71, sharp, g).0, 4); // B4 middle line
-        assert_eq!(note_staff_step(77, sharp, g).0, 8); // F5 top line
+        assert_eq!(note_staff_step(n(64), sharp, g).0, 0); // E4 bottom line
+        assert_eq!(note_staff_step(n(67), sharp, g).0, 2); // G4 (line 1)
+        assert_eq!(note_staff_step(n(71), sharp, g).0, 4); // B4 middle line
+        assert_eq!(note_staff_step(n(77), sharp, g).0, 8); // F5 top line
         // Middle C and the open violin strings below the staff.
-        assert_eq!(note_staff_step(60, sharp, g).0, -2); // C4 (1 ledger below)
-        assert_eq!(note_staff_step(55, sharp, g).0, -5); // G3 (open G)
-        assert_eq!(note_staff_step(69, sharp, g).0, 3); // A4
-        assert_eq!(note_staff_step(76, sharp, g).0, 7); // E5 (open E is E5=76)
+        assert_eq!(note_staff_step(n(60), sharp, g).0, -2); // C4 (1 ledger below)
+        assert_eq!(note_staff_step(n(55), sharp, g).0, -5); // G3 (open G)
+        assert_eq!(note_staff_step(n(69), sharp, g).0, 3); // A4
+        assert_eq!(note_staff_step(n(76), sharp, g).0, 7); // E5 (open E is E5=76)
     }
 
     #[test]
     fn staff_steps_match_bass_and_tenor_clefs() {
         let sharp = AccidentalStyle::Sharps;
         // Bass (F clef): bottom line G2, F3 on line 3 (step 6), top line A3.
-        assert_eq!(note_staff_step(43, sharp, Clef::Bass).0, 0); // G2 bottom line
-        assert_eq!(note_staff_step(50, sharp, Clef::Bass).0, 4); // D3 middle line
-        assert_eq!(note_staff_step(53, sharp, Clef::Bass).0, 6); // F3 (the F-clef line)
-        assert_eq!(note_staff_step(57, sharp, Clef::Bass).0, 8); // A3 top line
-        assert_eq!(note_staff_step(60, sharp, Clef::Bass).0, 10); // C4 (1 ledger above)
+        assert_eq!(note_staff_step(n(43), sharp, Clef::Bass).0, 0); // G2 bottom line
+        assert_eq!(note_staff_step(n(50), sharp, Clef::Bass).0, 4); // D3 middle line
+        assert_eq!(note_staff_step(n(53), sharp, Clef::Bass).0, 6); // F3 (the F-clef line)
+        assert_eq!(note_staff_step(n(57), sharp, Clef::Bass).0, 8); // A3 top line
+        assert_eq!(note_staff_step(n(60), sharp, Clef::Bass).0, 10); // C4 (1 ledger above)
         // Tenor (C clef on the 4th line): bottom line D3, C4 on line 3 (step 6).
-        assert_eq!(note_staff_step(50, sharp, Clef::Tenor).0, 0); // D3 bottom line
-        assert_eq!(note_staff_step(57, sharp, Clef::Tenor).0, 4); // A3 middle line
-        assert_eq!(note_staff_step(60, sharp, Clef::Tenor).0, 6); // C4 (the tenor line)
-        assert_eq!(note_staff_step(64, sharp, Clef::Tenor).0, 8); // E4 top line
+        assert_eq!(note_staff_step(n(50), sharp, Clef::Tenor).0, 0); // D3 bottom line
+        assert_eq!(note_staff_step(n(57), sharp, Clef::Tenor).0, 4); // A3 middle line
+        assert_eq!(note_staff_step(n(60), sharp, Clef::Tenor).0, 6); // C4 (the tenor line)
+        assert_eq!(note_staff_step(n(64), sharp, Clef::Tenor).0, 8); // E4 top line
     }
 
     #[test]
     fn accidentals_follow_spelling() {
         let g = Clef::Treble;
         assert_eq!(
-            note_staff_step(66, AccidentalStyle::Sharps, g).1,
+            note_staff_step(n(66), AccidentalStyle::Sharps, g).1,
             Accidental::Sharp
         ); // F#4
         // Same pitch, flat spelling → Gb: different letter slot, flat sign.
-        let (sharp_step, _) = note_staff_step(66, AccidentalStyle::Sharps, g); // F#4 → F slot
-        let (flat_step, flat_acc) = note_staff_step(66, AccidentalStyle::Flats, g); // Gb4 → G slot
+        let (sharp_step, _) = note_staff_step(n(66), AccidentalStyle::Sharps, g); // F#4 → F slot
+        let (flat_step, flat_acc) = note_staff_step(n(66), AccidentalStyle::Flats, g); // Gb4 → G slot
         assert_eq!(flat_acc, Accidental::Flat);
         assert_eq!(flat_step, sharp_step + 1); // G sits one slot above F
     }
@@ -586,10 +600,10 @@ mod tests {
         // the signature already carries it; a played F natural (77) gets a ♮.
         let g = KeySignature { fifths: 1 };
         let sharps = AccidentalStyle::Sharps;
-        assert_eq!(note_letter(78, sharps), 3); // F
-        assert_eq!(g.note_glyph(note_letter(78, sharps), Accidental::Sharp), None);
+        assert_eq!(note_letter(n(78), sharps), 3); // F
+        assert_eq!(g.note_glyph(note_letter(n(78), sharps), Accidental::Sharp), None);
         assert_eq!(
-            g.note_glyph(note_letter(77, sharps), Accidental::Natural),
+            g.note_glyph(note_letter(n(77), sharps), Accidental::Natural),
             Some(Accidental::Natural)
         );
     }
@@ -642,7 +656,7 @@ mod tests {
         let midis = [55, 60, 62, 64, 67, 69, 71, 74, 76, 79, 83, 88];
         for (k, &m) in midis.iter().enumerate() {
             let x = geom.notes_left + 40.0 + k as f32 * 66.0;
-            let (step, _acc) = note_staff_step(m, AccidentalStyle::Sharps, Clef::Treble);
+            let (step, _acc) = note_staff_step(n(m), AccidentalStyle::Sharps, Clef::Treble);
             let y = geom.step_y(step);
             for e in ledger_steps(step) {
                 let ly = geom.step_y(e);

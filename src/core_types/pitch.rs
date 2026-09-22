@@ -168,6 +168,21 @@ impl Midi {
     pub fn to_hz(self, a4: Hz) -> Hz {
         Hz(resonators::midi_to_hz(self.0, a4.0))
     }
+
+    /// Ближайшая целая нота и отклонение от неё в центах (−50..=50): как написать
+    /// сыгранную высоту и насколько мимо равномерной темперации она сыграна.
+    ///
+    /// Предусловие: высота уже внутри 0..=127 (её дал детектор, у которого сетка
+    /// кончается на C8) — снаружи и на NaN паника, а не тихо прижатая нота.
+    pub fn nearest_note(self) -> (PNote, f32) {
+        let nearest = self.0.round();
+        let cents = (self.0 - nearest) * 100.0;
+        assert!(
+            (PNote::MIN as f32..=PNote::MAX as f32).contains(&nearest),
+            "pitch {self:?} is outside MIDI 0..=127"
+        );
+        (PNote::new(nearest as u8).unwrap(), cents)
+    }
 }
 
 impl From<PNote> for Midi {
@@ -202,5 +217,23 @@ mod tests {
     #[test]
     fn integer_note_is_its_own_midi() {
         assert_eq!(Midi::from(PNote::new(60).unwrap()), Midi(60.0));
+    }
+
+    /// Центы — со знаком: высота выше ноты даёт `+`, ниже — `−`, а сама нота — ближайшая,
+    /// а не нижняя (69.6 — это A#4 на −40¢, а не A4 на +60¢).
+    #[test]
+    fn nearest_note_rounds_and_keeps_the_sign_of_cents() {
+        let (note, cents) = Midi(69.25).nearest_note();
+        assert_eq!(note, PNote::new(69).unwrap());
+        assert!((cents - 25.0).abs() < 1e-3, "{cents}");
+        let (note, cents) = Midi(69.6).nearest_note();
+        assert_eq!(note, PNote::new(70).unwrap());
+        assert!((cents + 40.0).abs() < 1e-3, "{cents}");
+    }
+
+    #[test]
+    #[should_panic(expected = "outside MIDI")]
+    fn nearest_note_refuses_nan() {
+        let _ = Midi(f32::NAN).nearest_note();
     }
 }

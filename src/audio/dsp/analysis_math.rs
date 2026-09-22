@@ -14,6 +14,7 @@ pub(crate) const SPIRAL_BINS_PER_SEMITONE: usize = 8;
 pub(crate) const SPIRAL_BIN_COUNT: usize =
     (NOTE_BUCKET_MAX_MIDI - NOTE_BUCKET_MIN_MIDI) * SPIRAL_BINS_PER_SEMITONE + 1;
 
+use crate::audio::types::BankRange;
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::Hz;
 
@@ -22,10 +23,8 @@ pub(crate) fn frequency_to_note(
     reference_hz: Hz,
     style: AccidentalStyle,
 ) -> (String, f32) {
-    let midi = Hz(frequency_hz).to_midi(reference_hz).0;
-    let nearest = midi.round();
-    let cents = (midi - nearest) * 100.0;
-    (style.midi_name(nearest as i32), cents)
+    let (note, cents) = Hz(frequency_hz).to_midi(reference_hz).nearest_note();
+    (style.midi_name(note.as_u8() as i32), cents)
 }
 
 pub(crate) fn parabolic_tau(values: &[f32], tau: usize) -> f32 {
@@ -165,8 +164,11 @@ pub(crate) fn note_bucket_labels(style: AccidentalStyle) -> Vec<String> {
         .collect()
 }
 
-pub(crate) fn resonator_note_labels(min_midi: usize, max_midi: usize, style: AccidentalStyle) -> Vec<String> {
-    (min_midi..=max_midi).map(|m| style.midi_name(m as i32)).collect()
+/// One label per whole note the bank spans, bottom → top.
+pub(crate) fn resonator_note_labels(bank: BankRange, style: AccidentalStyle) -> Vec<String> {
+    (bank.lo().as_u8()..=bank.hi().as_u8())
+        .map(|m| style.midi_name(m as i32))
+        .collect()
 }
 
 /// How many harmonics [`resonator_fundamental`] sums when scoring a candidate as a

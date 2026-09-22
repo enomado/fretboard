@@ -948,7 +948,7 @@ mod tests {
         rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
         let line = rig.note_line();
         assert_eq!(
-            line.current.map(|n| n.midi),
+            line.current.map(|n| n.midi.as_u8()),
             Some(69),
             "the engine should be holding A4; note_line = {line:?}"
         );
@@ -965,7 +965,7 @@ mod tests {
         let line = rig.note_line();
         assert!(line.current.is_none(), "the note should have been released");
         assert!(
-            line.history.iter().any(|n| n.midi == 69),
+            line.history.iter().any(|n| n.midi.as_u8() == 69),
             "A4 should have been written to the line; history = {:?}",
             line.history
         );
@@ -1023,7 +1023,7 @@ mod tests {
         rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
         let line = rig.note_line();
         assert_eq!(
-            line.current.map(|n| n.midi),
+            line.current.map(|n| n.midi.as_u8()),
             Some(69),
             "the RT-SWIPE frontend should be holding A4; note_line = {line:?}"
         );
@@ -1195,11 +1195,11 @@ mod tests {
         rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
         rig.feed(&vec![0.0f32; (sr.hz() * 0.7) as usize], sr);
 
-        let ghosts: Vec<i32> = rig
+        let ghosts: Vec<u8> = rig
             .note_line()
             .history
             .iter()
-            .map(|n| n.midi)
+            .map(|n| n.midi.as_u8())
             .filter(|&m| m != 69)
             .collect();
         assert!(

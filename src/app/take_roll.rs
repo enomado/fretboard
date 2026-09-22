@@ -83,6 +83,7 @@ use super::take_marks::{
     save_marks,
 };
 use crate::audio::{
+    BankRange,
     MelodyFrame,
     MelodyHistory,
     ReplayStatus,
@@ -216,25 +217,6 @@ impl TakeRoll {
     /// and then look up at the line to decide what note it was.
     fn armed(&self) -> Option<Declaration> {
         Declaration::parse(&self.declared)
-    }
-}
-
-/// The resonator bank's pitch range, in fractional MIDI — the bounds of where evidence
-/// can exist at all.
-///
-/// Its own type rather than a `Range<f32>` so it cannot be mixed up with the *window*
-/// (also a pair of MIDI numbers, and the thing it bounds), and because it is `Copy`:
-/// it is read once per frame from the settings and threaded through the interaction as
-/// a fact about the detector, not as a value anything here may edit.
-#[derive(Clone, Copy)]
-struct BankRange {
-    lo: f32,
-    hi: f32,
-}
-
-impl BankRange {
-    fn span(self) -> f32 {
-        self.hi - self.lo
     }
 }
 
@@ -636,11 +618,12 @@ impl LoadedTake {
     /// through this would let a clamp silently overrule the framing that is the whole
     /// reason this panel exists.
     fn clamp_pitch(&mut self, bank: BankRange) {
-        let whole = bank.span().max(MIN_PITCH_SPAN);
+        let whole = bank.span_f32().max(MIN_PITCH_SPAN);
         let span = self.pitch_span().clamp(MIN_PITCH_SPAN, whole);
+        let (bank_lo, bank_hi) = (Midi::from(bank.lo()).0, Midi::from(bank.hi()).0);
         // Slide, don't squash — same rule as the time axis: hitting an edge must not
         // silently rescale the zoom the user chose.
-        let lo = self.view_lo.clamp(bank.lo, (bank.hi - span).max(bank.lo));
+        let lo = self.view_lo.clamp(bank_lo, (bank_hi - span).max(bank_lo));
         self.view_lo = lo;
         self.view_hi = lo + span;
     }
@@ -1008,14 +991,12 @@ impl App {
     pub(super) fn draw_take_roll(&mut self, ui: &mut Ui) {
         let settings = self.audio.analysis_settings();
         let style = settings.accidental;
-        let res_min_midi = settings.resonator.min_midi.as_u8() as i32;
-        let res_max_midi = settings.resonator.max_midi.as_u8() as i32;
         // Where evidence can exist: outside the bank's filters nothing is ever
-        // published, so the hand-aimed pitch window stops here. See `BankRange`.
-        let bank = BankRange {
-            lo: res_min_midi as f32,
-            hi: res_max_midi as f32,
-        };
+        // published, so the hand-aimed pitch window stops here. See `BankRange`. Read
+        // once per frame and threaded through the interaction as a fact about the
+        // detector — a separate type from the *window* (also two MIDI numbers, and the
+        // thing it bounds), so the two cannot be swapped at a call site.
+        let bank = settings.resonator.bank_range();
 
         ui.horizontal(|ui| {
             ui.label(RichText::new("Take Roll").color(color::TEXT_CAPTION).strong());
@@ -1078,8 +1059,7 @@ impl App {
             &painter,
             rect,
             &loaded.columns(playhead_t, layer),
-            res_min_midi,
-            res_max_midi,
+            bank,
             loaded.view_lo,
             loaded.view_hi,
             time,
@@ -1145,12 +1125,21 @@ mod tests {
     use super::*;
     use crate::audio::AudioEngine;
     use crate::core_types::note::AccidentalStyle;
+    use crate::core_types::pitch::PNote;
 
     /// A take: `seconds` long, replayed at the bank's cadence.
     const CADENCE_S: f64 = 0.016;
 
-    /// The bank's default range (G2ish..C7ish) — the pitch clamp's bounds.
-    const BANK: BankRange = BankRange { lo: 43.0, hi: 96.0 };
+    /// A bank range (G2..C7) — the pitch clamp's bounds. A function, not a `const`:
+    /// `PNote::new` checks its range at run time.
+    fn bank() -> BankRange {
+        BankRange::new(PNote::new(43).unwrap(), PNote::new(96).unwrap())
+    }
+
+    /// The bank's two ends as fractional MIDI, for comparing against the window.
+    fn bank_ends() -> (f32, f32) {
+        (Midi::from(bank().lo()).0, Midi::from(bank().hi()).0)
+    }
 
     fn take(seconds: f32) -> LoadedTake {
         LoadedTake::new(PathBuf::from("/testdata/g_string_trill.wav"), seconds)
@@ -1232,7 +1221,7 @@ mod tests {
                                 Sense::click_and_drag(),
                             );
                             rig.plot = pianoroll::plot_rect(rect);
-                            rig.take.interact(ui, &resp, rig.plot, BANK, rig.marking);
+                            rig.take.interact(ui, &resp, rig.plot, bank(), rig.marking);
                         });
                     rig.offset_y = out.state.offset.y;
                     rig.offset_x = out.state.offset.x;
@@ -1494,7 +1483,7 @@ mod tests {
         let mut loaded = take(10.0);
         play(&mut loaded, 100, Some(69.0)); // A4 — auto-framed around it
 
-        loaded.zoom_pitch_about(0.25, 69.0, BANK);
+        loaded.zoom_pitch_about(0.25, 69.0, bank());
         let (lo, hi) = (loaded.view_lo, loaded.view_hi);
         assert!(hi - lo < 10.0, "the zoom took: {lo:.1}..{hi:.1}");
 
@@ -1525,24 +1514,25 @@ mod tests {
     #[test]
     fn the_pitch_window_stays_inside_the_bank() {
         let mut loaded = take(10.0);
-        loaded.pan_pitch(-100.0, BANK);
+        let (bank_lo, bank_hi) = bank_ends();
+        loaded.pan_pitch(-100.0, bank());
         assert!(
-            loaded.view_lo >= BANK.lo - 1e-3,
+            loaded.view_lo >= bank_lo - 1e-3,
             "panned to {:.1}, below the bank's {:.1}",
             loaded.view_lo,
-            BANK.lo
+            bank_lo
         );
-        loaded.pan_pitch(500.0, BANK);
+        loaded.pan_pitch(500.0, bank());
         assert!(
-            loaded.view_hi <= BANK.hi + 1e-3,
+            loaded.view_hi <= bank_hi + 1e-3,
             "panned to {:.1}, above the bank's {:.1}",
             loaded.view_hi,
-            BANK.hi
+            bank_hi
         );
 
         // Zoom in past all reason: the span stops, it does not collapse or invert.
         for _ in 0..200 {
-            loaded.zoom_pitch_about(0.5, 70.0, BANK);
+            loaded.zoom_pitch_about(0.5, 70.0, bank());
         }
         assert!(
             (loaded.pitch_span() - MIN_PITCH_SPAN).abs() < 1e-3,
@@ -1551,10 +1541,10 @@ mod tests {
         );
         // And out past all reason: the bank, never more.
         for _ in 0..200 {
-            loaded.zoom_pitch_about(2.0, 70.0, BANK);
+            loaded.zoom_pitch_about(2.0, 70.0, bank());
         }
         assert!(
-            (loaded.pitch_span() - BANK.span()).abs() < 1e-3,
+            (loaded.pitch_span() - bank().span_f32()).abs() < 1e-3,
             "zoomed out is exactly the bank: {:.1}..{:.1}",
             loaded.view_lo,
             loaded.view_hi
@@ -1836,8 +1826,7 @@ mod tests {
                         &painter,
                         rect,
                         &loaded.columns(playhead_t, RollLayer::Spectrum),
-                        43,
-                        96,
+                        bank(),
                         view_lo,
                         view_hi,
                         time,
