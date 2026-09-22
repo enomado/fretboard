@@ -45,6 +45,7 @@ cargo clippy --all-targets                                   # хост; 0 пр�
 cargo check --target wasm32-unknown-unknown --lib --bins     # веб (НЕ --all-targets — падает всегда, см. memory/module_layout_and_target_gates.md)
 cargo check --target aarch64-linux-android --lib             # Android
 cargo test --release --lib --bins --tests                    # счётчик тестов сверять с базовым
+RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --lib         # с 2026-09-23: битые doc-ссылки копились, пока его не было
 ```
 
 Базовый счётчик тестов снять ДО первой правки фазы и записать в сообщение коммита
@@ -492,7 +493,17 @@ NEWTYPE CANDIDATES; остаток (если есть) перечислен в �
   октава считается `midi / 12 - 1`, а не `div_euclid`, — для отрицательного `midi` она на
   единицу завышена. Доходят ли туда отрицательные ряды (ручной вид `take_roll` прижат к банку,
   рамку живого ролла не проверял) — не выяснено.
-- **21 битая intra-doc ссылка** (найдено в Ф7, 2026-09-22, `RUSTDOCFLAGS='-W
+- ✅ **Сделано** («docs(rustdoc): ноль битых intra-doc ссылок на всех трёх целях»): к 09-23 их
+  было 18 неразрешённых + 1 избыточная (две — `SalienceFrame::argmax` — добавил снос
+  `fast_pitch`, он сделал `argmax` `cfg(test)`), и ещё 11 «публичный док → приватный элемент»,
+  которые дефолтный `cargo doc` печатает и без флагов, + 3 на wasm (`pub mod worker` из Ф7).
+  Лечение по классам, как и предлагалось; сверх того — `pick_fundamental` (переименован давно)
+  → текст про `MELODY_LEVEL_GATE`, и внешний `///` на `mod rtswipe` в `dsp/mod.rs` стал
+  обычным комментарием: он склеивался с `//!` файла, и rustdoc резолвил все ссылки
+  `rtswipe.rs` в области `dsp` (4 «безадресных» предупреждения); заодно снято устаревшее «Not
+  wired into either engine yet». `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --lib` зелёный
+  на хосте, wasm и Android и добавлен пятой строкой в гейт (раздел «Общие правила»).
+  Исходная запись: **21 битая intra-doc ссылка** (найдено в Ф7, 2026-09-22, `RUSTDOCFLAGS='-W
   rustdoc::broken_intra_doc_links' cargo doc --no-deps --lib --document-private-items`).
   Ни одна не про реэкспорты `audio`. Классы: ссылки в приватные `tests::…`
   (`take_roll.rs:692`, `pyin.rs:29`, `trellis.rs:53`) и `beta_sweep::…` (`melody.rs:101-176`);

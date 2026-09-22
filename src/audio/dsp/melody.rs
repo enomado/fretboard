@@ -98,7 +98,7 @@ const NOMINAL_FRAME_DT: f32 = 0.016;
 /// - **Too high** and the 4–6% ties buy their way through in a frame or two, which is the
 ///   phantom octave coming back (`swipe::real_violin_g_probe`).
 ///
-/// The value is the sweep's, not a guess — see [`beta_sweep::salience_beta_sweep`], which prints
+/// The value is the sweep's, not a guess — see `beta_sweep::salience_beta_sweep`, which prints
 /// both edges of the trade across the whole corpus.
 ///
 /// Named `_BANK` because it is calibrated to the **bank's** salience scale, and that scale is
@@ -106,15 +106,15 @@ const NOMINAL_FRAME_DT: f32 = 0.016;
 /// un-normalized column), whereas `dsp::rtswipe` divides each rung by its own `spectrum_norm`
 /// before blending, so an RT-SWIPE curve is a 0..1 confidence. `exp(β·(s−s_max))` is
 /// shift-invariant but **not** scale-invariant, so the two frontends need two βs — see
-/// [`SALIENCE_BETA_RTSWIPE`] and [`emission-scale-does-not-transfer`] in the swipe design doc.
+/// [`SALIENCE_BETA_RTSWIPE`] and `memory/emission_scale_does_not_transfer.md`.
 const SALIENCE_BETA_BANK: f32 = 40.0;
 
 /// [`SALIENCE_BETA_BANK`]'s counterpart for the RT-SWIPE frontend, whose curve is on a
 /// different (already-normalized, 0..1) scale — see that constant for why one number cannot
 /// serve both.
 ///
-/// **Half the bank's, and swept the same way** — [`beta_sweep::rtswipe_beta_sweep`] (octave
-/// edge) and [`beta_sweep::rtswipe_beta_latency_sweep`] (latency edge), on the violin takes.
+/// **Half the bank's, and swept the same way** — `beta_sweep::rtswipe_beta_sweep` (octave
+/// edge) and `beta_sweep::rtswipe_beta_latency_sweep` (latency edge), on the violin takes.
 /// It is the smallest β that reaches the full note-change latency plateau (a flat 24 ms;
 /// β=10 still costs 40 ms on some intervals, β=5 costs 40–88), while the phantom octave is at
 /// its achievable floor there (fast strokes 0.0 %, slow 0.4 %). The bank's own 40 is *too
@@ -173,7 +173,7 @@ pub(crate) struct SalienceDecoder {
     /// Audio-clock timestamp of the last frame, for the `dt` the kernel is cut to.
     last_t:  Option<f64>,
     /// Salience→nats exchange rate. A field rather than a constant only so
-    /// [`beta_sweep::salience_beta_sweep`] can measure the trade it makes; production uses
+    /// `beta_sweep::salience_beta_sweep` can measure the trade it makes; production uses
     /// [`SALIENCE_BETA_BANK`].
     beta:    f32,
 }

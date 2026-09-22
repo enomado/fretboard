@@ -26,7 +26,7 @@
 //! This is the **tuner and fretboard's** pitch, and the melody line's **octave
 //! anchor** — nothing else. It is octave-robust but *slow*, and slow in a specific
 //! way worth knowing: its note-change latency equals the analysis window length
-//! **exactly** (measured, [`tests::latency_probe`] — 128 ms at the default 6144
+//! **exactly** (measured, `tests::latency_probe` — 128 ms at the default 6144
 //! window), because the HMM will not leave a note while the window still holds any
 //! trace of it. That is fine, even desirable, for a tuner.
 //!

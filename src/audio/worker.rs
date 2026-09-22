@@ -2,8 +2,9 @@
 //!
 //! Runs the FFT/YIN/resonator analysis off the main thread. The main thread
 //! (`audio::wasm`) captures audio and streams sample blocks here; we run the same
-//! [`AnalysisPipeline`]/[`ResonatorPipeline`] the native engine uses and post the
-//! resulting [`WorkerSnapshot`] back. This is what keeps the render thread smooth
+//! `AnalysisPipeline`/`ResonatorPipeline` the native engine uses and post the
+//! resulting `WorkerSnapshot` back. (Code spans, not links: since this module went
+//! `pub` for `worker_entry`, its docs are public and those three are crate-private.) This is what keeps the render thread smooth
 //! despite wasm having no real threads — the heavy math lives in this worker.
 
 use std::cell::RefCell;

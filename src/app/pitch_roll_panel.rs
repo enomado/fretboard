@@ -114,7 +114,7 @@ const FRAMING_FRAMES: usize = 180;
 /// the window, so one octave slip or one grace note pins the view an octave wider
 /// for the next several seconds. The 10th/90th percentile ignores brief excursions
 /// and tracks the *body* of what is being played. The excursions are not lost —
-/// [`Self::reframe`] always keeps the note sounding right now inside the view.
+/// [`PitchRoll::reframe`] always keeps the note sounding right now inside the view.
 const VIEW_QUANTILE_LO: f32 = 0.10;
 const VIEW_QUANTILE_HI: f32 = 0.90;
 /// Slack (semitones) the view must be *too big* by before it shrinks — the

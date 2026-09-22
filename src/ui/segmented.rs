@@ -25,7 +25,7 @@
 //!
 //! We instead centre the font's **ink band** (tallest ascender … deepest
 //! descender), measured at the live `pixels_per_point` from the constant
-//! [`INK_REF`] string — deliberately NOT each label's own ink. Per-label
+//! `INK_REF` string — deliberately NOT each label's own ink. Per-label
 //! measuring would put "Magnitude" (descender) and "Power" (none) on baselines
 //! 1 px apart inside the same segmented row; one constant reference guarantees a
 //! single shared baseline.
@@ -36,7 +36,7 @@
 //! any finer — epaint rounds every galley to a whole physical pixel
 //! (`round_text_to_pixels`, on by default), so near the centre the only
 //! renderable origins are 5.0 and 6.0 with nothing in between. Flipping the rule
-//! back is a one-line change: set [`INK_REF`] to `"X"`.
+//! back is a one-line change: set `INK_REF` to `"X"`.
 //!
 //! [`SegmentedButton::text_dy`] remains as a hand-nudge escape hatch.
 
@@ -253,8 +253,8 @@ impl Widget for SegmentedButton<'_> {
 /// wide enough to read as "the text isn't centred", and one that no amount of
 /// tuning *inside* the pill can fix.
 ///
-/// So the caption claims the same [`PILL_HEIGHT`] band as a pill and places its
-/// text with the very same ink-band rule ([`ink_band_mid`]). Caption and pills then
+/// So the caption claims the same `PILL_HEIGHT` band as a pill and places its
+/// text with the very same ink-band rule (`ink_band_mid`). Caption and pills then
 /// share one baseline **by construction**, wrapping or not, at any font size or
 /// `pixels_per_point` — rather than by a hand-tuned offset that would rot.
 pub struct RowCaption<'a> {
@@ -315,8 +315,8 @@ impl Widget for RowCaption<'_> {
 /// `ComboBox` can fix that: `button_padding` is applied symmetrically
 /// (`Rect::shrink2`), so there is no way to bias the text up by the ink offset.
 ///
-/// So the button half is painted here — same [`PILL_HEIGHT`], same
-/// [`ink_band_mid`] rule, therefore the same baseline as pills and captions **by
+/// So the button half is painted here — same `PILL_HEIGHT`, same
+/// `ink_band_mid` rule, therefore the same baseline as pills and captions **by
 /// construction**. Only the button is ours; the popup is still egui's
 /// [`Popup::menu`], so keyboard handling, close-on-click and scrolling come along
 /// for free.

@@ -689,7 +689,7 @@ impl LoadedTake {
     /// pane. Kept as narrow as the claim: only `.x`, only over the roll, only while the
     /// latch says the run began with shift. Sideways scrolling elsewhere in the app, and
     /// over this panel's own controls, is untouched — pinned by
-    /// [`tests::shift_wheel_off_the_roll_still_scrolls_the_pane_sideways`].
+    /// `tests::shift_wheel_off_the_roll_still_scrolls_the_pane_sideways`.
     ///
     /// `bank` is the resonator's pitch range — the bounds of where evidence can exist at
     /// all (see [`Self::clamp_pitch`]). `marking` is the armed declaration, if any — see

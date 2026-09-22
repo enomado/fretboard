@@ -83,10 +83,10 @@ pub(crate) struct ResonatorSnapshot {
     /// a *path* rather than a frame (`dsp::melody`). `None` for a column with no energy
     /// at all. The frame's own argmax is not carried: nothing in production reads a
     /// single-frame opinion any more (it used to ride out as `TunerReading::fast_pitch`
-    /// with no reader) — the tests take it with [`SalienceFrame::argmax`].
+    /// with no reader) — the tests take it with `SalienceFrame::argmax` (`cfg(test)`).
     ///
     /// Deliberately not stored in `SharedState`: it is one frame's working material for
-    /// `dsp::melody` — the `magnitudes` it carries for [`SalienceFrame::refine_on_partials`]
+    /// `dsp::melody` — the `magnitudes` it carries for `swipe::refine_on_partials`
     /// double its weight, and none of that is a panel's business. The display layer a panel
     /// may draw is [`SalienceFrame::display_heat`] — built by the publisher from whichever
     /// frame *decoded the note* (bank or RT-SWIPE), not always this one, which is why the

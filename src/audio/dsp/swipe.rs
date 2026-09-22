@@ -295,7 +295,8 @@ pub(crate) struct SalienceFrame {
 
 impl SalienceFrame {
     /// Score one raw column. `None` for a column with no energy at all — silence is *not*
-    /// decided here (see [`pick_fundamental`]).
+    /// decided here: the engine gates the melody on level upstream
+    /// (`core::MELODY_LEVEL_GATE`).
     pub(crate) fn score(
         magnitudes: &[f32],
         min_midi: f32,

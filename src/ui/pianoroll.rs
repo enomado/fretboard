@@ -32,7 +32,7 @@
 //!
 //! Pure renderer: it owns no state and paints from borrowed slices over a `Rect`.
 //! The history and both view windows live in the panels
-//! ([`crate::app::pitch_roll_panel`], [`crate::app::take_roll`]).
+//! (`app::pitch_roll_panel`, `app::take_roll` — private to `app`).
 
 use eframe::egui::epaint::Vertex;
 use eframe::egui::{

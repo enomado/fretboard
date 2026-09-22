@@ -210,7 +210,7 @@ struct KeySigLayout {
 }
 
 /// Staff steps of a key signature's accidentals, in draw order, under `clef`.
-/// Empty for C major. See [`KeySigLayout`] for the walk.
+/// Empty for C major. See `KeySigLayout` for the walk.
 pub fn key_sig_steps(clef: Clef, key: KeySignature) -> Vec<i32> {
     let n = key.count().min(7);
     if n == 0 {

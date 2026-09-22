@@ -50,7 +50,7 @@
 //! Almost, because a discrete-time chain allows at most one event per frame, so a long
 //! frame under-counts: measured at ×1.21 across the slider's whole span, against the ×10.0
 //! the per-frame constants swing by. Both numbers come out of
-//! [`tests::the_rates_are_dt_invariant_where_the_per_frame_constants_were_not`], which
+//! `tests::the_rates_are_dt_invariant_where_the_per_frame_constants_were_not`, which
 //! measures the old kernel on the same sweep rather than taking the new one's word for it.
 
 /// Which bin of a [`PitchGrid`] the trellis is in.

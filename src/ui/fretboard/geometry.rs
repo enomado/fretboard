@@ -46,7 +46,7 @@ impl Fretboard {
 
     /// Screen `y` of string `s`. The `+ 2` widens the divisor by one row at each
     /// end, so the outer strings keep a margin instead of sitting flush against
-    /// the top and bottom edges (see [`string_position`]).
+    /// the top and bottom edges (see `string_position`).
     pub fn string_pos(&self, s: GString) -> f32 {
         string_position(&self.screen_size_y, s, (self.tuning.string_count() + 2) as u32)
     }

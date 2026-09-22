@@ -1,7 +1,7 @@
 //! Drone: the sustained reference tone(s) the player tunes and practises against.
 //!
 //! [`DroneSynth`] lives inside the drone output stream's realtime callback and adopts
-//! the UI's [`DroneState`](crate::audio::types::DroneState) snapshot every block (see
+//! the UI's [`DroneState`] snapshot every block (see
 //! `AudioContext::build_drone_stream`); voices keep their phase across snapshots so a
 //! change of notes or timbre mid-play does not click.
 

@@ -34,12 +34,12 @@ pub struct TunerReading {
     // to its analysis window and ~128 ms behind a note change (measured) — the right
     // source for the tuner and the fretboard, where a steady reading beats a prompt one.
     /// Monotonic count of detected note onsets (attacks). Consumed by the engine's
-    /// own [`crate::audio::dsp::segmenter`] to split a re-bowed repeat of the same
+    /// own `dsp::segmenter` to split a re-bowed repeat of the same
     /// pitch instead of merging it into the held note; carried here because the two
     /// audio planes run at different cadences on different threads.
     pub onset_seq:             u64,
     /// The written line: the notes the engine has segmented out of the melody pitch,
-    /// plus the one still sounding. Decided in [`crate::audio::dsp::segmenter`] at
+    /// plus the one still sounding. Decided in `dsp::segmenter` at
     /// the bank's cadence on a **sample** clock — the staff panel draws this, it does
     /// not compute it.
     pub note_line:             NoteLine,
@@ -517,7 +517,7 @@ pub struct BankRange {
 
 impl BankRange {
     /// Panics unless `lo < hi`. Not a new rule — the source already keeps it:
-    /// [`ResonatorSettings::sanitized`] holds `max ≥ min + 6`, and the engine stores only
+    /// `ResonatorSettings::sanitized` holds `max ≥ min + 6`, and the engine stores only
     /// sanitized settings. The assert is the boundary guard for any other caller, and what
     /// lets every mapping below divide by [`Self::semitones`] without checking it.
     pub fn new(lo: PNote, hi: PNote) -> Self {

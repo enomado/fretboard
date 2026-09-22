@@ -224,8 +224,8 @@ impl RtSwipe {
     ///
     /// `None` only for digital silence across the whole ladder — the same "no column at all"
     /// that [`SalienceFrame::score`] returns `None` for. A frame whose curve is merely
-    /// *negative* everywhere is still a frame: whether that means "no pitch" is
-    /// [`SalienceFrame::argmax`]'s call, in one place, as it is for the bank.
+    /// *negative* everywhere is still a frame: whether that means "no pitch" is the melody
+    /// decoder's call (`dsp::melody`), in one place, as it is for the bank.
     pub(crate) fn frame(&mut self) -> Option<SalienceFrame> {
         // Each rung on its own terms: raw column → √-warp → *its own* spectral norm, all into
         // reused scratch (see the fields). Disjoint field borrows, so no `self` method call in

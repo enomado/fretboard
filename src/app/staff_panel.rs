@@ -8,7 +8,7 @@
 //!
 //! **The panel decides nothing about the music.** Where one note ends and the next
 //! begins is settled in the engine, on an audio clock, and arrives finished on
-//! `TunerReading::note_line` — see [`crate::audio::dsp::segmenter`] for why it may
+//! `TunerReading::note_line` — see `audio::dsp::segmenter` (private) for why it may
 //! not be decided here. What lives in [`StaffTrainer`] is what is genuinely the
 //! panel's own: which clef, which key signature. The stateless staff/clef drawing
 //! lives in [`crate::ui::staff`].
