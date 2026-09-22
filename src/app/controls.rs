@@ -25,7 +25,7 @@ use super::{
     monitor_output_debug_label,
     output_has_bluetooth_risk,
 };
-use crate::audio::{
+use crate::audio::types::{
     AnalysisSettings,
     AudioInputKind,
     PitchFrontend,

@@ -6,5 +6,5 @@
 //! empty `main` so `cargo build`/`cargo test` over all bins stays happy.
 fn main() {
     #[cfg(target_arch = "wasm32")]
-    fretboard::audio::worker_entry();
+    fretboard::audio::worker::worker_entry();
 }

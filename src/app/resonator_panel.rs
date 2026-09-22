@@ -18,7 +18,7 @@ use super::{
     pill_muted,
     spectrum_color,
 };
-use crate::audio::ResonatorReading;
+use crate::audio::types::ResonatorReading;
 #[cfg(target_os = "android")]
 use crate::core_types::note::AccidentalStyle;
 #[cfg(target_os = "android")]

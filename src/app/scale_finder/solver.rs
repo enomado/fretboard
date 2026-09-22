@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 
 use web_time::Instant;
 
-use crate::audio::{
+use crate::audio::types::{
     AnalysisSettings,
     TunerReading,
 };

@@ -15,7 +15,7 @@ use eframe::egui::{
     vec2,
 };
 
-use crate::audio::AnalysisSettings;
+use crate::audio::types::AnalysisSettings;
 use crate::ui::tokens::color;
 
 /// One frame's worth of data to render on the spiral, plus the cosmetic strings.

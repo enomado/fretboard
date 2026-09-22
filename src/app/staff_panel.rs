@@ -54,7 +54,7 @@ use super::{
     pill_colored,
     pill_muted,
 };
-use crate::audio::{
+use crate::audio::types::{
     BankRange,
     MelodyFrame,
     MelodyHistory,
@@ -735,7 +735,7 @@ mod tests {
     use eframe::egui::pos2;
 
     use super::*;
-    use crate::audio::StaffNote;
+    use crate::audio::types::StaffNote;
 
     fn note(midi: u8) -> StaffNote {
         StaffNote {

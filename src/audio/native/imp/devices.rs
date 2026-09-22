@@ -434,11 +434,11 @@ mod tests {
         keep_route_id,
         parse_pulse_source_input_options,
     };
-    use crate::audio::AudioInputKind;
     use crate::audio::native::imp::{
         PULSE_DEFAULT_MONITOR_ID,
         PULSE_DEFAULT_SOURCE_ID,
     };
+    use crate::audio::types::AudioInputKind;
 
     // Персистнутый pulse-маршрут вне Linux обязан деградировать в дефолтный вход:
     // без этого захват не открывается вообще и отказ ничем себя не проявляет.

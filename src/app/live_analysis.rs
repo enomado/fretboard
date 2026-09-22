@@ -26,7 +26,7 @@ use super::{
     spectrum_color,
     waiting_prompt,
 };
-use crate::audio::{
+use crate::audio::types::{
     AudioInputKind,
     TunerReading,
 };

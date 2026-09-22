@@ -82,7 +82,7 @@ use super::take_marks::{
     load_marks,
     save_marks,
 };
-use crate::audio::{
+use crate::audio::types::{
     BankRange,
     MelodyFrame,
     MelodyHistory,
@@ -842,7 +842,7 @@ impl App {
     /// take is played back in real time, once — there is no second chance to collect it.
     ///
     /// That is also why this asks for the bank and for repaints itself. The engine keeps
-    /// only [`crate::audio::MELODY_HISTORY_SECONDS`] of history, so an idle UI is not a
+    /// only [`crate::audio::types::MELODY_HISTORY_SECONDS`] of history, so an idle UI is not a
     /// slow UI here: it is a hole in the take's line, of exactly the length of the idle.
     pub(super) fn harvest_take_roll(&mut self, ctx: &Context) {
         // Drain only while a take holds the input. On `Idle` the microphone is back and

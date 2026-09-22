@@ -32,8 +32,8 @@ use eframe::{
 };
 use web_time::Instant;
 
-use crate::audio::{
-    AudioEngine,
+use crate::audio::AudioEngine;
+use crate::audio::types::{
     AudioInputKind,
     AudioInputOption,
     AudioStatus,

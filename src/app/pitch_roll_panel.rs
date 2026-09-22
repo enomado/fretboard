@@ -32,7 +32,7 @@ use eframe::egui::{
 };
 
 use super::App;
-use crate::audio::{
+use crate::audio::types::{
     MelodyFrame,
     MelodyHistory,
 };
@@ -486,7 +486,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::SalienceHeat;
+    use crate::audio::types::SalienceHeat;
 
     /// The bank's default publish cadence (`ResonatorSettings::update_ms` = 16 ms).
     const BANK_CADENCE_S: f64 = 0.016;

@@ -49,7 +49,7 @@ use eframe::egui::{
     pos2,
 };
 
-use crate::audio::BankRange;
+use crate::audio::types::BankRange;
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::Midi;
 use crate::ui::theme::intonation_color;

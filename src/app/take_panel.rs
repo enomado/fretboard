@@ -24,7 +24,7 @@ use eframe::egui::{
 };
 
 use super::App;
-use crate::audio::{
+use crate::audio::types::{
     RecorderStatus,
     ReplayStatus,
 };

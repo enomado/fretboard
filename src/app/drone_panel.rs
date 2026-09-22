@@ -17,7 +17,7 @@ use eframe::egui::{
 };
 
 use super::App;
-use crate::audio::{
+use crate::audio::types::{
     ArpPattern,
     DroneMode,
     DroneState,

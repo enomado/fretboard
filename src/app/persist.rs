@@ -20,7 +20,7 @@ use super::{
     TuningKind,
     WorkspaceTab,
 };
-use crate::audio::{
+use crate::audio::types::{
     AnalysisSettings,
     DroneState,
 };
@@ -125,7 +125,7 @@ impl App {
 mod tests {
     use super::PersistentState;
     use crate::app::workspace::default_workspace_tree;
-    use crate::audio::AnalysisSettings;
+    use crate::audio::types::AnalysisSettings;
     use crate::core_types::note::Note;
     use crate::core_types::scale_detect::ensemble::ScaleFinderConfig;
 
@@ -146,7 +146,7 @@ mod tests {
             monitor_enabled:   true,
             monitor_gain:      0.25,
             selected_input_id: Some("pulse::@DEFAULT_SOURCE@".to_owned()),
-            drone:             crate::audio::DroneState::default(),
+            drone:             crate::audio::types::DroneState::default(),
             workspace_tree:    default_workspace_tree(),
             mobile_panel:      super::WorkspaceTab::PitchRoll,
         };

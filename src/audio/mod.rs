@@ -12,46 +12,23 @@ mod core;
 // without anyone noticing); it simply no longer needs a hole in the wall.
 mod dsp;
 pub(crate) mod sample_rate;
-mod types;
+// The engine's public vocabulary: settings, readings, statuses. Imported from here by
+// path (`crate::audio::types::X`), not re-exported, so the origin stays visible.
+pub mod types;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 // DSP web worker (runs the analysis off the main thread) + its wire protocol.
+// `worker_entry` is the entry point of the worker binary (`src/bin/dsp_worker.rs`).
 #[cfg(target_arch = "wasm32")]
-mod worker;
+pub mod worker;
 #[cfg(target_arch = "wasm32")]
 mod worker_proto;
 
+// Kept on purpose: one name, two platform engines — a cfg fork, not a hidden origin.
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::imp::AudioEngine;
-pub use types::{
-    AnalysisSettings,
-    ArpPattern,
-    AudioInputKind,
-    AudioInputOption,
-    AudioStatus,
-    BankRange,
-    DroneMode,
-    DroneState,
-    MelodyFrame,
-    MelodyHistory,
-    NoteLine,
-    PitchFrontend,
-    RecorderStatus,
-    ReplayStatus,
-    ResonatorReading,
-    ResonatorSettings,
-    SalienceHeat,
-    StaffNote,
-    TakeOnDisk,
-    TakeReport,
-    Timbre,
-    TunerReading,
-};
 #[cfg(target_arch = "wasm32")]
 pub use wasm::AudioEngine;
-// Entry point for the DSP worker binary (`src/bin/dsp_worker.rs`).
-#[cfg(target_arch = "wasm32")]
-pub use worker::worker_entry;
