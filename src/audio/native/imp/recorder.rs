@@ -55,9 +55,9 @@ use ringbuf::traits::{
     Split,
 };
 
+use super::workers::AnalysisWorker;
 use super::{
     ANALYSIS_IDLE_SLEEP,
-    AnalysisWorker,
     SampleConsumer,
     SampleProducer,
 };
@@ -410,7 +410,7 @@ mod tests {
         Instant,
     };
 
-    use super::super::pulse_i16_to_f32;
+    use super::super::capture::pulse_i16_to_f32;
     use super::*;
 
     /// Spin until `done`, or fail loudly. The writer is a real thread on a 5 ms

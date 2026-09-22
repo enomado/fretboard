@@ -22,7 +22,7 @@
 | Ф1 | Отравленный мьютекс = паника, а не тихий дефолт | ✅ «refactor(audio): отравленный мьютекс = паника, а не тихий дефолт» |
 | Ф2 | Один цикл аудио-воркера вместо двух копий | ✅ «refactor(audio): один цикл аудио-воркера вместо двух копий» |
 | Ф3 | `core_types` не зависит от UI (`Scale` → `Mark`) | ✅ «refactor(ui): impl Mark for Scale переезжает к трейту — core_types без egui» |
-| Ф4 | Распил `audio/native/imp.rs` по швам | ⬜ |
+| Ф4 | Распил `audio/native/imp.rs` по швам | ✅ «refactor(audio): распил native/imp.rs — drone, workers, capture, output» (⚠ `imp.rs` = 1038, не < 1000 — см. раздел фазы) |
 | Ф5 | Мелочи: `total_cmp`, мёртвая `egui` в workspace | ⬜ |
 | Ф6а | `Hz` / `Midi` + единственная конверсия | ⬜ |
 | Ф6б | `SampleRate` | ⬜ |
@@ -193,6 +193,21 @@ ui::fretboard::draw`), и единственное место, где `core_type
 **DoD.** `wc -l imp.rs` < 1000. `diff -w -B` каждого переехавшего блока против
 `git show HEAD:src/audio/native/imp.rs` = только видимость/импорты. Android-гейт
 обязателен: `audio_alog` под `cfg(target_os = "android")`.
+
+**Итог (2026-09-22): посылка DoD `< 1000` не подтвердилась — 1038 строк.** Таблица
+перенесена целиком (drone 277, workers 155, capture 287, output 195 строк). Остаток
+`imp.rs` — ровно то, что фаза велела оставить: `AudioEngine` + `impl` (`imp.rs:170-505`),
+`audio_thread_main` (`:507-605`), `AudioContext` + `impl` (`:607-951`), `mod tests`
+(`:953-1038`, 85 строк; кода без тестов — 952). Пятый распил сверх таблицы не
+придумывался. Если порог важен, естественный кандидат — методы `AudioContext`, собирающие
+три пути захвата (`build_capture`/`build_pulse_capture`/`build_replay_capture`) → в
+`capture.rs`; это решение хозяина, не механика фазы.
+Механика: `item_mv` из `bur/rust_app/tools/mod_mv` + ручная доводка (он копирует `use`
+источника относительными путями и теряет свободные `//`-комментарии над элементом:
+осиротели баннеры DroneSynth/ActiveCapture/InputFanout и `// ±0.4 % высоты` — все
+возвращены к своим элементам). Оракул — `git diff -w --color-moved=plain
+--color-moved-ws=ignore-all-space`: вне перемещённых блоков только видимость, импорты,
+doc-шапки модулей, путь одной doc-ссылки и два снятых баннера раздела.
 
 ## Ф5 — мелочи
 
