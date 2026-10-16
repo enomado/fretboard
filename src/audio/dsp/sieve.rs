@@ -93,17 +93,27 @@ const MESH_SIGMA_BINS: f32 = 0.5;
 /// that grows with `k` — vibrato and glide inside the window, string inharmonicity.
 const MESH_SIGMA_RELATIVE: f32 = 0.005;
 
-/// What an empty harmonic slot costs, in units of the frame's mean peak weight.
+/// What a harmonic slot costs per dB of *shortfall* below the frame's mean peak weight —
+/// an empty slot pays this times the whole mean, a slot holding a junk peak nearly as much.
 ///
 /// This is the predicted → measured term doing its job: one octave down, every other slot
-/// is empty, so a sub-octave pays this on half its slots while the true f0 pays it nowhere.
+/// has nothing real in it, so a sub-octave pays on half its slots while the true f0 pays
+/// only on its genuinely weak partials. Charging only *empty* slots was not enough: on the
+/// A-string take (`testdata/a_string_trill.wav`) 10 % of frames went an octave down,
+/// because junk peaks inside the 60 dB range kept a sub-octave's odd slots "occupied".
+/// Charging the shortfall took that to 0.9 %, at −0.7 points of corpus RPA.
 const MISSING_HARMONIC_PENALTY: f32 = 1.5;
 
 /// Weight of the measured → predicted sum against the predicted → measured one (TWM's ρ).
 const UNEXPLAINED_PEAK_WEIGHT: f32 = 1.0;
 
 /// Normalised score under which the frame is called unvoiced.
-const VOICING_THRESHOLD: f32 = 0.2;
+///
+/// A trade, not a truth: RPA counts only voiced frames and rewards answering always, while
+/// "pitch in silence" punishes it. Set on the corpus together with
+/// `MISSING_HARMONIC_PENALTY`, whose shortfall charge lowers every score — see
+/// `docs/harmonic_sieve.md` for the run that chose it.
+const VOICING_THRESHOLD: f32 = 0.1;
 
 /// Least-squares refinement passes per candidate. Each re-matches the peaks at the refined
 /// f0, so a candidate that started a bin off can pull in partials it first missed.
@@ -380,23 +390,26 @@ fn match_candidate(peaks: &[Peak], f0: Hz, bin_hz: f32, slots: &mut [Option<Slot
         return None;
     }
 
-    // predicted → measured: every harmonic up to the highest one any peak reached.
-    let missing_cost = MISSING_HARMONIC_PENALTY * total_weight / considered as f32;
+    // predicted → measured: every harmonic up to the highest one any peak reached. A slot
+    // pays for its *shortfall* below a typical peak, not merely for being empty: with 60 dB
+    // of range, some junk peak (noise, a window sidelobe, a sympathetic string) lands in
+    // nearly every slot, and if any occupant cleared the slot, a sub-octave's odd slots
+    // would almost never pay. An empty slot pays in full, a junk peak nearly in full, a real
+    // partial at or above the typical weight not at all.
+    let typical = total_weight / considered as f32;
     let mut predicted = 0.0f32;
     let (mut fit_num, mut fit_den) = (0.0f32, 0.0f32);
     for (k, slot) in slots.iter().enumerate().take(top.0 + 1).skip(1) {
-        match slot {
-            Some(matched) => {
-                predicted += matched.contribution;
-                // Only partials inside their mesh vote on the fit; a slot whose best peak is
-                // off to the side would drag the fit toward a neighbour.
-                if matched.contribution > 0.0 {
-                    let k = k as f32;
-                    fit_num += matched.weight * k * matched.hz.0;
-                    fit_den += matched.weight * k * k;
-                }
-            }
-            None => predicted -= missing_cost,
+        let found = slot.map_or(0.0, |matched| matched.contribution.max(0.0));
+        predicted += found - MISSING_HARMONIC_PENALTY * (typical - found).max(0.0);
+        // Only partials inside their mesh vote on the fit; a slot whose best peak is off to
+        // the side would drag the fit toward a neighbour.
+        if let Some(matched) = slot
+            && matched.contribution > 0.0
+        {
+            let k = k as f32;
+            fit_num += matched.weight * k * matched.hz.0;
+            fit_den += matched.weight * k * k;
         }
     }
 

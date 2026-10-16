@@ -65,7 +65,20 @@ PITCH_BENCH_FILTER=NightOwl cargo test --release --lib swipe_rpa_on_corpus -- --
 
 # custom lag sweep; 0 must stay first
 PITCH_BENCH_LAGS_MS=0,20,24,28 cargo test --release --lib swipe_rpa_on_corpus -- --ignored --nocapture
+
+# by instrument (MedleyDB's name for the stem; build the table once)
+uv run tools/medleydb_instruments.py
+PITCH_BENCH_INSTRUMENT=violin cargo test --release --lib swipe_rpa_on_corpus -- --ignored --nocapture
+
+# the other detectors, same harness
+cargo test --release --lib sieve_rpa_on_corpus -- --ignored --nocapture   # docs/harmonic_sieve.md
+cargo test --release --lib pyin_rpa_on_corpus -- --ignored --nocapture    # pYIN at its own 40 ms
 ```
+
+Tracks run in parallel — `PITCH_BENCH_JOBS` threads, half the machine by default — and are
+merged and printed in track order, so a parallel log is line-for-line the sequential one
+(checked: identical on the full corpus). ⚠ `swipe_rpa_on_corpus` is a *substring* of
+`rtswipe_rpa_on_corpus`; add `--exact` with the full path to run only the bank.
 
 `--release` is not optional in practice: the bank is a per-sample IIR over ~670 resonators,
 and a debug build turns an overnight run into a weekend one. Budget ~5 GB of disk for the

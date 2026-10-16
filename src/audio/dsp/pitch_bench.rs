@@ -602,13 +602,15 @@ fn tracks() -> Vec<(String, PathBuf, PathBuf)> {
 }
 
 /// The tracks a run covers, after `PITCH_BENCH_FILTER` (substring of the track id, e.g.
-/// `violin`) and `PITCH_BENCH_LIMIT` (max tracks).
+/// `NightOwl` — ids name *pieces*, not instruments), `PITCH_BENCH_INSTRUMENT` (see
+/// [`instrument_filter`]) and `PITCH_BENCH_LIMIT` (max tracks).
 ///
-/// Both exist because the full corpus is 15.5 hours through a per-sample IIR bank — hours
+/// They exist because the full corpus is 15.5 hours through a per-sample IIR bank — hours
 /// of CPU, which is a fine overnight run and a terrible edit-test loop. Default: every
 /// track, because the default should be the honest number.
 fn selected_tracks() -> Vec<(String, PathBuf, PathBuf)> {
     let filter = std::env::var("PITCH_BENCH_FILTER").unwrap_or_default();
+    let instruments = instrument_filter();
     let limit: usize = std::env::var("PITCH_BENCH_LIMIT")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -616,6 +618,7 @@ fn selected_tracks() -> Vec<(String, PathBuf, PathBuf)> {
     let selected: Vec<_> = tracks()
         .into_iter()
         .filter(|(id, _, _)| filter.is_empty() || id.to_lowercase().contains(&filter.to_lowercase()))
+        .filter(|(id, _, _)| instruments.as_ref().is_none_or(|keep| keep.contains(id)))
         .take(limit)
         .collect();
     assert!(!selected.is_empty(), "no tracks matched filter {filter:?}");
@@ -623,6 +626,35 @@ fn selected_tracks() -> Vec<(String, PathBuf, PathBuf)> {
         println!("    filter: {filter:?}");
     }
     selected
+}
+
+/// The track ids whose instrument is in `PITCH_BENCH_INSTRUMENT` (comma-separated MedleyDB
+/// names, e.g. `violin` or `violin,viola,cello`), or `None` when the variable is unset.
+///
+/// The corpus does not say which instrument a stem is; MedleyDB's metadata does, and
+/// `tools/medleydb_instruments.py` turns it into `datasets/medleydb_meta/stem_instruments.tsv`.
+/// That this is the instrument *before* resynthesis matters: the audio is a synthetic
+/// harmonic tone following a real violinist's f0 — vibrato, glides and all — not a bowed
+/// string's spectrum. It answers "does the detector follow a violinist", not "does it
+/// survive a violin's body".
+fn instrument_filter() -> Option<std::collections::HashSet<String>> {
+    let wanted = std::env::var("PITCH_BENCH_INSTRUMENT").ok()?;
+    let wanted: Vec<String> = wanted.split(',').map(|name| name.trim().to_lowercase()).collect();
+    let table = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasets/medleydb_meta/stem_instruments.tsv");
+    let text = std::fs::read_to_string(&table).unwrap_or_else(|_| {
+        panic!(
+            "{} missing — run `uv run tools/medleydb_instruments.py`",
+            table.display()
+        )
+    });
+    let keep: std::collections::HashSet<String> = text
+        .lines()
+        .map(|line| line.split_once('\t').unwrap())
+        .filter(|(_, instrument)| wanted.contains(&instrument.to_lowercase()))
+        .map(|(stem, _)| format!("{stem}.RESYN"))
+        .collect();
+    println!("    instruments: {wanted:?} — {} stems", keep.len());
+    Some(keep)
 }
 
 /// Worker threads for [`run_corpus`], from `PITCH_BENCH_JOBS` or half the machine.
