@@ -31,18 +31,49 @@ pub(crate) fn frequency_to_note(
 }
 
 pub(crate) fn parabolic_tau(values: &[f32], tau: usize) -> f32 {
+    // Kept apart from `parabolic_vertex`: this one tolerates `tau` past the end (it has
+    // always returned `tau` there), the vertex has to read `values[i]` for its height.
     if tau == 0 || tau + 1 >= values.len() {
         return tau as f32;
     }
-    let left = values[tau - 1];
-    let center = values[tau];
-    let right = values[tau + 1];
+    parabolic_vertex(values, tau).0
+}
+
+/// Vertex of the parabola through `values[i-1..=i+1]`: `(position, height)`.
+///
+/// The position is [`parabolic_tau`]'s; the height is what a spectral peak picker needs on
+/// top of it — the level of a partial that fell between two bins, read off the same
+/// parabola rather than off the taller bin (which under-reads it by up to ~1.4 dB on a
+/// Hann window). An edge bin and a flat triple degrade to the bin itself.
+///
+/// Precondition: `i < values.len()`.
+pub(crate) fn parabolic_vertex(values: &[f32], i: usize) -> (f32, f32) {
+    if i == 0 || i + 1 >= values.len() {
+        return (i as f32, values[i]);
+    }
+    let left = values[i - 1];
+    let center = values[i];
+    let right = values[i + 1];
     let denom = left - 2.0 * center + right;
     if denom.abs() < f32::EPSILON {
-        tau as f32
+        (i as f32, center)
     } else {
-        tau as f32 + 0.5 * (left - right) / denom
+        let offset = 0.5 * (left - right) / denom;
+        // y(δ) = c + δ·(r − l)/2 + δ²·(l − 2c + r)/2, evaluated at the vertex δ.
+        (i as f32 + offset, center - 0.25 * (left - right) * offset)
     }
+}
+
+/// Slide `samples` into a fixed-length `history`, oldest first, newest at the end.
+///
+/// Shared by the right-aligned FFT frontends (`dsp::rtswipe`, `dsp::sieve`), whose window
+/// always ends at the newest sample. Anything older than `history.len()` has slid out of
+/// every window, so a hop longer than the history is not an error — only its tail matters.
+pub(crate) fn slide_in(history: &mut [f32], samples: &[f32]) {
+    let capacity = history.len();
+    let fresh = samples.len().min(capacity);
+    history.copy_within(fresh.., 0);
+    history[capacity - fresh..].copy_from_slice(&samples[samples.len() - fresh..]);
 }
 
 /// A symmetric Hann taper of `len` points — the one window shape this app analyses with.

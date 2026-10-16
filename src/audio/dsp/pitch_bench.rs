@@ -47,8 +47,11 @@ use std::path::{
     PathBuf,
 };
 
+use crate::audio::dsp::analysis_math::slide_in;
+use crate::audio::dsp::pyin::PitchTracker;
 use crate::audio::dsp::resonator::ResonatorAnalyzer;
 use crate::audio::dsp::rtswipe::RtSwipe;
+use crate::audio::dsp::sieve::HarmonicSieve;
 use crate::audio::sample_rate::SampleRate;
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::Hz;
@@ -87,6 +90,12 @@ const BANK_HOP_SECONDS: f32 = 0.016;
 /// reference's arbitrary choice for this corpus, and reproducing their number requires
 /// reproducing their band. Applied to the **annotation**, not to the estimate.
 const REFERENCE_MDB_MASK_HZ: (f32, f32) = (65.0, 2093.0);
+
+/// pYIN's analysis window as `audio::core` feeds it: 6144 samples, whatever the rate.
+const PYIN_WINDOW: usize = 6144;
+
+/// pYIN's cadence, `core::ANALYSIS_INTERVAL` — the frame its HMM is calibrated per.
+const PYIN_HOP_SECONDS: f32 = 0.040;
 
 /// Per-track verdict tally. Counts, not rates: rates are derived at print time so a
 /// per-track and a corpus-wide figure come from the same arithmetic.
@@ -325,13 +334,7 @@ fn load_annotation(path: &Path) -> Annotation {
 ///   delay-compensated by construction. Comparing our IIR at lag 0 to their centred FFT
 ///   flatters *them*.
 fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
-    let mut reader = hound::WavReader::open(audio).unwrap();
-    let sample_rate = SampleRate(reader.spec().sample_rate);
-    let samples: Vec<f32> = reader
-        .samples::<i16>()
-        .map(|s| s.unwrap() as f32 / 32768.0)
-        .collect();
-
+    let (sample_rate, samples) = read_wav(audio);
     let mut analyzer = ResonatorAnalyzer::new(sample_rate);
     let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
     let mut tallies = vec![Tally::default(); scorings.len()];
@@ -380,13 +383,7 @@ fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> V
 /// itself. Scoring *that* needs a per-frame lag, which `Scoring` cannot express — the
 /// follow-up if and only if the sweep says the frontend is worth it.
 fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
-    let mut reader = hound::WavReader::open(audio).unwrap();
-    let sample_rate = SampleRate(reader.spec().sample_rate);
-    let samples: Vec<f32> = reader
-        .samples::<i16>()
-        .map(|s| s.unwrap() as f32 / 32768.0)
-        .collect();
-
+    let (sample_rate, samples) = read_wav(audio);
     let mut rtswipe = RtSwipe::new(sample_rate, CONCERT_PITCH_HZ);
     let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
     let mut tallies = vec![Tally::default(); scorings.len()];
@@ -407,6 +404,84 @@ fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) ->
         }
     }
     tallies
+}
+
+/// Drive the **harmonic sieve** (`dsp::sieve`) over a track — [`bench_rtswipe`]'s twin.
+///
+/// Same hop, same timestamp convention, same `score_frame`, same sweep. The sieve searches
+/// only `range`: unlike the bank it is built for an instrument's range, and its window length
+/// follows from the bottom of it. Its delay is half that window — one number for the whole
+/// track, so unlike RT-SWIPE a single lag *does* fit it, and the sweep should find it.
+fn bench_sieve(audio: &Path, annotation: &Annotation, scorings: &[Scoring], range: (Hz, Hz)) -> Vec<Tally> {
+    let (sample_rate, samples) = read_wav(audio);
+    let mut sieve = HarmonicSieve::new(sample_rate, range.0, range.1);
+    let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
+    let mut tallies = vec![Tally::default(); scorings.len()];
+
+    let mut fed = 0usize;
+    while fed + hop <= samples.len() {
+        sieve.process_samples(&samples[fed..fed + hop]);
+        fed += hop;
+        let seconds = fed as f32 / sample_rate.hz();
+        let estimate = sieve
+            .estimate()
+            .map(|found| (found.hz.to_midi(CONCERT_PITCH_HZ).0, found.score));
+
+        for (tally, scoring) in tallies.iter_mut().zip(scorings) {
+            score_frame(
+                tally,
+                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
+                estimate,
+            );
+        }
+    }
+    tallies
+}
+
+/// Drive the shipped **pYIN** tracker over a track, the way `audio::core` drives it: a
+/// [`PYIN_WINDOW`]-sample window, right-aligned, every [`PYIN_HOP_SECONDS`].
+///
+/// Its own cadence, not the bank's: pYIN's transition probabilities are calibrated per
+/// 40 ms frame (`dsp::trellis`), so driving it at 16 ms would measure a tracker the app does
+/// not run. Each frame is scored where it sits in time, as `bench_external` does.
+fn bench_pyin(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
+    let (sample_rate, samples) = read_wav(audio);
+    let mut tracker = PitchTracker::new();
+    // Starts as silence, as every other frontend here does.
+    let mut window = vec![0.0f32; PYIN_WINDOW];
+    let hop = (sample_rate.hz() * PYIN_HOP_SECONDS) as usize;
+    let mut tallies = vec![Tally::default(); scorings.len()];
+
+    let mut fed = 0usize;
+    while fed + hop <= samples.len() {
+        slide_in(&mut window, &samples[fed..fed + hop]);
+        fed += hop;
+        let seconds = fed as f32 / sample_rate.hz();
+        let estimate = tracker
+            .process(&window, sample_rate)
+            .map(|(hz, voiced)| (Hz(hz).to_midi(CONCERT_PITCH_HZ).0, voiced));
+
+        for (tally, scoring) in tallies.iter_mut().zip(scorings) {
+            score_frame(
+                tally,
+                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
+                estimate,
+            );
+        }
+    }
+    tallies
+}
+
+/// A corpus WAV as `f32` in −1..1. The corpus is 16-bit mono; anything else is a corpus
+/// problem, hence the `unwrap`s.
+fn read_wav(audio: &Path) -> (SampleRate, Vec<f32>) {
+    let mut reader = hound::WavReader::open(audio).unwrap();
+    let sample_rate = SampleRate(reader.spec().sample_rate);
+    let samples = reader
+        .samples::<i16>()
+        .map(|s| s.unwrap() as f32 / 32768.0)
+        .collect();
+    (sample_rate, samples)
 }
 
 /// Score a trajectory this pipeline did not produce — a CSV from some other estimator —
@@ -550,6 +625,16 @@ fn selected_tracks() -> Vec<(String, PathBuf, PathBuf)> {
     selected
 }
 
+/// Worker threads for [`run_corpus`], from `PITCH_BENCH_JOBS` or half the machine.
+///
+/// Half by default because this box is shared: a benchmark that takes every core is a
+/// benchmark that slows down everything else running on it.
+fn jobs_from_env() -> usize {
+    std::env::var("PITCH_BENCH_JOBS")
+        .map(|v| v.parse().unwrap())
+        .unwrap_or_else(|_| (std::thread::available_parallelism().unwrap().get() / 2).max(1))
+}
+
 /// The lag sweep in milliseconds, from `PITCH_BENCH_LAGS_MS` or `default`.
 ///
 /// `0` must stay first and stay present in any default: it is the pipeline's real number
@@ -622,40 +707,11 @@ fn scorings(bands: &[(String, PitchMask)], lags_ms: &[f32]) -> Vec<Scoring> {
 fn swipe_rpa_on_corpus() {
     // The default brackets the bank's measured 8–29 ms group delay so the plateau is
     // visible rather than assumed.
-    let lags_ms = lags_ms_from_env(&[0.0, 8.0, 16.0, 24.0, 32.0]);
-    let bands = bands_from_env();
-    let grid = scorings(&bands, &lags_ms);
-
-    println!("\n=== SWIPE′ RPA · MDB-stem-synth ===");
-    let selected = selected_tracks();
-    println!(
-        "    {} tracks × {} bands × {} lags",
-        selected.len(),
-        bands.len(),
-        lags_ms.len()
+    run_corpus(
+        "SWIPE′ RPA · MDB-stem-synth",
+        &[0.0, 8.0, 16.0, 24.0, 32.0],
+        bench_track,
     );
-    let mut per_scoring = vec![Tally::default(); grid.len()];
-
-    for (id, wav, csv) in &selected {
-        let annotation = load_annotation(csv);
-        let tallies = bench_track(wav, &annotation, &grid);
-        for (corpus, tally) in per_scoring.iter_mut().zip(&tallies) {
-            corpus.merge(tally);
-        }
-        // Per track, report the first band's sweep as bare RPAs — the shape (does it
-        // climb? where does it flatten?) is the per-track story; the breakdown, and the
-        // other bands, belong to the corpus summary.
-        let sweep: Vec<String> = tallies[..lags_ms.len()]
-            .iter()
-            .map(|t| format!("{:>5.1}", t.rpa()))
-            .collect();
-        println!("  {:<48} RPA {}", id, sweep.join(" "));
-    }
-
-    for (index, (label, _)) in bands.iter().enumerate() {
-        let band = &per_scoring[index * lags_ms.len()..(index + 1) * lags_ms.len()];
-        report(label, &lags_ms, band);
-    }
     println!(
         "\n  Reading it: lag 0 is the pipeline (what the player gets). A lag near the\n  \
          bank's 8–29 ms group delay is the *scorer*, and is what the literature's\n  \
@@ -688,37 +744,11 @@ fn swipe_rpa_on_corpus() {
 #[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
 fn rtswipe_rpa_on_corpus() {
     // The bank's sweep, unchanged, so the two logs' columns line up literally.
-    let lags_ms = lags_ms_from_env(&[0.0, 8.0, 16.0, 24.0, 32.0]);
-    let bands = bands_from_env();
-    let grid = scorings(&bands, &lags_ms);
-
-    println!("\n=== RT-SWIPE (FFT frontend) RPA · MDB-stem-synth ===");
-    let selected = selected_tracks();
-    println!(
-        "    {} tracks × {} bands × {} lags",
-        selected.len(),
-        bands.len(),
-        lags_ms.len()
+    run_corpus(
+        "RT-SWIPE (FFT frontend) RPA · MDB-stem-synth",
+        &[0.0, 8.0, 16.0, 24.0, 32.0],
+        bench_rtswipe,
     );
-    let mut per_scoring = vec![Tally::default(); grid.len()];
-
-    for (id, wav, csv) in &selected {
-        let annotation = load_annotation(csv);
-        let tallies = bench_rtswipe(wav, &annotation, &grid);
-        for (corpus, tally) in per_scoring.iter_mut().zip(&tallies) {
-            corpus.merge(tally);
-        }
-        let sweep: Vec<String> = tallies[..lags_ms.len()]
-            .iter()
-            .map(|t| format!("{:>5.1}", t.rpa()))
-            .collect();
-        println!("  {:<48} RPA {}", id, sweep.join(" "));
-    }
-
-    for (index, (label, _)) in bands.iter().enumerate() {
-        let band = &per_scoring[index * lags_ms.len()..(index + 1) * lags_ms.len()];
-        report(label, &lags_ms, band);
-    }
     println!(
         "\n  The baseline this is here to beat — the bank over the same 230 tracks,\n  \
          `swipe_rpa_on_corpus`, 2026-07-15 (datasets/bench_runs/):\n    \
@@ -734,6 +764,122 @@ fn rtswipe_rpa_on_corpus() {
          ⚠ Marttila & Reiss's 96.1% is NOT known to be this metric. Read their paper\n  \
          before treating the gap as real — track O found exactly that trap costing 9 points."
     );
+}
+
+/// **The harmonic sieve's number** (`dsp::sieve`), on the same corpus, harness and sweep.
+///
+/// The sieve is built for a range, so it searches the reference's band (65–2093 Hz): that
+/// band's figures are the comparable ones, and the full-band ones count the 11.7 % of voiced
+/// frames below 65 Hz it is not asked to find. The default sweep brackets its delay — half
+/// of a 2048-sample window at 44.1 kHz, 23 ms.
+#[test]
+#[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
+fn sieve_rpa_on_corpus() {
+    let range = (Hz(REFERENCE_MDB_MASK_HZ.0), Hz(REFERENCE_MDB_MASK_HZ.1));
+    run_corpus(
+        "harmonic sieve RPA · MDB-stem-synth",
+        &[0.0, 8.0, 16.0, 24.0, 32.0],
+        |audio, annotation, scorings| bench_sieve(audio, annotation, scorings, range),
+    );
+    print_baselines();
+}
+
+/// **pYIN's number** — the shipped `PitchTracker`, at its own 40 ms cadence.
+///
+/// The slow plane the sieve is meant to compete with. Its window is 6144 samples, so its
+/// delay is ~70 ms at 44.1 kHz; the sweep reaches past that.
+#[test]
+#[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
+fn pyin_rpa_on_corpus() {
+    run_corpus(
+        "pYIN RPA · MDB-stem-synth",
+        &[0.0, 24.0, 48.0, 72.0, 96.0],
+        bench_pyin,
+    );
+    print_baselines();
+}
+
+/// Figures every corpus run is read against, printed so a log needs nothing else open.
+fn print_baselines() {
+    println!(
+        "\n  Baselines, same harness (datasets/bench_runs/, 2026-07-15):\n    \
+         bank SWIPE′, 65-2093 Hz : 83.93% @ lag 0   91.02% @ lag 16 (its peak)\n    \
+         SwiftF0,     65-2093 Hz : 87.87% @ lag 0   89.54% @ lag +8 (its peak)"
+    );
+}
+
+/// Run `bench` over the selected tracks at every (band, lag) and print the corpus report.
+///
+/// One loop for every frontend, so that what differs between two logs is the frontend and
+/// nothing else. `default_lags_ms` must start at 0 — see [`lags_ms_from_env`].
+///
+/// Tracks are independent, so they run on [`jobs_from_env`] threads; the results are then
+/// merged and printed **in track order**, so a parallel run's log is line-for-line the
+/// sequential one's and two runs stay diffable.
+fn run_corpus(
+    headline: &str,
+    default_lags_ms: &[f32],
+    bench: impl Fn(&Path, &Annotation, &[Scoring]) -> Vec<Tally> + Sync,
+) {
+    let lags_ms = lags_ms_from_env(default_lags_ms);
+    let bands = bands_from_env();
+    let grid = scorings(&bands, &lags_ms);
+
+    println!("\n=== {headline} ===");
+    let selected = selected_tracks();
+    let jobs = jobs_from_env();
+    println!(
+        "    {} tracks × {} bands × {} lags, {} threads",
+        selected.len(),
+        bands.len(),
+        lags_ms.len(),
+        jobs
+    );
+
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut finished: Vec<(usize, Vec<Tally>)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..jobs)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some((_, wav, csv)) = selected.get(index) else {
+                            break;
+                        };
+                        done.push((index, bench(wav, &load_annotation(csv), &grid)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect()
+    });
+    finished.sort_by_key(|(index, _)| *index);
+
+    let mut per_scoring = vec![Tally::default(); grid.len()];
+    for (index, tallies) in &finished {
+        let id = &selected[*index].0;
+        for (corpus, tally) in per_scoring.iter_mut().zip(tallies) {
+            corpus.merge(tally);
+        }
+        // Per track, report the first band's sweep as bare RPAs — the shape (does it
+        // climb? where does it flatten?) is the per-track story; the breakdown, and the
+        // other bands, belong to the corpus summary.
+        let sweep: Vec<String> = tallies[..lags_ms.len()]
+            .iter()
+            .map(|t| format!("{:>5.1}", t.rpa()))
+            .collect();
+        println!("  {:<48} RPA {}", id, sweep.join(" "));
+    }
+
+    for (index, (label, _)) in bands.iter().enumerate() {
+        let band = &per_scoring[index * lags_ms.len()..(index + 1) * lags_ms.len()];
+        report(label, &lags_ms, band);
+    }
 }
 
 /// **The check on the checker.** Score SwiftF0's trajectory with our scorer and require

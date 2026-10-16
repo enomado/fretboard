@@ -23,6 +23,12 @@ pub(crate) mod resonator;
 // file's intra-doc links in *this* scope, where none of its names exist.
 pub(crate) mod rtswipe;
 pub(crate) mod segmenter;
+// Harmonic sieve over spectral peaks — a per-frame f0 estimator, benchmarked in
+// `pitch_bench::sieve_rpa_on_corpus`. Test-only until it is wired into a pipeline: it has to
+// earn its place against the benchmark first, and a module nothing ships is dead code.
+// Plain comment for the same reason as `rtswipe`'s.
+#[cfg(test)]
+mod sieve;
 pub(crate) mod spectrum;
 pub(crate) mod swipe;
 pub(crate) mod trellis;

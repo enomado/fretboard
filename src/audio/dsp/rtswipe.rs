@@ -56,6 +56,7 @@ use super::analysis_math::{
     SPIRAL_BIN_COUNT,
     SPIRAL_BINS_PER_SEMITONE,
     hann_taper,
+    slide_in,
 };
 use super::pitch::{
     TRACKED_MAX_MIDI,
@@ -212,12 +213,7 @@ impl RtSwipe {
     /// built from the history on demand — but `pitch_bench` and `dsp::melody` drive this at
     /// the bank's 16 ms hop so that frames from either frontend land on the same grid.
     pub(crate) fn process_samples(&mut self, samples: &[f32]) {
-        let capacity = self.history.len();
-        // Anything older than N_max has slid out of every window, so a hop longer than the
-        // history is not an error — only its tail was ever going to matter.
-        let fresh = samples.len().min(capacity);
-        self.history.copy_within(fresh.., 0);
-        self.history[capacity - fresh..].copy_from_slice(&samples[samples.len() - fresh..]);
+        slide_in(&mut self.history, samples);
     }
 
     /// Score the history as it stands: one frame, right-aligned at the newest sample.
