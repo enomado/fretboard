@@ -244,7 +244,16 @@ impl PitchTracker {
                 cand.probability,
             );
         }
-        emissions.set_unvoiced(1.0 - voiced);
+        // Mauch & Dixon's HMM gives every pitch bin an unvoiced *twin* and spreads the
+        // unvoiced mass over them: each twin emits `(1 − v) / N`. This trellis has one
+        // shared unvoiced state instead — and it already charges `1/N` to re-enter pitch
+        // (`uv → p` is uniform over the bins). Handing that single state the *whole*
+        // `1 − v` made staying silent N× cheaper than in the model being implemented
+        // (N = 840 here), so after every gap the path sat unvoiced for frames on end: on
+        // MDB-stem-synth this tracker declined 39 % of voiced frames while being right on
+        // 91.9 % of the ones it did answer — the published pYIN figure, i.e. the pitch was
+        // fine and the voicing was not. Dividing by N restores the model's balance.
+        emissions.set_unvoiced((1.0 - voiced) / self.trellis.grid().n_pitch() as f32);
         let state = self.trellis.step(&emissions, FRAME_DT)?;
 
         // Report the winning *candidate's* frequency (sub-cent) rather than the
