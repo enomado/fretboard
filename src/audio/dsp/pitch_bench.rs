@@ -250,7 +250,7 @@ struct Scoring {
 /// `midi[i]` is `None` where the corpus wrote frequency 0.0, which is its encoding for an
 /// unvoiced frame. Storing `Option` rather than a 0.0 sentinel is deliberate: a 0.0 Hz
 /// "pitch" silently converts to −inf MIDI and would poison any arithmetic it touched.
-struct Annotation {
+pub(super) struct Annotation {
     /// Annotation timestamps in seconds, ascending (the corpus writes a uniform 2.9 ms
     /// grid, but nothing here assumes that — `at` binary-searches).
     times: Vec<f32>,
@@ -264,7 +264,7 @@ impl Annotation {
     /// real trajectory we have no model for, and inventing one would put made-up numbers
     /// in the denominator of a benchmark. The corpus grid (2.9 ms) is ~5× finer than the
     /// bank's hop (16 ms), so the nearest sample is never more than 1.5 ms away.
-    fn at(&self, seconds: f32) -> Option<f32> {
+    pub(super) fn at(&self, seconds: f32) -> Option<f32> {
         if self.times.is_empty() {
             return None;
         }
@@ -290,7 +290,7 @@ impl Annotation {
 ///
 /// No header in this corpus, so a line that does not parse as two floats is a corpus
 /// problem, not a variant to tolerate — hence `unwrap`.
-fn load_annotation(path: &Path) -> Annotation {
+pub(super) fn load_annotation(path: &Path) -> Annotation {
     let text = std::fs::read_to_string(path).unwrap();
     let mut times = Vec::new();
     let mut midi = Vec::new();
@@ -474,7 +474,7 @@ fn bench_pyin(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Ve
 
 /// A corpus WAV as `f32` in −1..1. The corpus is 16-bit mono; anything else is a corpus
 /// problem, hence the `unwrap`s.
-fn read_wav(audio: &Path) -> (SampleRate, Vec<f32>) {
+pub(super) fn read_wav(audio: &Path) -> (SampleRate, Vec<f32>) {
     let mut reader = hound::WavReader::open(audio).unwrap();
     let sample_rate = SampleRate(reader.spec().sample_rate);
     let samples = reader
@@ -574,7 +574,7 @@ fn corpus_root() -> PathBuf {
 
 /// Pair every annotation with its audio. Returns `(track_id, wav, csv)`, sorted, so a run
 /// is reproducible and two runs are diffable.
-fn tracks() -> Vec<(String, PathBuf, PathBuf)> {
+pub(super) fn tracks() -> Vec<(String, PathBuf, PathBuf)> {
     let root = corpus_root();
     let audio_dir = root.join("audio_stems");
     let annotation_dir = root.join("annotation_stems");

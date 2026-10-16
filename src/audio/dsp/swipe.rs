@@ -932,9 +932,12 @@ mod tests {
                 // The OLD comb, fed exactly what it was fed in production: the column
                 // *after* `normalize_bars(gamma)`, with the shipped 0.18 floor. That is
                 // why `resonator_fundamental` is still alive — it is the oracle, and it
-                // goes when this probe does.
-                let Some((old_midi, _strength)) =
-                    resonator_fundamental(&snapshot.spectrum, min_midi, bps, 0.18)
+                // goes when this probe does. Rebuilt from the raw column, because the
+                // display no longer normalises per frame (`resonator::DISPLAY_RANGE_DB`)
+                // and the oracle must keep seeing what it saw.
+                let mut old_input = analyzer.raw_spectrum(true);
+                normalize_bars(&mut old_input, 0.72);
+                let Some((old_midi, _strength)) = resonator_fundamental(&old_input, min_midi, bps, 0.18)
                 else {
                     old_silent += 1;
                     continue;
@@ -1179,8 +1182,8 @@ mod low_register_probe {
             }
             dissected += 1;
 
-            // Undo the display gamma to get back to the bank's own column.
-            let magnitudes: Vec<f32> = snapshot.spectrum.iter().map(|v| v.powf(1.0 / 0.72)).collect();
+            // The bank's own column — what the scorer saw.
+            let magnitudes = analyzer.raw_spectrum(true);
             let warped = sqrt_warp(&magnitudes);
             let curve = kernel.salience_curve(&warped);
             let bin_of = |m: f32| ((m - min_midi) * bps).round() as usize;

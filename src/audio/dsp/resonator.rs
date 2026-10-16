@@ -8,7 +8,6 @@ use super::analysis_math::{
     NOTE_BUCKET_MAX_MIDI,
     NOTE_BUCKET_MIN_MIDI,
     SPIRAL_BINS_PER_SEMITONE,
-    normalize_bars,
     resonator_note_labels,
     splat_linear,
 };
@@ -27,6 +26,11 @@ use crate::core_types::pitch::{
     Midi,
     PNote,
 };
+
+// Offline measurement of the bank's contrast across `alpha`/`beta` on real music; test-only
+// and `#[ignore]`d (needs a corpus directory). Verdict in `docs/resonator_contrast.md`.
+#[cfg(test)]
+mod contrast_probe;
 
 const RESONATOR_MIN_MIDI: usize = NOTE_BUCKET_MIN_MIDI;
 const RESONATOR_MAX_MIDI: usize = NOTE_BUCKET_MAX_MIDI;
@@ -62,6 +66,77 @@ const GATE_MAX_SEMITONES: f32 = 2.0;
 // Output spiral resolution. The bank stays at the (cheap) user `bins`/semitone;
 // reassignment places its energy onto this finer display grid.
 const OUTPUT_BINS_PER_SEMITONE: usize = SPIRAL_BINS_PER_SEMITONE;
+
+// --- Display levels: a dB window under a HELD white point ---
+//
+// The display used to divide every column by its *own* max (`normalize_bars`) and raise
+// it to `gamma`. That throws away the one thing that separates a partial from junk across
+// frames — level: a reverb tail, a decay, a rest, a soft passage all get blown up to full
+// scale, and between partials the bank's skirts sit at whatever the frame's max allows.
+// Measured against truth (`resonator/contrast_probe.rs::truth_probe`, polyphonic MDB
+// mixes, 8 songs, `docs/resonator_contrast.md`): at equal on-partial brightness the share
+// of the display's light that lands on a real partial went 0.365 → 0.695 (voiced frames
+// only: 0.538 → 0.701). Both halves pay: holding the white point ≈ +0.2, the dB window
+// instead of a power law ≈ +0.13.
+//
+// Brightness = `clamp(1 + (L − white) / DISPLAY_RANGE_DB, 0, 1) ^ gamma`, `L` = 20·log10
+// of the column value. `white` jumps up to a louder frame's max at once (no attack lag on
+// a note) and decays at `DISPLAY_WHITE_DECAY_DB_PER_S` otherwise, so a quieter passage
+// comes up to full scale over (level drop / decay) seconds instead of instantly.
+//
+// `gamma` keeps its meaning (the user's contrast slider: higher = darker mid-tones).
+// `power` too: the column then holds magnitude², so the same dB window spans half the
+// signal range — the same "more contrast" the toggle always meant.
+//
+// The decay is a RATE ON THE AUDIO CLOCK (samples fed since the last snapshot), not a
+// factor per snapshot: the snapshot cadence is the user's `update_ms` slider, and a
+// per-frame constant would hand it the display's time constant
+// (`memory/display_settings_must_not_steer_the_detector.md`, the "такт" trigger).
+//
+// Display only: the detector scores the raw column before any of this.
+const DISPLAY_RANGE_DB: f32 = 30.0;
+const DISPLAY_WHITE_DECAY_DB_PER_S: f32 = 6.0;
+
+/// The display's white point: the loudest recent column max, in dB of the column's own
+/// quantity, decaying at [`DISPLAY_WHITE_DECAY_DB_PER_S`]. `None` until the first column
+/// with any energy — before it there is no level to hold, which is a real state (a fresh
+/// or just-rebuilt bank), not a placeholder.
+#[derive(Clone, Copy, Debug, Default)]
+struct HeldWhite {
+    level_db: Option<f32>,
+}
+
+impl HeldWhite {
+    /// Advance by `dt_seconds` of audio and take in this column's max (`None` = a column
+    /// with no energy at all). Returns the white point to map this column under, or
+    /// `None` while nothing has ever been heard.
+    fn update(&mut self, column_max: Option<f32>, dt_seconds: f32) -> Option<f32> {
+        let decayed = self
+            .level_db
+            .map(|level| level - DISPLAY_WHITE_DECAY_DB_PER_S * dt_seconds);
+        let current = column_max.map(|max| 20.0 * max.log10());
+        self.level_db = match (decayed, current) {
+            (Some(held), Some(now)) => Some(held.max(now)),
+            (held, now) => held.or(now),
+        };
+        self.level_db
+    }
+}
+
+/// Map a raw column to display brightness in place: the dB window under `white_db`, then
+/// `gamma`. Cells below the window (and exact zeros — gated-off cells) go to 0.
+fn map_display_levels(values: &mut [f32], white_db: f32, gamma: f32) {
+    for v in values {
+        *v = if *v > 0.0 {
+            let db = 20.0 * v.log10();
+            (1.0 + (db - white_db) / DISPLAY_RANGE_DB)
+                .clamp(0.0, 1.0)
+                .powf(gamma)
+        } else {
+            0.0
+        };
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ResonatorViewSettings {
@@ -124,6 +199,11 @@ pub(crate) struct ResonatorAnalyzer {
     // rollback path on the bank's own user-adjustable resolution.
     swipe_output: SwipeKernel,
     swipe_bank:   SwipeKernel,
+
+    // Display levels (see `DISPLAY_RANGE_DB`): the held white point, and the audio fed
+    // since the last snapshot — the `dt` its decay runs on.
+    display_white:          HeldWhite,
+    samples_since_snapshot: usize,
 }
 
 impl ResonatorViewSettings {
@@ -182,6 +262,8 @@ impl ResonatorAnalyzer {
             have_phase: false,
             swipe_output: SwipeKernel::new(OUTPUT_BINS_PER_SEMITONE as f32),
             swipe_bank: SwipeKernel::new(settings_bins as f32),
+            display_white: HeldWhite::default(),
+            samples_since_snapshot: 0,
         }
     }
 
@@ -202,6 +284,10 @@ impl ResonatorAnalyzer {
         self.detuning_hz = vec![0.0; n];
         self.pending = 0;
         self.have_phase = false;
+        // A new bank (new alpha, range, power…) puts its column on a new scale; a white
+        // point held from the old one would black out or blow out the next seconds.
+        self.display_white = HeldWhite::default();
+        self.samples_since_snapshot = 0;
         true
     }
 
@@ -216,6 +302,7 @@ impl ResonatorAnalyzer {
     /// reassignment restarts from a clean phase baseline rather than differencing
     /// across the gap where measurement was suspended.
     pub(crate) fn process_samples(&mut self, samples: &[f32], reassign: bool) {
+        self.samples_since_snapshot += samples.len();
         if !reassign {
             self.bank.process_samples(samples);
             self.pending = 0;
@@ -268,16 +355,45 @@ impl ResonatorAnalyzer {
         self.have_phase = true;
     }
 
-    pub(crate) fn snapshot(&self, reassign: bool, style: AccidentalStyle) -> ResonatorSnapshot {
-        resonator_snapshot(
-            &self.bank,
-            &self.settings,
-            &self.detuning_hz,
-            reassign,
-            style,
-            &self.swipe_bank,
-            &self.swipe_output,
-        )
+    /// The bank's current column, scored for the detector and mapped for the display.
+    ///
+    /// `&mut`: the display's white point is held across snapshots and decays by the audio
+    /// fed since the previous one (see `DISPLAY_RANGE_DB`).
+    pub(crate) fn snapshot(&mut self, reassign: bool, style: AccidentalStyle) -> ResonatorSnapshot {
+        let mut spectrum = raw_column(&self.bank, &self.settings, &self.detuning_hz, reassign);
+        // Score BEFORE the display mapping: `gamma` is a display control (a
+        // waterfall-contrast slider, `controls.rs`), and a display knob must not steer
+        // the octave decision — which it did, for as long as the scoring came second.
+        // SWIPE does its own warping (√), and it is not negotiable by the UI.
+        // `power` is NOT covered by this: `raw_column` hands the scorer powers when it is
+        // on — an open defect, see `docs/resonator_contrast.md` § Открытое.
+        let (grid_bins_per_semitone, kernel) = if reassign {
+            (OUTPUT_BINS_PER_SEMITONE as f32, &self.swipe_output)
+        } else {
+            (self.settings.bins_per_semitone as f32, &self.swipe_bank)
+        };
+        let salience =
+            SalienceFrame::score(&spectrum, self.settings.lo_midi(), grid_bins_per_semitone, kernel);
+
+        let dt_seconds = self.samples_since_snapshot as f32 / self.sample_rate.hz();
+        self.samples_since_snapshot = 0;
+        let max = spectrum.iter().copied().fold(0.0f32, f32::max);
+        // No white point ⇒ nothing has ever been heard ⇒ the column is all zeros already.
+        if let Some(white_db) = self.display_white.update((max > 0.0).then_some(max), dt_seconds) {
+            map_display_levels(&mut spectrum, white_db, self.settings.gamma);
+        }
+        ResonatorSnapshot {
+            spectrum,
+            note_labels: self.settings.note_labels(style),
+            salience,
+        }
+    }
+
+    /// The raw (pre-display) column, for the probes that need the bank's own numbers
+    /// rather than a picture of them — see [`raw_column`].
+    #[cfg(test)]
+    pub(crate) fn raw_spectrum(&self, reassign: bool) -> Vec<f32> {
+        raw_column(&self.bank, &self.settings, &self.detuning_hz, reassign)
     }
 
     pub(crate) fn note_labels(&self, style: AccidentalStyle) -> Vec<String> {
@@ -308,11 +424,14 @@ fn build_resonator_bank(sample_rate: SampleRate, settings: &ResonatorViewSetting
     OnePoleBank::new(&configs, sample_rate)
 }
 
-/// Build the display spiral by reassigning each bin's energy to its measured
-/// instantaneous frequency.
+/// The bank's column **before** any display mapping — absolute magnitudes (or powers,
+/// per `settings.power`), on the reassigned output grid when `reassign` is on and on the
+/// bank's own grid otherwise. What the detector scores, and the only honest input for
+/// anything that has to compare frames with each other (a white point, a sparsity
+/// measure).
 ///
-/// Rather than reporting one magnitude per resonator at its nominal pitch (which
-/// quantises every partial to a bin centre), we splat each bin's magnitude at
+/// Reassignment: rather than reporting one magnitude per resonator at its nominal pitch
+/// (which quantises every partial to a bin centre), we splat each bin's magnitude at
 /// `f_bin + detuning` — its true frequency, recovered from the phase. This gives
 /// sub-bin placement (super-resolution) on the spiral, and the coherence gate
 /// turns the *consistency* of that reassignment into noise/image suppression:
@@ -321,39 +440,20 @@ fn build_resonator_bank(sample_rate: SampleRate, settings: &ResonatorViewSetting
 /// The bank runs at the user's `bins`/semitone; the output grid is the finer
 /// `OUTPUT_BINS_PER_SEMITONE`, spanning the bank's own MIDI range so it stays
 /// aligned with the (one-per-semitone) note labels.
-fn resonator_snapshot(
+fn raw_column(
     bank: &OnePoleBank,
     settings: &ResonatorViewSettings,
     detuning_hz: &[f32],
     reassign: bool,
-    style: AccidentalStyle,
-    swipe_bank: &SwipeKernel,
-    swipe_output: &SwipeKernel,
-) -> ResonatorSnapshot {
+) -> Vec<f32> {
     // Fallback (safety net): plain per-bin magnitude at the bin's nominal pitch,
     // at the bank's own resolution. This is the original, pre-reassignment path —
     // bit-for-bit what shipped before, so toggling it off is a clean rollback.
     if !reassign {
-        let mut spectrum = if settings.power {
+        return if settings.power {
             bank.powers()
         } else {
             bank.magnitudes()
-        };
-        // Score BEFORE `normalize_bars`: `gamma` and `power` are display controls (a
-        // waterfall-contrast slider, `controls.rs`), and a display knob must not steer
-        // the octave decision — which it did, for as long as this line came second.
-        // SWIPE does its own warping (√), and it is not negotiable by the UI.
-        let salience = SalienceFrame::score(
-            &spectrum,
-            settings.lo_midi(),
-            settings.bins_per_semitone as f32,
-            swipe_bank,
-        );
-        normalize_bars(&mut spectrum, settings.gamma);
-        return ResonatorSnapshot {
-            spectrum,
-            note_labels: settings.note_labels(style),
-            salience,
         };
     }
 
@@ -387,21 +487,7 @@ fn resonator_snapshot(
         let position = (midi - settings.lo_midi()) * OUTPUT_BINS_PER_SEMITONE as f32;
         splat_linear(&mut spectrum, position, weight * gate);
     }
-
-    // Same rule as the rollback path above: the detector reads the bank's own column,
-    // the display gets its `gamma` afterwards.
-    let salience = SalienceFrame::score(
-        &spectrum,
-        settings.lo_midi(),
-        OUTPUT_BINS_PER_SEMITONE as f32,
-        swipe_output,
-    );
-    normalize_bars(&mut spectrum, settings.gamma);
-    ResonatorSnapshot {
-        spectrum,
-        note_labels: settings.note_labels(style),
-        salience,
-    }
+    spectrum
 }
 
 #[cfg(test)]
@@ -626,6 +712,115 @@ mod tests {
             strength > noise_strength,
             "a harmonic tone ({strength}) must out-score noise ({noise_strength})"
         );
+    }
+
+    /// A tone at `amplitude`, `seconds` long, at `sr`.
+    fn tone(sr: SampleRate, hz: f32, amplitude: f32, seconds: f32) -> Vec<f32> {
+        (0..(sr.hz() * seconds) as usize)
+            .map(|i| amplitude * (TAU * hz * i as f32 / sr.hz()).sin())
+            .collect()
+    }
+
+    /// Feed `samples` in `hop`-sized chunks, snapshotting after each; the last snapshot.
+    fn feed(an: &mut ResonatorAnalyzer, samples: &[f32], hop: usize) -> ResonatorSnapshot {
+        let mut last = None;
+        for chunk in samples.chunks(hop) {
+            an.process_samples(chunk, true);
+            last = Some(an.snapshot(true, AccidentalStyle::Sharps));
+        }
+        last.unwrap()
+    }
+
+    fn peak(spectrum: &[f32]) -> f32 {
+        spectrum.iter().copied().fold(0.0, f32::max)
+    }
+
+    /// REGRESSION (display levels): a passage 20 dB quieter than what came just before
+    /// it must stay *dimmer* — the held white point decays at a rate, it does not snap to
+    /// the new frame's max. Under the old per-frame `normalize_bars` the quiet tone's own
+    /// max was full scale (peak = 1.0), which is how tails and soft passages washed out
+    /// the picture (`docs/resonator_contrast.md`).
+    ///
+    /// Expected: 0.3 s after the drop the white point has fallen 1.8 dB of the 20, so
+    /// the quiet tone sits ≈ 18 dB under white in a 30 dB window → (12/30)^0.72 ≈ 0.52.
+    #[test]
+    fn a_quiet_passage_after_a_loud_one_stays_dim() {
+        let sr = SampleRate(48_000);
+        let hop = 768; // 16 ms, the default `update_ms`
+        let mut an = ResonatorAnalyzer::new(sr);
+        let loud = feed(&mut an, &tone(sr, 440.0, 0.5, 0.6), hop);
+        assert!(
+            (peak(&loud.spectrum) - 1.0).abs() < 1e-3,
+            "the loudest column defines white"
+        );
+        let quiet = feed(&mut an, &tone(sr, 440.0, 0.05, 0.3), hop);
+        let p = peak(&quiet.spectrum);
+        assert!(
+            (0.4..0.65).contains(&p),
+            "20 dB down, 0.3 s later: peak {p:.3} (≈ 0.52 expected, 1.0 = per-frame normalisation)"
+        );
+    }
+
+    /// A louder column takes the white point at once — no attack lag, so a note never
+    /// comes in clipped above white for a few frames.
+    ///
+    /// Asserted on a partial *below* the peak, not as "peak = 1.0": the clamp makes the
+    /// peak 1.0 under a lagging white point too (that version of this test passed against
+    /// a white point that never rose at all). So: A4 with its octave 6 dB down. Under a
+    /// white point at this column's own max the octave sits at (1 − 6/30)^0.72 ≈ 0.85; a
+    /// stale, lower white point clips it to 1.0 along with the fundamental. A pure tone
+    /// cannot show this — reassignment collapses it into one or two cells.
+    #[test]
+    fn a_louder_note_takes_the_white_point_at_once() {
+        let sr = SampleRate(48_000);
+        let hop = 768;
+        let a4_and_octave = |amplitude: f32, seconds: f32| -> Vec<f32> {
+            tone(sr, 440.0, amplitude, seconds)
+                .iter()
+                .zip(tone(sr, 880.0, amplitude * 0.5, seconds))
+                .map(|(a, b)| a + b)
+                .collect()
+        };
+        let mut an = ResonatorAnalyzer::new(sr);
+        feed(&mut an, &a4_and_octave(0.05, 0.6), hop);
+        let loud = feed(&mut an, &a4_and_octave(0.5, 0.2), hop);
+        let cell =
+            |midi: f32| ((midi - an.settings.lo_midi()) * OUTPUT_BINS_PER_SEMITONE as f32).round() as usize;
+        let octave = peak(&loud.spectrum[cell(80.5)..=cell(81.5)]);
+        assert!(
+            (peak(&loud.spectrum) - 1.0).abs() < 1e-3,
+            "the fundamental defines white"
+        );
+        assert!(
+            (0.75..0.93).contains(&octave),
+            "the octave, 6 dB down, reads {octave:.3} (≈ 0.85 expected; 1.0 = white lags the note)"
+        );
+    }
+
+    /// REGRESSION (the "такт" trigger, `memory/display_settings_must_not_steer_the_detector.md`):
+    /// the white point's decay runs on the AUDIO clock, so the snapshot cadence — the
+    /// user's `update_ms` slider, 8..80 ms — must not change the picture. A per-snapshot
+    /// decay factor would make the quiet tone ~10× brighter at 8 ms than at 80 ms.
+    #[test]
+    fn the_white_point_decay_ignores_the_snapshot_cadence() {
+        let sr = SampleRate(48_000);
+        let signal: Vec<f32> = tone(sr, 440.0, 0.5, 0.6)
+            .into_iter()
+            .chain(tone(sr, 440.0, 0.05, 0.96))
+            .collect();
+        let peaks: Vec<f32> = [384usize, 768, 3840] // 8, 16, 80 ms
+            .iter()
+            .map(|&hop| {
+                let mut an = ResonatorAnalyzer::new(sr);
+                peak(&feed(&mut an, &signal, hop).spectrum)
+            })
+            .collect();
+        for p in &peaks {
+            assert!(
+                (p - peaks[1]).abs() < 0.02,
+                "peaks at 8/16/80 ms cadence {peaks:?} must agree"
+            );
+        }
     }
 
     /// Empty / silent input must not panic and yields an all-zero spiral.
