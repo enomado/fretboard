@@ -765,6 +765,7 @@ mod tests {
     use std::thread;
 
     use super::*;
+    use crate::audio::test_rig::Rig;
 
     /// A bowed-string-ish tone: a fundamental plus the partials that make the bank's
     /// harmonic scoring do real work.
@@ -782,88 +783,6 @@ mod tests {
                     / 3.0
             })
             .collect()
-    }
-
-    /// The engine as the platform layers actually wire it: both pipelines, the shared
-    /// state between them, the level atomic one writes and the other reads.
-    struct Rig {
-        analysis:  AnalysisPipeline,
-        resonator: ResonatorPipeline,
-        shared:    Arc<Mutex<SharedState>>,
-        settings:  Arc<Mutex<AnalysisSettings>>,
-        gain:      Arc<AtomicU32>,
-        level:     Arc<AtomicU32>,
-        /// The rig's clock: `start` plus the audio fed so far. Stands in for the wall
-        /// clock the pipelines' cadence gates read in production.
-        start:     Instant,
-        fed:       usize,
-    }
-
-    impl Rig {
-        fn new(sample_rate: SampleRate) -> Self {
-            let shared = Arc::new(Mutex::new(SharedState::new()));
-            shared.lock().unwrap().reset();
-            Self {
-                analysis: AnalysisPipeline::new(sample_rate),
-                resonator: ResonatorPipeline::new(sample_rate),
-                shared,
-                settings: Arc::new(Mutex::new(AnalysisSettings::default())),
-                gain: Arc::new(AtomicU32::new(1.0f32.to_bits())),
-                level: Arc::new(AtomicU32::new(0.0f32.to_bits())),
-                // After the pipelines are built: each starts its gate one interval in the
-                // past, so the first chunk is analysed, as it is live.
-                start: Instant::now(),
-                fed: 0,
-            }
-        }
-
-        /// Feed both planes in 10 ms chunks, as a device callback would, each stamped
-        /// with the moment its last sample arrived — **audio** time, not wall time.
-        ///
-        /// Both pipelines gate their cadence on the clock they are handed. This rig used
-        /// to pace the real one with `thread::sleep`, and a sleep only ever oversleeps:
-        /// under a loaded test runner each 10 ms chunk took longer, every chunk passed
-        /// the bank's 16 ms gate instead of every second one, and the frame-counted
-        /// hysteresis downstream saw a different cadence — `release_ghosts_…` flaked on
-        /// it (3 of 7 runs at load ~30). Stamping chunks off the sample count is the
-        /// ideal capture, exactly, on any machine.
-        fn feed(&mut self, samples: &[f32], sample_rate: SampleRate) {
-            let chunk = sample_rate.samples_in(Duration::from_millis(10));
-            for c in samples.chunks(chunk) {
-                self.fed += c.len();
-                let now = self.start + sample_rate.duration_of(self.fed);
-                self.analysis.push_samples_at(
-                    c.iter().copied(),
-                    now,
-                    &self.shared,
-                    &self.settings,
-                    &self.gain,
-                    &self.level,
-                );
-                self.resonator.push_samples_at(
-                    c.iter().copied(),
-                    now,
-                    &self.shared,
-                    &self.settings,
-                    &self.gain,
-                    &self.level,
-                );
-            }
-        }
-
-        fn melody_since(&self, after: Option<u64>) -> Vec<MelodyFrame> {
-            self.shared.lock().unwrap().melody_since(after)
-        }
-
-        fn note_line(&self) -> NoteLine {
-            self.shared
-                .lock()
-                .unwrap()
-                .reading
-                .as_ref()
-                .map(|r| r.note_line.clone())
-                .unwrap_or_default()
-        }
     }
 
     /// REGRESSION: a poisoned settings lock is a panic, not a silent fall-back to defaults.

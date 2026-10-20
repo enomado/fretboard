@@ -57,6 +57,8 @@ use crate::audio::dsp::resonator::ResonatorAnalyzer;
 use crate::audio::dsp::rtswipe::RtSwipe;
 use crate::audio::dsp::sieve::HarmonicSieve;
 use crate::audio::sample_rate::SampleRate;
+use crate::audio::test_rig::Rig;
+use crate::audio::types::PitchFrontend;
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::Hz;
 
@@ -141,10 +143,153 @@ struct Tally {
     /// Sum of |cents error| over `correct` frames — fine-pitch quality *given* the note
     /// was right. Averaged at print time.
     correct_cents:   f32,
+    /// The «calm» metrics — what the user sees on the roll and RPA does not: see [`Calm`].
+    calm:            Calm,
+}
+
+/// What one frame was scored as. RPA only needs the counts; [`Calm`] needs the sequence.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Unvoiced,
+    FalseVoiced,
+    SilentMiss,
+    Correct,
+    Octave,
+    Other,
+}
+
+/// The previous frame of the same track under the same scoring — the pairs and runs
+/// [`Calm`] counts are made of.
+#[derive(Clone, Copy)]
+struct PrevFrame {
+    seconds:  f32,
+    truth:    Option<f32>,
+    estimate: Option<f32>,
+    verdict:  Verdict,
+}
+
+/// Below this change of the truth between two scored frames, the note «stands» and any
+/// movement of the estimate is the line trembling, not following the voice.
+///
+/// Measured between the two frames being compared, not per annotation step: a rate (5 ¢ per
+/// 2.9 ms annotation step) lets through vibrato at ~1700 ¢/s, and there the estimate moves
+/// legitimately. On a coarser frame grid fewer pairs pass (the truth drifts further between
+/// them), so jitter is compared between detectors of one cadence first.
+const NOTE_STANDS_CENTS: f32 = 5.0;
+
+/// Resolution of the jitter histogram, cents. Fine enough for a median of a few cents.
+const JITTER_BIN_CENTS: f32 = 0.1;
+
+/// «Calm» metrics of H1 (`docs/detector_hypotheses_plan.md`): three things a user sees on a
+/// pianoroll that RPA does not distinguish.
+///
+/// Counted in the same single pass as RPA, from consecutive frames, so a `Tally` is a
+/// per-track object while it is being filled (`prev` belongs to one track) and a corpus
+/// total after [`Tally::merge`], which sums everything but `prev`.
+#[derive(Default, Clone)]
+struct Calm {
+    prev:           Option<PrevFrame>,
+    /// Maximal runs of consecutive octave-error frames. Ten frames in one run read as one
+    /// outlier on the roll, ten scattered frames as ten — RPA counts both as ten.
+    octave_events:  u32,
+    /// Total length of those runs, for the mean run length.
+    octave_seconds: f32,
+    /// Audio the annotation calls voiced — the «per minute» of `octave_events`.
+    voiced_seconds: f32,
+    /// |Δ estimate| between consecutive frames where the note stands
+    /// ([`NOTE_STANDS_CENTS`]) and both frames are correct, binned by [`JITTER_BIN_CENTS`].
+    jitter:         BTreeMap<u32, u32>,
+    /// Voiced runs of the truth, and voiced runs of the estimate *inside* them: a true
+    /// segment the estimate covers in three pieces counts three. Their ratio is
+    /// fragmentation; false voicing in the gaps is `false_voiced`'s business, not this.
+    truth_runs:     u32,
+    estimate_runs:  u32,
+}
+
+impl Calm {
+    fn follow(&mut self, frame: PrevFrame) {
+        let prev = self.prev.replace(frame);
+
+        let in_truth = |f: &PrevFrame| f.truth.is_some();
+        let in_estimate = |f: &PrevFrame| f.truth.is_some() && f.estimate.is_some();
+        if in_truth(&frame) && !prev.as_ref().is_some_and(in_truth) {
+            self.truth_runs += 1;
+        }
+        if in_estimate(&frame) && !prev.as_ref().is_some_and(in_estimate) {
+            self.estimate_runs += 1;
+        }
+        if frame.verdict == Verdict::Octave && prev.is_none_or(|p| p.verdict != Verdict::Octave) {
+            self.octave_events += 1;
+        }
+
+        // Durations and pairs need a predecessor; the first frame of a track has none.
+        let Some(prev) = prev else { return };
+        let dt = frame.seconds - prev.seconds;
+        if in_truth(&frame) {
+            self.voiced_seconds += dt;
+        }
+        if frame.verdict == Verdict::Octave {
+            self.octave_seconds += dt;
+        }
+        if frame.verdict == Verdict::Correct && prev.verdict == Verdict::Correct {
+            // Both correct ⇒ both truths and both estimates exist.
+            let truth_moved = (frame.truth.unwrap() - prev.truth.unwrap()).abs() * 100.0;
+            if truth_moved < NOTE_STANDS_CENTS {
+                let moved = (frame.estimate.unwrap() - prev.estimate.unwrap()).abs() * 100.0;
+                *self.jitter.entry((moved / JITTER_BIN_CENTS) as u32).or_default() += 1;
+            }
+        }
+    }
+
+    fn merge(&mut self, other: &Calm) {
+        self.octave_events += other.octave_events;
+        self.octave_seconds += other.octave_seconds;
+        self.voiced_seconds += other.voiced_seconds;
+        self.truth_runs += other.truth_runs;
+        self.estimate_runs += other.estimate_runs;
+        for (bin, count) in &other.jitter {
+            *self.jitter.entry(*bin).or_default() += count;
+        }
+    }
+
+    fn octave_events_per_minute(&self) -> f32 {
+        self.octave_events as f32 / (self.voiced_seconds / 60.0).max(f32::EPSILON)
+    }
+
+    fn mean_octave_run_ms(&self) -> f32 {
+        1000.0 * self.octave_seconds / self.octave_events.max(1) as f32
+    }
+
+    /// The `q`-quantile of the jitter histogram, in cents (upper edge of its bin), or
+    /// `None` when no pair qualified.
+    fn jitter_quantile(&self, q: f32) -> Option<f32> {
+        let total: u32 = self.jitter.values().sum();
+        if total == 0 {
+            return None;
+        }
+        let rank = (q * total as f32).ceil().max(1.0) as u32;
+        let mut seen = 0;
+        for (bin, count) in &self.jitter {
+            seen += count;
+            if seen >= rank {
+                return Some((*bin + 1) as f32 * JITTER_BIN_CENTS);
+            }
+        }
+        unreachable!("rank {rank} is within the total {total}")
+    }
+
+    fn jitter_pairs(&self) -> u32 {
+        self.jitter.values().sum()
+    }
+
+    fn fragmentation(&self) -> f32 {
+        self.estimate_runs as f32 / self.truth_runs.max(1) as f32
+    }
 }
 
 impl Tally {
     fn merge(&mut self, other: &Tally) {
+        self.calm.merge(&other.calm);
         self.voiced += other.voiced;
         self.correct += other.correct;
         self.octave += other.octave;
@@ -338,7 +483,7 @@ pub(super) fn load_annotation(path: &Path) -> Annotation {
 ///   delay-compensated by construction. Comparing our IIR at lag 0 to their centred FFT
 ///   flatters *them*.
 fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
-    let (sample_rate, samples) = read_wav(audio);
+    let (sample_rate, samples) = corpus_audio(audio);
     let mut analyzer = ResonatorAnalyzer::new(sample_rate);
     let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
     let mut tallies = vec![Tally::default(); scorings.len()];
@@ -356,6 +501,7 @@ fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> V
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
                 tally,
+                seconds,
                 scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
                 fundamental,
             );
@@ -387,7 +533,7 @@ fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> V
 /// itself. Scoring *that* needs a per-frame lag, which `Scoring` cannot express — the
 /// follow-up if and only if the sweep says the frontend is worth it.
 fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
-    let (sample_rate, samples) = read_wav(audio);
+    let (sample_rate, samples) = corpus_audio(audio);
     let mut rtswipe = RtSwipe::new(sample_rate, CONCERT_PITCH_HZ);
     let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
     let mut tallies = vec![Tally::default(); scorings.len()];
@@ -402,6 +548,7 @@ fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) ->
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
                 tally,
+                seconds,
                 scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
                 estimate,
             );
@@ -417,7 +564,7 @@ fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) ->
 /// follows from the bottom of it. Its delay is half that window — one number for the whole
 /// track, so unlike RT-SWIPE a single lag *does* fit it, and the sweep should find it.
 fn bench_sieve(audio: &Path, annotation: &Annotation, scorings: &[Scoring], range: (Hz, Hz)) -> Vec<Tally> {
-    let (sample_rate, samples) = read_wav(audio);
+    let (sample_rate, samples) = corpus_audio(audio);
     let mut sieve = HarmonicSieve::new(sample_rate, range.0, range.1);
     let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
     let mut tallies = vec![Tally::default(); scorings.len()];
@@ -434,6 +581,7 @@ fn bench_sieve(audio: &Path, annotation: &Annotation, scorings: &[Scoring], rang
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
                 tally,
+                seconds,
                 scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
                 estimate,
             );
@@ -457,7 +605,7 @@ fn bench_peak_comb(
     scorings: &[Scoring],
     smoothed: bool,
 ) -> Vec<Tally> {
-    let (sample_rate, samples) = read_wav(audio);
+    let (sample_rate, samples) = corpus_audio(audio);
     let gate_dbfs = std::env::var("PITCH_BENCH_COMB_GATE_DBFS")
         .map(|v| v.parse().unwrap())
         .unwrap_or(peak_comb::DEFAULT_GATE_DBFS);
@@ -483,6 +631,7 @@ fn bench_peak_comb(
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
                 tally,
+                seconds,
                 scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
                 estimate,
             );
@@ -498,7 +647,7 @@ fn bench_peak_comb(
 /// 40 ms frame (`dsp::trellis`), so driving it at 16 ms would measure a tracker the app does
 /// not run. Each frame is scored where it sits in time, as `bench_external` does.
 fn bench_pyin(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
-    let (sample_rate, samples) = read_wav(audio);
+    let (sample_rate, samples) = corpus_audio(audio);
     let mut tracker = PitchTracker::new();
     // Starts as silence, as every other frontend here does.
     let mut window = vec![0.0f32; PYIN_WINDOW];
@@ -517,12 +666,144 @@ fn bench_pyin(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Ve
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
                 tally,
+                seconds,
                 scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
                 estimate,
             );
         }
     }
     tallies
+}
+
+/// Drive the **whole engine** over a track — the melody line the pianoroll draws, not a
+/// frontend's argmax.
+///
+/// Every other `bench_*` here scores a frontend in isolation. What the user sees is
+/// `MelodyFrame::pitch`: the frontend's salience decoded by `SalienceDecoder`'s trellis, run
+/// through the repair layer (`OctaveGate`, snap, leap confirmation) against the pYIN anchor,
+/// and gated by the input level. This feeds the WAV to [`Rig`] — both planes, shared state and
+/// the sample clock, exactly as a device stream would — and scores every published frame.
+///
+/// # Grid and time
+///
+/// The engine's own frames, each at its `MelodyFrame::t`, as [`bench_external`] scores an
+/// external trajectory where it sits: no resampling onto [`BANK_HOP_SECONDS`]. With the rig's
+/// 10 ms chunks the default 16 ms publish gate fires every **20 ms**, so this grid is coarser
+/// than the frontend benches' — a cadence of the rig, documented on [`Rig::feed`].
+///
+/// # Reading the history
+///
+/// The engine keeps only the last `MELODY_HISTORY_SECONDS` of frames, so the track is fed in
+/// pieces shorter than that and the history is read with a cursor after each — the same
+/// cursor a panel holds. Pieces are whole rig chunks, so piecing does not change the cadence.
+fn bench_melody(
+    audio: &Path,
+    annotation: &Annotation,
+    scorings: &[Scoring],
+    frontend: PitchFrontend,
+) -> Vec<Tally> {
+    let (sample_rate, samples) = corpus_audio(audio);
+    let mut rig = Rig::new(sample_rate);
+    {
+        let mut settings = rig.settings.lock().unwrap();
+        // The line comes out in MIDI against the engine's concert pitch; the annotation is
+        // read against ours. A mismatch would cost cents to arithmetic and blame the chain.
+        assert_eq!(settings.concert_pitch_hz, CONCERT_PITCH_HZ);
+        settings.resonator.frontend = frontend;
+    }
+    let mut tallies = vec![Tally::default(); scorings.len()];
+
+    // Half a second: well inside the 2 s history, and a whole number of 10 ms chunks.
+    let piece = Rig::chunk(sample_rate) * 50;
+    let mut cursor = None;
+    for part in samples.chunks(piece) {
+        rig.feed(part, sample_rate);
+        for frame in rig.melody_since(cursor) {
+            cursor = Some(frame.seq);
+            let seconds = frame.t as f32;
+            // Strength is unread by `score_frame`; 1.0 is a placeholder, as in `bench_external`.
+            let estimate = frame.pitch.map(|midi| (midi.0, 1.0));
+            for (tally, scoring) in tallies.iter_mut().zip(scorings) {
+                score_frame(
+                    tally,
+                    seconds,
+                    scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
+                    estimate,
+                );
+            }
+        }
+    }
+    tallies
+}
+
+/// A track as every `bench_*` hears it: [`read_wav`], plus white noise at
+/// `PITCH_BENCH_SNR_DB` when that is set (H2 of `docs/detector_hypotheses_plan.md`).
+///
+/// MDB is clean; a voice into a phone is not. The noise is Gaussian, with RMS = the
+/// **whole track's** RMS / 10^(SNR/20). Stems have long rests, so over the sounding part the
+/// SNR is higher than the nominal by 10·log10(1 / sounding fraction) — the nominal is a
+/// property of the file, the same for every detector, which is what a comparison needs.
+///
+/// The generator is seeded from the file name, so every detector hears the same noise on a
+/// track and two runs agree byte for byte.
+fn corpus_audio(audio: &Path) -> (SampleRate, Vec<f32>) {
+    let (sample_rate, mut samples) = read_wav(audio);
+    if let Ok(snr) = std::env::var("PITCH_BENCH_SNR_DB") {
+        let snr_db: f32 = snr.parse().unwrap();
+        let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+        let noise_rms = rms / 10f32.powf(snr_db / 20.0);
+        let mut noise = GaussianNoise::seeded(audio.file_name().unwrap().to_str().unwrap());
+        for sample in &mut samples {
+            *sample += noise_rms * noise.next();
+        }
+    }
+    (sample_rate, samples)
+}
+
+/// Unit Gaussian samples from a 64-bit LCG (Knuth's MMIX constants) through Box–Muller.
+///
+/// Not `rand`: the stream has to be fixed by this file alone, so a log from today and one
+/// from next year are about the same noise.
+struct GaussianNoise {
+    state: u64,
+    /// Box–Muller makes pairs; the second waits here.
+    spare: Option<f32>,
+}
+
+impl GaussianNoise {
+    /// FNV-1a of `key` as the seed — stable across platforms and compiler versions,
+    /// unlike `std`'s `DefaultHasher`.
+    fn seeded(key: &str) -> Self {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in key.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        GaussianNoise {
+            state: hash,
+            spare: None,
+        }
+    }
+
+    /// Uniform in (0, 1]: the top 24 bits, so every value is exact in `f32`, and never 0,
+    /// which `ln` below could not take.
+    fn uniform(&mut self) -> f32 {
+        self.state = self
+            .state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((self.state >> 40) as f32 + 1.0) / (1u32 << 24) as f32
+    }
+
+    fn next(&mut self) -> f32 {
+        if let Some(spare) = self.spare.take() {
+            return spare;
+        }
+        let radius = (-2.0 * self.uniform().ln()).sqrt();
+        let angle = std::f32::consts::TAU * self.uniform();
+        self.spare = Some(radius * angle.sin());
+        radius * angle.cos()
+    }
 }
 
 /// A corpus WAV as `f32` in −1..1. The corpus is 16-bit mono; anything else is a corpus
@@ -564,7 +845,7 @@ pub(super) fn read_wav(audio: &Path) -> (SampleRate, Vec<f32>) {
 /// interpolate.
 fn bench_external(estimates: &Annotation, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
     let mut tallies = vec![Tally::default(); scorings.len()];
-    for (index, seconds) in estimates.times.iter().enumerate() {
+    for (index, &seconds) in estimates.times.iter().enumerate() {
         // Strength is what the bank reports alongside a pitch and what `score_frame`
         // ignores (`_strength`); an external CSV carries no such thing, so 1.0 is a
         // placeholder for a field with no reader — not a confidence we are asserting.
@@ -572,6 +853,7 @@ fn bench_external(estimates: &Annotation, annotation: &Annotation, scorings: &[S
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
                 tally,
+                seconds,
                 scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
                 estimate,
             );
@@ -582,16 +864,35 @@ fn bench_external(estimates: &Annotation, annotation: &Annotation, scorings: &[S
 
 /// Classify one frame's verdict into `tally`. Split out so the lag sweep cannot drift
 /// into N slightly-different copies of the same arithmetic.
-fn score_frame(tally: &mut Tally, truth: Option<f32>, estimate: Option<(f32, f32)>) {
+///
+/// `seconds` is the frame's own time — not the lagged moment its truth was read at — and
+/// frames of one track must arrive in time order: [`Calm`] counts runs and pairs.
+fn score_frame(tally: &mut Tally, seconds: f32, truth: Option<f32>, estimate: Option<(f32, f32)>) {
+    let verdict = classify(tally, truth, estimate);
+    tally.calm.follow(PrevFrame {
+        seconds,
+        truth,
+        estimate: estimate.map(|(midi, _strength)| midi),
+        verdict,
+    });
+}
+
+/// The counting half of [`score_frame`].
+fn classify(tally: &mut Tally, truth: Option<f32>, estimate: Option<(f32, f32)>) -> Verdict {
     match (truth, estimate) {
-        (None, None) => tally.unvoiced += 1,
+        (None, None) => {
+            tally.unvoiced += 1;
+            Verdict::Unvoiced
+        }
         (None, Some(_)) => {
             tally.unvoiced += 1;
             tally.false_voiced += 1;
+            Verdict::FalseVoiced
         }
         (Some(_), None) => {
             tally.voiced += 1;
             tally.silent_miss += 1;
+            Verdict::SilentMiss
         }
         (Some(truth), Some((estimate, _strength))) => {
             tally.voiced += 1;
@@ -599,6 +900,7 @@ fn score_frame(tally: &mut Tally, truth: Option<f32>, estimate: Option<(f32, f32
             if cents.abs() <= RPA_TOLERANCE_CENTS {
                 tally.correct += 1;
                 tally.correct_cents += cents.abs();
+                Verdict::Correct
             } else {
                 // Name every miss by its interval before classifying it — a fifth and
                 // a smear are both "not an octave" and want opposite fixes.
@@ -612,12 +914,93 @@ fn score_frame(tally: &mut Tally, truth: Option<f32>, estimate: Option<(f32, f32
                 let residue = cents - octaves * CENTS_PER_OCTAVE;
                 if octaves != 0.0 && residue.abs() <= RPA_TOLERANCE_CENTS {
                     tally.octave += 1;
+                    Verdict::Octave
                 } else {
                     tally.other += 1;
+                    Verdict::Other
                 }
             }
         }
     }
+}
+
+/// The «calm» counters on a hand-made track whose answer is known: two octave runs (one of
+/// two frames, one of one), a gap inside a true segment, false voicing between segments, and
+/// five standing-note pairs of correct frames.
+#[test]
+fn calm_counts_runs_pairs_and_pieces() {
+    let truth = |i: usize| {
+        match i {
+            0..=9 => Some(60.0),
+            10 | 11 => None,
+            _ => Some(62.0),
+        }
+    };
+    let estimates = [
+        Some(60.02),
+        Some(60.05),
+        Some(72.0),
+        Some(72.0),
+        Some(60.0),
+        None,
+        Some(72.0),
+        Some(60.0),
+        Some(60.0),
+        Some(60.0),
+        Some(50.0),
+        Some(50.0),
+        Some(62.0),
+        Some(62.0),
+        Some(62.0),
+    ];
+    let mut tally = Tally::default();
+    for (i, estimate) in estimates.iter().enumerate() {
+        score_frame(&mut tally, i as f32 * 0.01, truth(i), estimate.map(|m| (m, 1.0)));
+    }
+    let calm = &tally.calm;
+
+    assert_eq!(calm.octave_events, 2, "frames 2–3 are one event, frame 6 another");
+    assert!(
+        (calm.mean_octave_run_ms() - 15.0).abs() < 0.01,
+        "3 frames × 10 ms over 2 events"
+    );
+    // 13 voiced frames, the first has no predecessor to measure its length by.
+    assert!((calm.voiced_seconds - 0.12).abs() < 1e-5);
+    assert_eq!(
+        (calm.truth_runs, calm.estimate_runs),
+        (2, 3),
+        "the gap at frame 5 splits the first segment"
+    );
+    assert_eq!(calm.jitter_pairs(), 5);
+    assert!(
+        (calm.jitter_quantile(0.5).unwrap() - 0.1).abs() < 1e-4,
+        "three of five pairs do not move"
+    );
+    assert!(
+        (calm.jitter_quantile(0.9).unwrap() - 3.0).abs() < 0.11,
+        "60.02 → 60.05 is 3 ¢"
+    );
+}
+
+/// The H2 noise is unit-RMS, zero-mean, and the same stream for the same key — the three
+/// things `corpus_audio`'s SNR and reproducibility rest on.
+#[test]
+fn bench_noise_is_unit_gaussian_and_reproducible() {
+    let draw = |key: &str| {
+        let mut noise = GaussianNoise::seeded(key);
+        (0..200_000).map(|_| noise.next()).collect::<Vec<f32>>()
+    };
+    let a = draw("AClassicEducation_NightOwl_STEM_08.RESYN.wav");
+    let n = a.len() as f32;
+    let mean = a.iter().sum::<f32>() / n;
+    let rms = (a.iter().map(|x| x * x).sum::<f32>() / n).sqrt();
+    assert!(mean.abs() < 0.01, "mean {mean}");
+    assert!((rms - 1.0).abs() < 0.01, "rms {rms}");
+    // Gaussian, not uniform: ~4.6 % of draws beyond 2σ (uniform at unit RMS has none past 1.73).
+    let tail = a.iter().filter(|x| x.abs() > 2.0).count() as f32 / n;
+    assert!((tail - 0.0455).abs() < 0.005, "tail beyond 2σ {tail}");
+    assert_eq!(a, draw("AClassicEducation_NightOwl_STEM_08.RESYN.wav"));
+    assert_ne!(a[..16], draw("another.wav")[..16]);
 }
 
 /// The corpus layout, as Zenodo record 1481172 unpacks it.
@@ -912,6 +1295,31 @@ fn peak_comb_raw_rpa_on_corpus() {
     print_baselines();
 }
 
+/// **The shipped melody line** — the whole engine, frontend through trellis, repair layer and
+/// level gate, as the pianoroll draws it (H0 of `docs/detector_hypotheses_plan.md`).
+///
+/// The frontend is `PITCH_BENCH_FRONTEND` — `bank` (default, what the app starts with) or
+/// `rtswipe`. Read against the same frontend's own `*_rpa_on_corpus`: the difference is what
+/// the chain after the frontend adds and takes away.
+///
+/// Slow: the analysis plane (spectrum, pYIN, onset) runs beside the bank, and the bank runs
+/// even under RT-SWIPE because it drives the display.
+#[test]
+#[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
+fn melody_rpa_on_corpus() {
+    let frontend = match std::env::var("PITCH_BENCH_FRONTEND").as_deref() {
+        Err(_) | Ok("bank") => PitchFrontend::ResonatorBank,
+        Ok("rtswipe") => PitchFrontend::RtSwipe,
+        Ok(other) => panic!("PITCH_BENCH_FRONTEND={other:?} — expected `bank` or `rtswipe`"),
+    };
+    run_corpus(
+        &format!("melody line (whole engine, {frontend:?}) RPA · MDB-stem-synth"),
+        &[0.0, 16.0, 32.0, 48.0, 64.0],
+        |audio, annotation, scorings| bench_melody(audio, annotation, scorings, frontend),
+    );
+    print_baselines();
+}
+
 /// Figures every corpus run is read against, printed so a log needs nothing else open.
 fn print_baselines() {
     println!(
@@ -948,6 +1356,9 @@ fn run_corpus(
         lags_ms.len(),
         jobs
     );
+    if let Ok(snr) = std::env::var("PITCH_BENCH_SNR_DB") {
+        println!("    white noise at {snr} dB SNR (whole-track RMS) — see `corpus_audio`");
+    }
 
     let next = std::sync::atomic::AtomicUsize::new(0);
     let mut finished: Vec<(usize, Vec<Tally>)> = std::thread::scope(|scope| {
@@ -1270,6 +1681,28 @@ fn report(headline: &str, lags_ms: &[f32], per_lag: &[Tally]) {
             pct(tally.octave, tally.voiced),
             pct(tally.other, tally.voiced),
             pct(adjacent, missed)
+        );
+    }
+    // H1: what the roll shows. Per lag, because «correct» — and with it the jitter pairs and
+    // the octave runs — depends on which moment of the truth a frame is held to.
+    println!("\n=== calm — what the roll shows ===");
+    println!(
+        "  octave events per minute of voiced audio (mean run), jitter |Δ| on a standing note\n  \
+         between correct neighbours (median / p90, pairs), estimate pieces per true segment"
+    );
+    println!("  lag(ms)   oct/min   run ms   jitter med   p90 ¢     pairs   pieces/seg");
+    let cents = |q: Option<f32>| q.map_or("    —".to_string(), |c| format!("{c:>5.1}"));
+    for (lag_ms, tally) in lags_ms.iter().zip(per_lag) {
+        let calm = &tally.calm;
+        println!(
+            "  {:>5.0}    {:>6.2}   {:>6.0}   {}      {}   {:>8}   {:>6.2}",
+            lag_ms,
+            calm.octave_events_per_minute(),
+            calm.mean_octave_run_ms(),
+            cents(calm.jitter_quantile(0.5)),
+            cents(calm.jitter_quantile(0.9)),
+            calm.jitter_pairs(),
+            calm.fragmentation()
         );
     }
 }
