@@ -73,6 +73,7 @@ PITCH_BENCH_INSTRUMENT=violin cargo test --release --lib swipe_rpa_on_corpus -- 
 # the other detectors, same harness
 cargo test --release --lib sieve_rpa_on_corpus -- --ignored --nocapture   # docs/harmonic_sieve.md
 cargo test --release --lib pyin_rpa_on_corpus -- --ignored --nocapture    # pYIN at its own 40 ms
+cargo test --release --lib peak_comb_rpa_on_corpus -- --ignored --nocapture  # docs/peak_comb.md
 ```
 
 Tracks run in parallel — `PITCH_BENCH_JOBS` threads, half the machine by default — and are

@@ -48,6 +48,10 @@ use std::path::{
 };
 
 use crate::audio::dsp::analysis_math::slide_in;
+use crate::audio::dsp::peak_comb::{
+    self,
+    PeakComb,
+};
 use crate::audio::dsp::pyin::PitchTracker;
 use crate::audio::dsp::resonator::ResonatorAnalyzer;
 use crate::audio::dsp::rtswipe::RtSwipe;
@@ -426,6 +430,55 @@ fn bench_sieve(audio: &Path, annotation: &Annotation, scorings: &[Scoring], rang
         let estimate = sieve
             .estimate()
             .map(|found| (found.hz.to_midi(CONCERT_PITCH_HZ).0, found.score));
+
+        for (tally, scoring) in tallies.iter_mut().zip(scorings) {
+            score_frame(
+                tally,
+                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
+                estimate,
+            );
+        }
+    }
+    tallies
+}
+
+/// Drive the **peak comb** (`dsp::peak_comb`) over a track at its own cadence
+/// ([`peak_comb::HOP_SECONDS`]) and level gate — [`peak_comb::DEFAULT_GATE_DBFS`], or
+/// `PITCH_BENCH_COMB_GATE_DBFS`. The default suits a phone microphone and silences a third of
+/// MDB's quieter stems, so a fair comparison lowers it (−55 is what `docs/peak_comb.md` uses).
+///
+/// `smoothed` picks what is scored: the 6-frame semitone average with its jump rejection, or
+/// the raw per-frame estimate under it. Both run the same frames; the difference between the
+/// two logs is the smoothing and nothing else. The smoothing state advances only through
+/// `pitch`, so a raw run never touches it.
+fn bench_peak_comb(
+    audio: &Path,
+    annotation: &Annotation,
+    scorings: &[Scoring],
+    smoothed: bool,
+) -> Vec<Tally> {
+    let (sample_rate, samples) = read_wav(audio);
+    let gate_dbfs = std::env::var("PITCH_BENCH_COMB_GATE_DBFS")
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(peak_comb::DEFAULT_GATE_DBFS);
+    let mut detector = PeakComb::new(sample_rate, gate_dbfs);
+    let hop = (sample_rate.hz() * peak_comb::HOP_SECONDS) as usize;
+    let mut tallies = vec![Tally::default(); scorings.len()];
+
+    let mut fed = 0usize;
+    while fed + hop <= samples.len() {
+        detector.process_samples(&samples[fed..fed + hop]);
+        fed += hop;
+        let seconds = fed as f32 / sample_rate.hz();
+        // The second field is a strength `score_frame` does not read; 1.0 as in
+        // `bench_external` — a placeholder, not a confidence.
+        let estimate = if smoothed {
+            detector.pitch().map(|midi| (midi.0, 1.0))
+        } else {
+            detector
+                .raw_pitch()
+                .map(|hz| (hz.to_midi(CONCERT_PITCH_HZ).0, 1.0))
+        };
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(
@@ -827,6 +880,34 @@ fn pyin_rpa_on_corpus() {
         "pYIN RPA · MDB-stem-synth",
         &[0.0, 24.0, 48.0, 72.0, 96.0],
         bench_pyin,
+    );
+    print_baselines();
+}
+
+/// **The peak comb's number** (`dsp::peak_comb`), smoothed: 4096-sample window, 8 ms cadence,
+/// 6-frame semitone average.
+///
+/// Its delay is half the window (46 ms at 44.1 kHz) plus about half the smoothing span
+/// (~20 ms), so the sweep reaches well past the sieve's.
+#[test]
+#[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
+fn peak_comb_rpa_on_corpus() {
+    run_corpus(
+        "peak comb (smoothed) RPA · MDB-stem-synth",
+        &[0.0, 24.0, 48.0, 64.0, 80.0],
+        |audio, annotation, scorings| bench_peak_comb(audio, annotation, scorings, true),
+    );
+    print_baselines();
+}
+
+/// The peak comb's per-frame estimate **without** its smoothing — what the comb alone does.
+#[test]
+#[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
+fn peak_comb_raw_rpa_on_corpus() {
+    run_corpus(
+        "peak comb (raw, per frame) RPA · MDB-stem-synth",
+        &[0.0, 24.0, 40.0, 48.0, 64.0],
+        |audio, annotation, scorings| bench_peak_comb(audio, annotation, scorings, false),
     );
     print_baselines();
 }
