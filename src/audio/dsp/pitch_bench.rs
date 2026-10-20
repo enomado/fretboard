@@ -56,9 +56,13 @@ use crate::audio::dsp::pyin::PitchTracker;
 use crate::audio::dsp::resonator::ResonatorAnalyzer;
 use crate::audio::dsp::rtswipe::RtSwipe;
 use crate::audio::dsp::sieve::HarmonicSieve;
+use crate::audio::dsp::swipe::tracked_bins;
 use crate::audio::sample_rate::SampleRate;
 use crate::audio::test_rig::Rig;
-use crate::audio::types::PitchFrontend;
+use crate::audio::types::{
+    PitchFrontend,
+    SalienceHeat,
+};
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::Hz;
 
@@ -701,6 +705,7 @@ fn bench_melody(
     annotation: &Annotation,
     scorings: &[Scoring],
     frontend: PitchFrontend,
+    stage: MelodyStage,
 ) -> Vec<Tally> {
     let (sample_rate, samples) = corpus_audio(audio);
     let mut rig = Rig::new(sample_rate);
@@ -722,7 +727,10 @@ fn bench_melody(
             cursor = Some(frame.seq);
             let seconds = frame.t as f32;
             // Strength is unread by `score_frame`; 1.0 is a placeholder, as in `bench_external`.
-            let estimate = frame.pitch.map(|midi| (midi.0, 1.0));
+            let estimate = match stage {
+                MelodyStage::Line => frame.pitch.map(|midi| (midi.0, 1.0)),
+                MelodyStage::Salience => frame.salience.as_ref().and_then(salience_argmax),
+            };
             for (tally, scoring) in tallies.iter_mut().zip(scorings) {
                 score_frame(
                     tally,
@@ -804,6 +812,31 @@ impl GaussianNoise {
         self.spare = Some(radius * angle.sin());
         radius * angle.cos()
     }
+}
+
+/// Which point of the engine's chain [`bench_melody`] scores.
+#[derive(Clone, Copy, Debug)]
+enum MelodyStage {
+    /// `MelodyFrame::pitch` — the line the roll draws.
+    Line,
+    /// The argmax of `MelodyFrame::salience` — the frontend's curve the trellis decoded the
+    /// line from, at the engine's cadence and before the trellis, the repair layer and the
+    /// level gate. Line minus this is what that chain adds and takes away; this minus the
+    /// frontend's own `*_rpa_on_corpus` is the cadence (20 ms here, 16 there) and the
+    /// coarse read: bin centres, no partial refinement — fine for a 50 ¢ verdict, not for
+    /// jitter.
+    Salience,
+}
+
+/// The highest bin of a salience layer inside the tracked domain (C1..C8, as the decoder
+/// reads it), as `(midi, strength)`; `None` when nothing there is positive.
+fn salience_argmax(heat: &SalienceHeat) -> Option<(f32, f32)> {
+    let bins = tracked_bins(heat.data.len(), heat.min_midi, heat.bins_per_semitone)?;
+    let (bin, value) = bins
+        .map(|b| (b, heat.data[b]))
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap();
+    (value > 0.0).then(|| (heat.min_midi + bin as f32 / heat.bins_per_semitone, value))
 }
 
 /// A corpus WAV as `f32` in −1..1. The corpus is 16-bit mono; anything else is a corpus
@@ -1312,10 +1345,17 @@ fn melody_rpa_on_corpus() {
         Ok("rtswipe") => PitchFrontend::RtSwipe,
         Ok(other) => panic!("PITCH_BENCH_FRONTEND={other:?} — expected `bank` or `rtswipe`"),
     };
+    // `PITCH_BENCH_MELODY_STAGE=salience` scores the trellis's input instead of its output —
+    // the decomposition, see `MelodyStage`.
+    let stage = match std::env::var("PITCH_BENCH_MELODY_STAGE").as_deref() {
+        Err(_) | Ok("line") => MelodyStage::Line,
+        Ok("salience") => MelodyStage::Salience,
+        Ok(other) => panic!("PITCH_BENCH_MELODY_STAGE={other:?} — expected `line` or `salience`"),
+    };
     run_corpus(
-        &format!("melody line (whole engine, {frontend:?}) RPA · MDB-stem-synth"),
+        &format!("melody {stage:?} (whole engine, {frontend:?}) RPA · MDB-stem-synth"),
         &[0.0, 16.0, 32.0, 48.0, 64.0],
-        |audio, annotation, scorings| bench_melody(audio, annotation, scorings, frontend),
+        |audio, annotation, scorings| bench_melody(audio, annotation, scorings, frontend, stage),
     );
     print_baselines();
 }
