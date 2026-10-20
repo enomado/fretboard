@@ -1,10 +1,18 @@
 // Adapter for the public WASM pitch frontend served by Singing Carrots.
-// Usage: node tools/singing_carrots_probe.cjs AUBIO_JS AUBIO_WASM OUTPUT TRACK_LIST
-// Uses the site's call: new Pitch("default", 4096, 1, sampleRate), one full block per call.
+// Usage: node tools/singing_carrots_probe.cjs AUBIO_JS AUBIO_WASM OUTPUT TRACK_LIST [WINDOW_SAMPLES HOP_SECONDS METHOD]
+// Defaults reproduce the site: Pitch("default", 4096, 1, sampleRate), disjoint blocks.
+// The experimental cadence advances the input window; constructor argument 1 stays unchanged.
 const fs = require('fs');
 const path = require('path');
-const [js, wasm, output, trackList] = process.argv.slice(2);
+const [js, wasm, output, trackList, windowArg, hopArg, method = 'default'] = process.argv.slice(2);
 if (!trackList) throw new Error('expected AUBIO_JS AUBIO_WASM OUTPUT TRACK_LIST');
+const windowSamples = windowArg === undefined ? 4096 : Number(windowArg);
+const hopSeconds = hopArg === undefined ? undefined : Number(hopArg);
+if (!Number.isSafeInteger(windowSamples) || windowSamples < 64 || (windowSamples & (windowSamples - 1)))
+  throw new Error('window must be a power of two, at least 64 samples');
+if (hopSeconds !== undefined && (!Number.isFinite(hopSeconds) || hopSeconds <= 0))
+  throw new Error('hop seconds must be finite and positive');
+if (!['default', 'yinfft'].includes(method)) throw new Error('expected default or yinfft method');
 const Aubio = require(path.resolve(js));
 
 function readWav(filename) {
@@ -39,21 +47,26 @@ Aubio({wasmBinary: fs.readFileSync(wasm)}).then(module => {
     if (!tracks.length) throw new Error('empty track list');
     for (const filename of tracks) {
       const {samples, rate} = readWav(filename);
-      const detector = new module.Pitch('default', 4096, 1, rate);
+      const hopSamples = hopSeconds === undefined ? windowSamples : Math.floor(rate * hopSeconds);
+      if (hopSamples < 1 || hopSamples > windowSamples) throw new Error('hop must be within the window');
+      const detector = new module.Pitch(method, windowSamples, 1, rate);
       const destination = path.join(output, path.basename(filename, '.wav') + '.csv');
       const fd = fs.openSync(destination, 'wx');
       try {
-        for (let start = 0; start + 4096 <= samples.length; start += 4096) {
-          const frequency = detector.do(samples.subarray(start, start + 4096));
+        for (let start = 0; start + windowSamples <= samples.length; start += hopSamples) {
+          const frequency = detector.do(samples.subarray(start, start + windowSamples));
           if (!Number.isFinite(frequency) || frequency < 0) throw new Error('invalid pitch');
-          fs.writeSync(fd, `${(start + 4096) / rate},${frequency}\n`);
+          fs.writeSync(fd, `${(start + windowSamples) / rate},${frequency}\n`);
         }
       } finally { fs.closeSync(fd); detector.delete(); }
       console.log(path.basename(filename));
     }
     fs.writeFileSync(path.join(output, 'run.json'), JSON.stringify({
-      detector:'Singing Carrots published WASM frontend', audio:process.env.PITCH_CAPTURE_AUDIO || 'provided WAV without added noise',
-      method:'default', window_samples:4096, hop_samples:4096,
+      detector:windowArg === undefined && hopArg === undefined && method === 'default'
+        ? 'Singing Carrots published WASM frontend' : `Singing Carrots WASM ${method}, window ${windowSamples}, hop ${hopSeconds ?? 'disjoint'} s`,
+      audio:process.env.PITCH_CAPTURE_AUDIO || 'provided WAV without added noise',
+      method, window_samples:windowSamples,
+      ...(hopSeconds === undefined ? {hop_samples:windowSamples} : {hop_seconds:hopSeconds, hop_samples_rule:'floor(sample_rate * hop_seconds)'}),
       timestamp:'right edge of full block; no padding', tracks:tracks.length,
       source:'https://singingcarrots.com/js/tuner/tuner.js?v=1016',
       captured_at:new Date().toISOString()
