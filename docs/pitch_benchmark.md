@@ -1,7 +1,7 @@
 # Pitch benchmark — the number the detector is argued against
 
-`audio::dsp::pitch_bench` measures **Raw Pitch Accuracy (RPA)** of the shipped SWIPE′
-scorer against a corpus with a perfect f0 annotation. This file is the operator's manual;
+`audio::dsp::pitch_bench` measures **Raw Pitch Accuracy (RPA)** of the pitch frontends
+and the shipped melody line against a corpus with a perfect f0 annotation. This file is the operator's manual;
 the *why* lives in the module's own doc comment and is summarised below.
 
 Companions: [`note_detection.md`](note_detection.md) (what the pipeline is),
@@ -301,13 +301,100 @@ The gap between that and its 96.25 % under their conditional metric is one numbe
 **SwiftF0 declines 8.70 % of voiced frames outright**. Under mir_eval those are misses;
 under theirs they vanish from the denominator. Same trajectory, nine points of headline.
 
+## H0: отгружаемая линия, 2026-10-20
+
+`melody_rpa_on_corpus` прогоняет WAV через общий `audio::test_rig::Rig`:
+обе плоскости движка, pYIN-якорь, общий уровень, треллис и ремонтный слой.
+Скорится `MelodyFrame::pitch` по собственному `t` из `melody_since`, до сегментатора.
+Это линия пианоролла; сегменты стаффа этим тестом не оцениваются.
+История читается курсором каждые 0.5 с, поэтому её ограничение в 2 с не теряет кадры.
+Rig перенесён из тестов `core`, а не скопирован. Его callback — 10 мс;
+публикация при настройке 16 мс получается каждые 20 мс на аудиочасах.
+У отдельных фронтендов шаг 16 мс (при 44.1 кГц — 705 сэмплов).
+
+Голос — все 60 стемов, скрипка — все 14; шум выключен, настройки движка стандартные,
+кроме явно выбранного фронтенда. В таблице RPA в процентах; «лучший» означает
+максимум **проверенной сетки**, у каждой строки свой лаг. Две полосы скорятся
+одновременно; скрипка целиком внутри 65–2093 Гц.
+
+| набор | сигнал | RPA лаг 0, вся полоса / 65–2093 Гц | лучший RPA, вся / 65–2093 | лаг, мс | октавы, % на лучшем лаге, 65–2093 |
+|---|---|---|---|---|---|
+| голос | банк, отдельный фронтенд | 84.43 / 84.44 | 95.55 / 95.56 | 16 | 0.28 |
+| голос | банк, salience в движке | 89.21 / 89.23 | 95.39 / 95.40 | 16 | 0.27 |
+| голос | **линия банка** | **73.69 / 73.71** | **83.17 / 83.18** | **32** | **0.12** |
+| голос | RT-SWIPE, отдельный фронтенд | 84.92 / 84.94 | 96.61 / 96.63 | 16 | 0.10 |
+| голос | RT-SWIPE, salience в движке | 84.97 / 84.98 | 96.62 / 96.63 | 16 | 0.10 |
+| голос | **линия RT-SWIPE** | **71.92 / 71.93** | **89.22 / 89.24** | **32** | **0.04** |
+| скрипка | банк, отдельный фронтенд | 87.12 / 87.12 | 89.68 / 89.68 | 16 | 1.46 |
+| скрипка | банк, salience в движке | 87.74 / 87.74 | 89.50 / 89.50 | 16 | 1.37 |
+| скрипка | **линия банка** | **81.71 / 81.71** | **85.18 / 85.18** | **64¹** | **0.90** |
+| скрипка | RT-SWIPE, отдельный фронтенд | 94.01 / 94.01 | 96.48 / 96.48 | 8 | 1.00 |
+| скрипка | RT-SWIPE, salience в движке | 94.03 / 94.03 | 95.16 / 95.16 | 16 | 0.95 |
+| скрипка | **линия RT-SWIPE** | **89.11 / 89.11** | **92.39 / 92.39** | **32** | **0.87** |
+
+¹ 64 мс — правая граница развёртки, не установленное положение пика.
+Полная развёртка линии (65–2093 Гц):
+
+| линия | 0 мс | 16 мс | 32 мс | 48 мс | 64 мс |
+|---|---|---|---|---|---|
+| голос, банк | 73.71 | 80.83 | 83.18 | 81.30 | 77.17 |
+| голос, RT-SWIPE | 71.93 | 81.53 | 89.24 | 87.17 | 81.36 |
+| скрипка, банк | 81.71 | 83.40 | 84.43 | 85.10 | 85.18 |
+| скрипка, RT-SWIPE | 89.11 | 92.08 | 92.39 | 91.25 | 89.95 |
+
+**Цепочка убирает часть октав, но теряет точность.** Относительно отдельного
+фронтенда лучший RPA линии ниже на 12.38 / 7.39 п.п. на голосе (банк / RT-SWIPE)
+и на 4.50 / 4.09 п.п. на скрипке; на лаге 0 потери — 10.73 / 13.01 и 5.41 / 4.90 п.п.
+На голосе линия против salience того же движка теряет 12.22 / 7.39 п.п.
+даже при выборе собственного лучшего лага: одной общей задержкой разрыв не объясняется.
+На скрипке аналогичные потери — 4.32 / 2.77 п.п.
+Это совокупный вклад треллиса, ремонтного слоя и гейта; эти измерения не выделяют
+виновника внутри цепочки и не разрешают удалять ремонтный слой (§7 `note_detection.md`).
+При этом на голосе молчание линии невелико (0.70 / 0.69% звучащих кадров при лаге 0),
+а основной остаток на лучшем лаге — прочие ошибки высоты (16.30 / 10.37%).
+
+Salience здесь — argmax положительной кривой `MelodyFrame::salience`, преобразованной
+для показа монотонной нормировкой и gamma. Берутся **центры бинов**, без `resolve`
+и уточнения по парциалам. Поэтому salience против отдельного фронтенда смешивает
+вклад каденции и способ чтения высоты; это не чистая абляция каденции, а её дрожание
+нельзя сравнивать с уточнённой линией. В частности, +4.79 п.п. на лаге 0 у банка
+на голосе нельзя приписывать одной каденции.
+
+Логи сессии 9 сохранены в `datasets/bench_runs/*_2026-10-20.log`:
+`h1_{bank,rtswipe}_voice_snrinf`, `h1_melody_{bank,rtswipe}_voice_snrinf`,
+`h1_{bank,rtswipe}_violin`, `h0_melody_{bank,rtswipe}_violin`,
+`h0_stage_{bank,rtswipe}_{voice,violin}`. Фильтр теста банка в старой очереди
+также запускал RT-SWIPE: для таблицы взят блок банка после завершения RT-SWIPE.
+Все 34 лога очередей H0–H2 завершены без отказов (38 benchmark-тестов с учётом
+этого совпадения фильтров); проверены число треков, обе полосы и конфигурации шума.
+Последний отделённый прогон salience RT-SWIPE на скрипке завершился в 17:40;
+его дождались через `wait_for.py`, повторных прогонов не запускали.
+Полный корпус через движок остаётся отдельным пунктом плана; эту таблицу на него
+не экстраполируем.
+
+```sh
+PITCH_BENCH_INSTRUMENT="male singer,female singer" PITCH_BENCH_FRONTEND=bank \
+  cargo test --release --lib audio::dsp::pitch_bench::melody_rpa_on_corpus -- --exact --ignored --nocapture
+# Второй фронтенд: PITCH_BENCH_FRONTEND=rtswipe; скрипка: PITCH_BENCH_INSTRUMENT=violin.
+# Вход треллиса вместо линии: PITCH_BENCH_MELODY_STAGE=salience.
+```
+
+Смежные H1/H2 пока не приняты: `Calm::follow` применяет порог 5 ¢ к правде
+между **кадрами детектора**, а план требует соседние кадры **аннотации**.
+Из-за разных шагов 8/16/20/40 мс это меняет выборку дрожания. Прогоны голоса
+при ∞/20/10 дБ уже завершены (`h1_*_voice_snr{inf,20,10}`), но перед итоговой
+таблицей H1/H2 надо согласовать реализацию с определением плана и перемерить.
+Шум — воспроизводимый гауссов белый, RMS от всего трека, включая паузы;
+результаты не описывают комнатный шум или живой вокал.
+
 ## What it deliberately does not do
 
 - **No annotation interpolation.** Nearest neighbour only. The corpus grid (2.9 ms) is
   ~5× finer than the bank's hop (16 ms), so the nearest sample is within 1.5 ms; inventing
   a trajectory between annotations would put made-up numbers in a benchmark's denominator.
 - **No re-implementation.** It drives the production path — real bank, real snapshot,
-  `ResonatorSnapshot::fundamental` — the same discipline as `real_violin_g_probe`.
+  `ResonatorSnapshot::fundamental` for the frontend baseline, and the shared engine
+  `Rig` → `melody_since` for the shipped line — the same discipline as `real_violin_g_probe`.
 - **No silent lag correction.** The sweep reports lag 0 first and leads the summary with
   it. A single delay-compensated figure would be a better-looking number for a detector
   nobody runs.
