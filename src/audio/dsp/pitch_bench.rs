@@ -1503,6 +1503,74 @@ fn melody_rpa_on_corpus() {
     print_baselines();
 }
 
+/// Score captured application outputs through the existing scorer, at their own timestamps.
+/// CSV files must cover every selected track; unlike the SwiftF0 oracle, there is no
+/// reference-harness verdict or resampled truth to compare against here.
+#[test]
+#[ignore = "needs PITCH_BENCH_TRAJECTORY_DIR with captured time,frequency CSVs and run.json"]
+fn trajectory_rpa_on_corpus() {
+    assert!(
+        std::env::var_os("PITCH_BENCH_SNR_DB").is_none(),
+        "noise belongs to the captured audio; unset PITCH_BENCH_SNR_DB when scoring CSVs"
+    );
+    let directory = PathBuf::from(
+        std::env::var_os("PITCH_BENCH_TRAJECTORY_DIR")
+            .expect("set PITCH_BENCH_TRAJECTORY_DIR to the captured trajectory directory"),
+    );
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(directory.join("run.json")).expect("read trajectory run.json"),
+    )
+    .expect("parse trajectory run.json");
+    let detector = manifest["detector"].as_str().expect("run.json detector");
+    println!("captured trajectory: {manifest}");
+    run_corpus(
+        &format!("{detector} (captured trajectory) · MDB-stem-synth"),
+        &[0.0, 16.0, 32.0, 48.0, 64.0, 80.0, 96.0, 112.0, 128.0],
+        |audio, annotation, scorings| {
+            let csv = directory.join(audio.with_extension("csv").file_name().unwrap());
+            let estimates = load_annotation(&csv);
+            bench_external(&estimates, annotation, scorings)
+        },
+    );
+}
+
+/// Export exactly what internal detectors hear, including the deterministic H2 noise.
+/// Float WAV preserves the f32 samples without PCM16 requantization or clipping.
+#[test]
+#[ignore = "needs PITCH_BENCH_AUDIO_DUMP_DIR; exports selected corpus audio as float WAV"]
+fn dump_audio_for_external_detector() {
+    let directory = PathBuf::from(
+        std::env::var_os("PITCH_BENCH_AUDIO_DUMP_DIR")
+            .expect("set PITCH_BENCH_AUDIO_DUMP_DIR for the external detector's audio"),
+    );
+    std::fs::create_dir_all(&directory).expect("create audio dump directory");
+    let tracks = selected_tracks();
+    for (_, audio, _) in &tracks {
+        let destination = directory.join(audio.file_name().unwrap());
+        assert!(
+            !destination.exists(),
+            "refusing to overwrite {}",
+            destination.display()
+        );
+        let (sample_rate, samples) = corpus_audio(audio);
+        let mut writer = hound::WavWriter::create(
+            &destination,
+            hound::WavSpec {
+                channels:        1,
+                sample_rate:     sample_rate.0,
+                bits_per_sample: 32,
+                sample_format:   hound::SampleFormat::Float,
+            },
+        )
+        .expect("create float WAV");
+        for sample in samples {
+            writer.write_sample(sample).expect("write float sample");
+        }
+        writer.finalize().expect("finalize float WAV");
+    }
+    println!("exported {} tracks to {}", tracks.len(), directory.display());
+}
+
 /// Figures every corpus run is read against, printed so a log needs nothing else open.
 fn print_baselines() {
     println!(
