@@ -172,13 +172,9 @@ struct PrevFrame {
     verdict:  Verdict,
 }
 
-/// Below this change of the truth between two scored frames, the note «stands» and any
-/// movement of the estimate is the line trembling, not following the voice.
-///
-/// Measured between the two frames being compared, not per annotation step: a rate (5 ¢ per
-/// 2.9 ms annotation step) lets through vibrato at ~1700 ¢/s, and there the estimate moves
-/// legitimately. On a coarser frame grid fewer pairs pass (the truth drifts further between
-/// them), so jitter is compared between detectors of one cadence first.
+/// H1's standing-note threshold, applied to every adjacent pair of annotation frames
+/// between the two estimates, on the annotation's native grid (2.9 ms for MDB).
+/// The threshold must not silently become stricter for detectors with a longer hop.
 const NOTE_STANDS_CENTS: f32 = 5.0;
 
 /// Resolution of the jitter histogram, cents. Fine enough for a median of a few cents.
@@ -203,19 +199,18 @@ struct Calm {
     /// |Δ estimate| between consecutive frames where the note stands
     /// ([`NOTE_STANDS_CENTS`]) and both frames are correct, binned by [`JITTER_BIN_CENTS`].
     jitter:         BTreeMap<u32, u32>,
-    /// Voiced runs of the truth, and voiced runs of the estimate *inside* them: a true
-    /// segment the estimate covers in three pieces counts three. Their ratio is
-    /// fragmentation; false voicing in the gaps is `false_voiced`'s business, not this.
+    /// Independent voiced runs of the truth and estimate, each restricted to the scoring
+    /// band. False voicing can join two true runs or add a spurious run; neither is hidden.
     truth_runs:     u32,
     estimate_runs:  u32,
 }
 
 impl Calm {
-    fn follow(&mut self, frame: PrevFrame) {
+    fn follow(&mut self, frame: PrevFrame, mask: &PitchMask, truth_stands: bool) {
         let prev = self.prev.replace(frame);
 
         let in_truth = |f: &PrevFrame| f.truth.is_some();
-        let in_estimate = |f: &PrevFrame| f.truth.is_some() && f.estimate.is_some();
+        let in_estimate = |f: &PrevFrame| mask.admit(f.estimate).is_some();
         if in_truth(&frame) && !prev.as_ref().is_some_and(in_truth) {
             self.truth_runs += 1;
         }
@@ -226,22 +221,21 @@ impl Calm {
             self.octave_events += 1;
         }
 
-        // Durations and pairs need a predecessor; the first frame of a track has none.
-        let Some(prev) = prev else { return };
-        let dt = frame.seconds - prev.seconds;
+        // A frame owns the audio interval ending at its timestamp. Benches publish their
+        // first frame after one hop; an external trajectory starting at t=0 owns zero then.
+        let dt = frame.seconds - prev.map_or(0.0, |p| p.seconds);
         if in_truth(&frame) {
             self.voiced_seconds += dt;
         }
         if frame.verdict == Verdict::Octave {
             self.octave_seconds += dt;
         }
-        if frame.verdict == Verdict::Correct && prev.verdict == Verdict::Correct {
-            // Both correct ⇒ both truths and both estimates exist.
-            let truth_moved = (frame.truth.unwrap() - prev.truth.unwrap()).abs() * 100.0;
-            if truth_moved < NOTE_STANDS_CENTS {
-                let moved = (frame.estimate.unwrap() - prev.estimate.unwrap()).abs() * 100.0;
-                *self.jitter.entry((moved / JITTER_BIN_CENTS) as u32).or_default() += 1;
-            }
+        let Some(prev) = prev else { return };
+        if truth_stands && frame.verdict == Verdict::Correct && prev.verdict == Verdict::Correct {
+            // Both correct ⇒ both estimates exist. Selection is on the annotation grid;
+            // the reported movement remains between the detector's own neighbours.
+            let moved = (frame.estimate.unwrap() - prev.estimate.unwrap()).abs() * 100.0;
+            *self.jitter.entry((moved / JITTER_BIN_CENTS) as u32).or_default() += 1;
         }
     }
 
@@ -286,8 +280,8 @@ impl Calm {
         self.jitter.values().sum()
     }
 
-    fn fragmentation(&self) -> f32 {
-        self.estimate_runs as f32 / self.truth_runs.max(1) as f32
+    fn fragmentation(&self) -> Option<f32> {
+        (self.truth_runs > 0).then(|| self.estimate_runs as f32 / self.truth_runs as f32)
     }
 }
 
@@ -410,6 +404,9 @@ pub(super) struct Annotation {
     midi:  Vec<Option<f32>>,
 }
 
+#[derive(Clone, Copy)]
+struct AnnotationFrame(usize);
+
 impl Annotation {
     /// The annotated pitch nearest in time to `seconds`.
     ///
@@ -418,6 +415,10 @@ impl Annotation {
     /// in the denominator of a benchmark. The corpus grid (2.9 ms) is ~5× finer than the
     /// bank's hop (16 ms), so the nearest sample is never more than 1.5 ms away.
     pub(super) fn at(&self, seconds: f32) -> Option<f32> {
+        self.nearest_frame(seconds).and_then(|index| self.midi[index.0])
+    }
+
+    fn nearest_frame(&self, seconds: f32) -> Option<AnnotationFrame> {
         if self.times.is_empty() {
             return None;
         }
@@ -435,7 +436,22 @@ impl Annotation {
                 after
             }
         };
-        self.midi[index]
+        Some(AnnotationFrame(index))
+    }
+
+    /// Every native annotation step from the previous scored truth to the current one
+    /// must be voiced, in band and smaller than 5 ¢. Checking only the endpoints would
+    /// miss a jump and return, or a short rest, between two coarser detector frames.
+    fn stands_between(&self, start: f32, end: f32, mask: &PitchMask) -> bool {
+        let Some(first) = self.nearest_frame(start) else {
+            return false;
+        };
+        let last = self.nearest_frame(end).unwrap();
+        let truth = &self.midi[first.0..=last.0];
+        truth.iter().all(|midi| mask.admit(*midi).is_some())
+            && truth
+                .windows(2)
+                .all(|pair| (pair[1].unwrap() - pair[0].unwrap()).abs() * 100.0 < NOTE_STANDS_CENTS)
     }
 }
 
@@ -503,12 +519,7 @@ fn bench_track(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> V
         let fundamental = analyzer.snapshot(true, AccidentalStyle::Sharps).fundamental();
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
-            score_frame(
-                tally,
-                seconds,
-                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
-                fundamental,
-            );
+            score_frame(tally, seconds, annotation, scoring, fundamental);
         }
     }
     tallies
@@ -550,12 +561,7 @@ fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) ->
         let estimate = rtswipe.frame().and_then(|frame| frame.argmax());
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
-            score_frame(
-                tally,
-                seconds,
-                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
-                estimate,
-            );
+            score_frame(tally, seconds, annotation, scoring, estimate);
         }
     }
     tallies
@@ -583,12 +589,7 @@ fn bench_sieve(audio: &Path, annotation: &Annotation, scorings: &[Scoring], rang
             .map(|found| (found.hz.to_midi(CONCERT_PITCH_HZ).0, found.score));
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
-            score_frame(
-                tally,
-                seconds,
-                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
-                estimate,
-            );
+            score_frame(tally, seconds, annotation, scoring, estimate);
         }
     }
     tallies
@@ -633,12 +634,7 @@ fn bench_peak_comb(
         };
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
-            score_frame(
-                tally,
-                seconds,
-                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
-                estimate,
-            );
+            score_frame(tally, seconds, annotation, scoring, estimate);
         }
     }
     tallies
@@ -668,12 +664,7 @@ fn bench_pyin(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Ve
             .map(|(hz, voiced)| (Hz(hz).to_midi(CONCERT_PITCH_HZ).0, voiced));
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
-            score_frame(
-                tally,
-                seconds,
-                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
-                estimate,
-            );
+            score_frame(tally, seconds, annotation, scoring, estimate);
         }
     }
     tallies
@@ -732,12 +723,7 @@ fn bench_melody(
                 MelodyStage::Salience => frame.salience.as_ref().and_then(salience_argmax),
             };
             for (tally, scoring) in tallies.iter_mut().zip(scorings) {
-                score_frame(
-                    tally,
-                    seconds,
-                    scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
-                    estimate,
-                );
+                score_frame(tally, seconds, annotation, scoring, estimate);
             }
         }
     }
@@ -884,12 +870,7 @@ fn bench_external(estimates: &Annotation, annotation: &Annotation, scorings: &[S
         // placeholder for a field with no reader — not a confidence we are asserting.
         let estimate = estimates.midi[index].map(|midi| (midi, 1.0));
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
-            score_frame(
-                tally,
-                seconds,
-                scoring.mask.admit(annotation.at(seconds - scoring.lag_seconds)),
-                estimate,
-            );
+            score_frame(tally, seconds, annotation, scoring, estimate);
         }
     }
     tallies
@@ -900,14 +881,31 @@ fn bench_external(estimates: &Annotation, annotation: &Annotation, scorings: &[S
 ///
 /// `seconds` is the frame's own time — not the lagged moment its truth was read at — and
 /// frames of one track must arrive in time order: [`Calm`] counts runs and pairs.
-fn score_frame(tally: &mut Tally, seconds: f32, truth: Option<f32>, estimate: Option<(f32, f32)>) {
+fn score_frame(
+    tally: &mut Tally,
+    seconds: f32,
+    annotation: &Annotation,
+    scoring: &Scoring,
+    estimate: Option<(f32, f32)>,
+) {
+    let truth_seconds = seconds - scoring.lag_seconds;
+    let truth = scoring.mask.admit(annotation.at(truth_seconds));
     let verdict = classify(tally, truth, estimate);
-    tally.calm.follow(PrevFrame {
-        seconds,
-        truth,
-        estimate: estimate.map(|(midi, _strength)| midi),
-        verdict,
-    });
+    let truth_stands = verdict == Verdict::Correct
+        && tally.calm.prev.is_some_and(|prev| {
+            prev.verdict == Verdict::Correct
+                && annotation.stands_between(prev.seconds - scoring.lag_seconds, truth_seconds, &scoring.mask)
+        });
+    tally.calm.follow(
+        PrevFrame {
+            seconds,
+            truth,
+            estimate: estimate.map(|(midi, _strength)| midi),
+            verdict,
+        },
+        &scoring.mask,
+        truth_stands,
+    );
 }
 
 /// The counting half of [`score_frame`].
@@ -986,9 +984,23 @@ fn calm_counts_runs_pairs_and_pieces() {
         Some(62.0),
         Some(62.0),
     ];
+    let annotation = Annotation {
+        times: (0..estimates.len()).map(|i| i as f32 * 0.01).collect(),
+        midi:  (0..estimates.len()).map(truth).collect(),
+    };
+    let scoring = Scoring {
+        mask:        PitchMask::unbounded(),
+        lag_seconds: 0.0,
+    };
     let mut tally = Tally::default();
     for (i, estimate) in estimates.iter().enumerate() {
-        score_frame(&mut tally, i as f32 * 0.01, truth(i), estimate.map(|m| (m, 1.0)));
+        score_frame(
+            &mut tally,
+            annotation.times[i],
+            &annotation,
+            &scoring,
+            estimate.map(|m| (m, 1.0)),
+        );
     }
     let calm = &tally.calm;
 
@@ -1001,8 +1013,8 @@ fn calm_counts_runs_pairs_and_pieces() {
     assert!((calm.voiced_seconds - 0.12).abs() < 1e-5);
     assert_eq!(
         (calm.truth_runs, calm.estimate_runs),
-        (2, 3),
-        "the gap at frame 5 splits the first segment"
+        (2, 2),
+        "the gap splits the estimate; false voicing connects the two truth segments"
     );
     assert_eq!(calm.jitter_pairs(), 5);
     assert!(
@@ -1012,6 +1024,137 @@ fn calm_counts_runs_pairs_and_pieces() {
     assert!(
         (calm.jitter_quantile(0.9).unwrap() - 3.0).abs() < 0.11,
         "60.02 → 60.05 is 3 ¢"
+    );
+}
+
+/// A 3 ¢ native step qualifies at every detector cadence, even when its accumulated drift
+/// over the detector hop exceeds 5 ¢. The metric still reports that hop's full movement.
+#[test]
+fn calm_selects_standing_truth_on_the_annotation_grid() {
+    let annotation = Annotation {
+        times: (0..=28).map(|i| i as f32 * 0.0029).collect(),
+        midi:  (0..=28).map(|i| Some(60.0 + i as f32 * 0.03)).collect(),
+    };
+    let scoring = Scoring {
+        mask:        PitchMask::unbounded(),
+        lag_seconds: 0.0,
+    };
+    for step in [3, 6, 7, 14] {
+        let mut tally = Tally::default();
+        for i in (0..=28).step_by(step) {
+            score_frame(
+                &mut tally,
+                annotation.times[i],
+                &annotation,
+                &scoring,
+                annotation.midi[i].map(|midi| (midi, 1.0)),
+            );
+        }
+        assert_eq!(tally.calm.jitter_pairs(), 28 / step as u32, "hop {step}");
+        assert!((tally.calm.jitter_quantile(0.9).unwrap() - step as f32 * 3.0).abs() < 0.11);
+    }
+}
+
+/// Identical endpoints do not make a standing note if a native step jumped, went silent
+/// or left the band. Lagged scoring must inspect the same interval as its RPA verdicts.
+#[test]
+fn calm_rejects_hidden_transitions_and_uses_the_scoring_lag() {
+    let scoring = Scoring {
+        mask:        PitchMask {
+            lo_midi: 59.0,
+            hi_midi: 61.0,
+        },
+        lag_seconds: 0.0,
+    };
+    for middle in [Some(60.2), None, Some(72.0)] {
+        let annotation = Annotation {
+            times: vec![0.0, 0.01, 0.02, 0.03, 0.04, 0.05],
+            midi:  vec![Some(60.0), middle, Some(60.0), Some(60.0), Some(60.0), Some(60.0)],
+        };
+        for (lag, expected_pairs) in [(0.0, 1), (0.03, 0)] {
+            let mut tally = Tally::default();
+            let lagged = Scoring {
+                mask:        scoring.mask.clone(),
+                lag_seconds: lag,
+            };
+            for seconds in [0.03, 0.05] {
+                score_frame(&mut tally, seconds, &annotation, &lagged, Some((60.0, 1.0)));
+            }
+            assert_eq!(tally.correct, 2);
+            assert_eq!(tally.calm.jitter_pairs(), expected_pairs);
+        }
+    }
+    let threshold = Annotation {
+        times: vec![0.0, 0.0029],
+        midi:  vec![Some(0.0), Some(0.05)],
+    };
+    assert!(
+        !threshold.stands_between(0.0, 0.0029, &PitchMask::unbounded()),
+        "strictly below 5 ¢"
+    );
+}
+
+#[test]
+fn calm_counts_independent_runs_in_band_and_merges_tracks() {
+    let annotation = Annotation {
+        times: vec![0.01, 0.02, 0.03, 0.04, 0.05, 0.06],
+        midi:  vec![Some(60.0), Some(60.0), None, None, Some(60.0), Some(60.0)],
+    };
+    let scoring = Scoring {
+        mask:        PitchMask {
+            lo_midi: 59.0,
+            hi_midi: 73.0,
+        },
+        lag_seconds: 0.0,
+    };
+    let estimates = [
+        Some(72.0),
+        Some(60.0),
+        Some(60.0),
+        Some(60.0),
+        Some(80.0),
+        Some(60.0),
+    ];
+    let mut tally = Tally::default();
+    for (&seconds, estimate) in annotation.times.iter().zip(estimates) {
+        score_frame(
+            &mut tally,
+            seconds,
+            &annotation,
+            &scoring,
+            estimate.map(|m| (m, 1.0)),
+        );
+    }
+    assert_eq!((tally.calm.truth_runs, tally.calm.estimate_runs), (2, 2));
+    assert_eq!(tally.calm.fragmentation(), Some(1.0));
+    assert_eq!(tally.calm.octave_events, 1);
+    assert!(
+        (tally.calm.mean_octave_run_ms() - 10.0).abs() < 1e-4,
+        "first frame owns one hop"
+    );
+    assert!((tally.calm.voiced_seconds - 0.04).abs() < 1e-5);
+    let mut total = Tally::default();
+    total.merge(&tally);
+    total.merge(&tally);
+    assert!(
+        total.calm.prev.is_none(),
+        "tracks must not form cross-track pairs or runs"
+    );
+    assert_eq!((total.calm.truth_runs, total.calm.estimate_runs), (4, 4));
+    assert_eq!(total.calm.octave_events, 2);
+    assert_eq!(total.calm.jitter_pairs(), 2 * tally.calm.jitter_pairs());
+
+    let silence = Annotation {
+        times: vec![0.01],
+        midi:  vec![None],
+    };
+    let mut no_truth = Tally::default();
+    score_frame(&mut no_truth, 0.01, &silence, &scoring, Some((60.0, 1.0)));
+    assert_eq!(no_truth.calm.estimate_runs, 1);
+    assert_eq!(
+        no_truth.calm.fragmentation(),
+        None,
+        "no truth runs ⇒ ratio is undefined"
     );
 }
 
@@ -1728,21 +1871,28 @@ fn report(headline: &str, lags_ms: &[f32], per_lag: &[Tally]) {
     println!("\n=== calm — what the roll shows ===");
     println!(
         "  octave events per minute of voiced audio (mean run), jitter |Δ| on a standing note\n  \
-         between correct neighbours (median / p90, pairs), estimate pieces per true segment"
+         between correct neighbours (median / p90, pairs), independent in-band voiced runs\n  \
+         standing = every native annotation step <5 cents across the lagged pair;\n  \
+         jitter is per detector hop, not per second (cadences differ)"
     );
-    println!("  lag(ms)   oct/min   run ms   jitter med   p90 ¢     pairs   pieces/seg");
+    println!("  lag(ms)   oct/min   run ms   jitter med   p90 ¢     pairs   pieces/seg    est/truth runs");
     let cents = |q: Option<f32>| q.map_or("    —".to_string(), |c| format!("{c:>5.1}"));
     for (lag_ms, tally) in lags_ms.iter().zip(per_lag) {
         let calm = &tally.calm;
+        let pieces = calm
+            .fragmentation()
+            .map_or("     —".to_string(), |ratio| format!("{ratio:>6.2}"));
         println!(
-            "  {:>5.0}    {:>6.2}   {:>6.0}   {}      {}   {:>8}   {:>6.2}",
+            "  {:>5.0}    {:>6.2}   {:>6.0}   {}      {}   {:>8}   {}     {}/{}",
             lag_ms,
             calm.octave_events_per_minute(),
             calm.mean_octave_run_ms(),
             cents(calm.jitter_quantile(0.5)),
             cents(calm.jitter_quantile(0.9)),
             calm.jitter_pairs(),
-            calm.fragmentation()
+            pieces,
+            calm.estimate_runs,
+            calm.truth_runs
         );
     }
 }
