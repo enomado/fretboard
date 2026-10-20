@@ -12,6 +12,10 @@ mod core;
 // without anyone noticing); it simply no longer needs a hole in the wall.
 mod dsp;
 pub(crate) mod sample_rate;
+// The engine wired as the platform layers wire it, for tests that must measure what ships
+// (`core`'s wiring tests, `dsp::pitch_bench`'s melody line).
+#[cfg(test)]
+mod test_rig;
 // The engine's public vocabulary: settings, readings, statuses. Imported from here by
 // path (`crate::audio::types::X`), not re-exported, so the origin stays visible.
 pub mod types;
