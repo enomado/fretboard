@@ -51,6 +51,7 @@ use super::analysis_math::{
     hann_taper,
     parabolic_vertex,
     slide_in,
+    subtract_moving_mean,
 };
 use crate::audio::sample_rate::SampleRate;
 use crate::core_types::pitch::Hz;
@@ -115,7 +116,15 @@ const INTERHARMONIC_VALLEYS: [(f32, f32); 5] = [
 ];
 const FUNDAMENTAL_SHORTFALL_MULTIPLIER: f32 = 2.0;
 
-/// Independent H4 scoring experiments. Baseline remains the default until acceptance.
+/// H5 width fixed by the plan (~31 bins at 4096 / 44.1 kHz), before corpus runs.
+/// Converted to the nearest odd number of bins for this sieve's range-dependent window.
+const WHITENING_WIDTH: Hz = Hz(330.0);
+
+fn whitening_bins(bin_hz: f32) -> usize {
+    2 * ((WHITENING_WIDTH.0 / bin_hz - 1.0) / 2.0).round().max(0.0) as usize + 1
+}
+
+/// Independent H4/H5 experiments. Baseline remains the default until acceptance.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ScoringVariant {
     #[default]
@@ -123,6 +132,7 @@ pub(crate) enum ScoringVariant {
     Interharmonic,
     Fundamental,
     Combined,
+    Whitened,
 }
 
 impl ScoringVariant {
@@ -132,7 +142,8 @@ impl ScoringVariant {
             Ok("a") => Self::Interharmonic,
             Ok("b") => Self::Fundamental,
             Ok("c") => Self::Combined,
-            value => panic!("PITCH_BENCH_SIEVE_VARIANT must be baseline/a/b/c, got {value:?}"),
+            Ok("h5") => Self::Whitened,
+            value => panic!("PITCH_BENCH_SIEVE_VARIANT must be baseline/a/b/c/h5, got {value:?}"),
         }
     }
 }
@@ -184,7 +195,7 @@ impl Harmonic {
 #[derive(Clone, Copy, Debug)]
 struct Peak {
     hz:     Hz,
-    /// Height above the frame's floor (`max − DYNAMIC_RANGE_DB`), in dB. Always > 0.
+    /// Positive dB above the frame floor, or above the local mean in H5.
     weight: f32,
 }
 
@@ -229,15 +240,18 @@ pub(crate) struct HarmonicSieve {
     history:     Vec<f32>,
 
     // Scratch, reused frame to frame so the audio thread allocates nothing per frame.
-    input:   Vec<f32>,
-    fft_out: Vec<Complex32>,
-    work:    Vec<Complex32>,
+    input:    Vec<f32>,
+    fft_out:  Vec<Complex32>,
+    work:     Vec<Complex32>,
     /// dBFS per bin, DC..Nyquist.
-    levels:  Vec<f32>,
-    peaks:   Vec<Peak>,
+    levels:   Vec<f32>,
+    /// H5 local contrast; raw levels still select and locate peaks and gate silence.
+    contrast: Vec<f32>,
+    padded:   Vec<f32>,
+    peaks:    Vec<Peak>,
     /// Indexed by [`Harmonic`]; slot 0 is never used. `None` = the candidate predicts this
     /// harmonic and no peak was assigned to it, which is a verdict, not a gap in the data.
-    slots:   Vec<Option<SlotMatch>>,
+    slots:    Vec<Option<SlotMatch>>,
 }
 
 impl HarmonicSieve {
@@ -276,6 +290,8 @@ impl HarmonicSieve {
             history: vec![0.0; size],
             input: vec![0.0; size],
             levels: vec![0.0; size / 2 + 1],
+            contrast: vec![0.0; size / 2 + 1],
+            padded: vec![0.0; size / 2 + whitening_bins(sample_rate.hz() / size as f32)],
             peaks: Vec::with_capacity(size / 2),
             slots: vec![None; MAX_HARMONICS + 1],
             taper,
@@ -359,15 +375,39 @@ impl HarmonicSieve {
             return false;
         }
         let floor = loudest.0 - DYNAMIC_RANGE_DB;
+        if self.variant == ScoringVariant::Whitened {
+            subtract_moving_mean(
+                &self.levels,
+                whitening_bins(bin_hz),
+                &mut self.contrast,
+                &mut self.padded,
+            );
+        }
 
         self.peaks.clear();
         for i in lo..=hi {
             let level = self.levels[i];
             if level > floor && level > self.levels[i - 1] && level >= self.levels[i + 1] {
                 let (position, height) = parabolic_vertex(&self.levels, i);
+                let weight = if self.variant == ScoringVariant::Whitened {
+                    // Preserve the raw parabola's frequency and height. Interpolate the
+                    // local mean at that position; only the vote/seed ranking changes.
+                    let left = position.floor() as usize;
+                    let fraction = position - left as f32;
+                    let mean_left = self.levels[left] - self.contrast[left];
+                    let mean_right = self.levels[left + 1] - self.contrast[left + 1];
+                    height - (mean_left + fraction * (mean_right - mean_left))
+                } else {
+                    height - floor
+                };
+                // The matcher requires positive votes. A raw local maximum can sit
+                // below a broad envelope's mean, and carries no H5 evidence then.
+                if weight <= 0.0 {
+                    continue;
+                }
                 self.peaks.push(Peak {
-                    hz:     Hz(position * bin_hz),
-                    weight: height - floor,
+                    hz: Hz(position * bin_hz),
+                    weight,
                 });
             }
         }
@@ -560,6 +600,46 @@ mod tests {
     /// A sawtooth-like series: 1/k over twelve harmonics.
     fn bright() -> Vec<f32> {
         (1..=12).map(|k| 1.0 / k as f32).collect()
+    }
+
+    #[test]
+    fn h5_width_tracks_hz_across_windows_and_sample_rates() {
+        for sr in [44_100.0, 48_000.0] {
+            for size in [1024, 2048, 4096] {
+                let bin_hz = sr / size as f32;
+                let width = whitening_bins(bin_hz);
+                assert_eq!(width % 2, 1);
+                assert!((width as f32 * bin_hz - WHITENING_WIDTH.0).abs() <= bin_hz);
+            }
+        }
+        assert_eq!(whitening_bins(SR.hz() / 1024.0), 7);
+        assert_eq!(whitening_bins(SR.hz() / 2048.0), 15);
+        assert_eq!(whitening_bins(SR.hz() / 4096.0), 31);
+    }
+
+    /// Direct arithmetic oracle: a louder peak on a broad formant loses to an
+    /// isolated peak. Raw parabolas keep both frequencies; only votes change.
+    #[test]
+    fn h5_weights_and_seed_order_match_local_contrast() {
+        let make = |variant| {
+            let mut sieve = HarmonicSieve::with_variant(SR, Hz(65.0), Hz(2093.0), variant);
+            sieve.levels.fill(-60.0);
+            sieve.levels[8..=24].fill(-30.0);
+            sieve.levels[16] = -20.0;
+            sieve.levels[64] = -25.0;
+            assert!(sieve.pick_peaks(SR.hz() / 2048.0));
+            sieve
+        };
+        let baseline = make(ScoringVariant::Baseline);
+        let whitened = make(ScoringVariant::Whitened);
+        let bin_hz = SR.hz() / 2048.0;
+        assert_eq!(baseline.peaks[0].hz, Hz(16.0 * bin_hz));
+        assert_eq!(whitened.peaks[0].hz, Hz(64.0 * bin_hz));
+        for (bin, expected) in [(16, 10.0 * 14.0 / 15.0), (64, 35.0 * 14.0 / 15.0)] {
+            let hz = Hz(bin as f32 * bin_hz);
+            let peak = whitened.peaks.iter().find(|peak| peak.hz == hz).unwrap();
+            assert!((peak.weight - expected).abs() < 1e-3, "{peak:?}");
+        }
     }
 
     #[test]

@@ -93,6 +93,29 @@ pub(crate) fn hann_taper(len: usize) -> Vec<f32> {
         .collect()
 }
 
+/// Subtract a centred moving mean, reflecting each edge without repeating its bin.
+/// `width` is odd, `width / 2 < levels.len()`, and callers reuse both scratch buffers.
+/// Kept test-only with the two benchmark frontends that currently use it.
+#[cfg(test)]
+pub(crate) fn subtract_moving_mean(levels: &[f32], width: usize, contrast: &mut [f32], padded: &mut [f32]) {
+    let half = width / 2;
+    let n = levels.len();
+    assert!(width > 0 && width % 2 == 1 && half < n);
+    assert_eq!(contrast.len(), n);
+    assert_eq!(padded.len(), n + width - 1);
+    for i in 0..half {
+        padded[i] = levels[half - i];
+        padded[half + n + i] = levels[n - 2 - i];
+    }
+    padded[half..half + n].copy_from_slice(levels);
+    let mut sum: f32 = padded[..width].iter().sum();
+    contrast[0] = levels[0] - sum / width as f32;
+    for i in 1..n {
+        sum += padded[i + width - 1] - padded[i - 1];
+        contrast[i] = levels[i] - sum / width as f32;
+    }
+}
+
 pub(crate) fn normalize_bars(values: &mut [f32], gamma: f32) {
     let max = values.iter().copied().fold(0.0, f32::max);
     if max > 0.0 {
@@ -285,6 +308,34 @@ pub(crate) fn resonator_fundamental(
 mod tests {
     use super::*;
     use crate::audio::types::AnalysisSettings;
+
+    #[test]
+    fn moving_mean_matches_direct_sum_including_reflected_edges() {
+        let levels: Vec<f32> = (0..129).map(|i| -80.0 + (i as f32 * 0.7).sin() * 30.0).collect();
+        for width in [1, 7, 15, 31] {
+            let half = (width / 2) as isize;
+            let mut contrast = vec![0.0; levels.len()];
+            let mut padded = vec![0.0; levels.len() + width - 1];
+            subtract_moving_mean(&levels, width, &mut contrast, &mut padded);
+            for (i, actual) in contrast.iter().enumerate() {
+                let sum: f64 = (-half..=half)
+                    .map(|offset| {
+                        let index = i as isize + offset;
+                        let reflected = if index < 0 {
+                            -index
+                        } else if index >= levels.len() as isize {
+                            2 * (levels.len() as isize - 1) - index
+                        } else {
+                            index
+                        };
+                        levels[reflected as usize] as f64
+                    })
+                    .sum();
+                let expected = levels[i] as f64 - sum / width as f64;
+                assert!((*actual as f64 - expected).abs() < 1e-3, "width={width}, bin={i}");
+            }
+        }
+    }
 
     #[test]
     fn parabolic_tau_can_overshoot_without_producing_invalid_index() {

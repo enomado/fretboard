@@ -46,6 +46,7 @@ use super::analysis_math::{
     hann_taper,
     parabolic_vertex,
     slide_in,
+    subtract_moving_mean,
 };
 use crate::audio::sample_rate::SampleRate;
 use crate::core_types::pitch::{
@@ -272,22 +273,7 @@ impl PeakComb {
             };
         }
 
-        // Reflect `half` bins at each end (without repeating the edge bin), then a running
-        // mean of width `WHITENING_BINS`.
-        let half = WHITENING_BINS / 2;
-        let n = self.levels.len();
-        for i in 0..half {
-            self.padded[i] = self.levels[half - i];
-            self.padded[half + n + i] = self.levels[n - 2 - i];
-        }
-        self.padded[half..half + n].copy_from_slice(&self.levels);
-        let width = WHITENING_BINS as f32;
-        let mut sum: f32 = self.padded[..WHITENING_BINS].iter().sum();
-        self.whitened[0] = self.levels[0] - sum / width;
-        for i in 1..n {
-            sum += self.padded[i + WHITENING_BINS - 1] - self.padded[i - 1];
-            self.whitened[i] = self.levels[i] - sum / width;
-        }
+        subtract_moving_mean(&self.levels, WHITENING_BINS, &mut self.whitened, &mut self.padded);
     }
 
     /// Peaks over `start_bin..=end_bin`: strict local maxima of the raw dB spectrum within

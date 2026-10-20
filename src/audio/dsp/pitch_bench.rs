@@ -1437,7 +1437,7 @@ fn rtswipe_rpa_on_corpus() {
 #[test]
 #[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
 fn sieve_rpa_on_corpus() {
-    println!("H4 sieve variant: {:?}", ScoringVariant::from_env());
+    println!("Sieve variant: {:?}", ScoringVariant::from_env());
     let range = (Hz(REFERENCE_MDB_MASK_HZ.0), Hz(REFERENCE_MDB_MASK_HZ.1));
     run_corpus(
         "harmonic sieve RPA · MDB-stem-synth",
