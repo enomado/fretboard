@@ -847,6 +847,7 @@ impl App {
                             "SWIPE′ over windowed FFTs: halves octave errors, cheaper to run, \
                              at a pitch-dependent delay (≈4 periods). Same kernel as the bank."
                         }
+                        PitchFrontend::Sieve => "Experimental harmonic sieve (H6).",
                     })
                     .clicked()
                     && settings.resonator.frontend != frontend

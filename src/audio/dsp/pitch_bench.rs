@@ -1493,8 +1493,8 @@ fn peak_comb_raw_rpa_on_corpus() {
 /// **The shipped melody line** — the whole engine, frontend through trellis, repair layer and
 /// level gate, as the pianoroll draws it (H0 of `docs/detector_hypotheses_plan.md`).
 ///
-/// The frontend is `PITCH_BENCH_FRONTEND` — `bank` (default, what the app starts with) or
-/// `rtswipe`. Read against the same frontend's own `*_rpa_on_corpus`: the difference is what
+/// The frontend is `PITCH_BENCH_FRONTEND` — `bank` (default), `rtswipe` or `sieve`.
+/// Read against the same frontend's own `*_rpa_on_corpus`: the difference is what
 /// the chain after the frontend adds and takes away.
 ///
 /// Slow: the analysis plane (spectrum, pYIN, onset) runs beside the bank, and the bank runs
@@ -1505,7 +1505,8 @@ fn melody_rpa_on_corpus() {
     let frontend = match std::env::var("PITCH_BENCH_FRONTEND").as_deref() {
         Err(_) | Ok("bank") => PitchFrontend::ResonatorBank,
         Ok("rtswipe") => PitchFrontend::RtSwipe,
-        Ok(other) => panic!("PITCH_BENCH_FRONTEND={other:?} — expected `bank` or `rtswipe`"),
+        Ok("sieve") => PitchFrontend::Sieve,
+        Ok(other) => panic!("PITCH_BENCH_FRONTEND={other:?} — expected `bank`, `rtswipe` or `sieve`"),
     };
     // `PITCH_BENCH_MELODY_STAGE=salience` scores the trellis's input instead of its output —
     // the decomposition, see `MelodyStage`.
@@ -1514,6 +1515,10 @@ fn melody_rpa_on_corpus() {
         Ok("salience") => MelodyStage::Salience,
         Ok(other) => panic!("PITCH_BENCH_MELODY_STAGE={other:?} — expected `line` or `salience`"),
     };
+    println!(
+        "Frontend beta: {}",
+        crate::audio::dsp::melody::salience_beta(frontend)
+    );
     run_corpus(
         &format!("melody {stage:?} (whole engine, {frontend:?}) RPA · MDB-stem-synth"),
         &[0.0, 16.0, 32.0, 48.0, 64.0],

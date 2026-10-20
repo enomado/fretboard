@@ -456,9 +456,10 @@ pub struct AnalysisSettings {
 /// pitch-dependent delay. The corpus numbers behind that are in
 /// `memory/kickstart_rtswipe_and_swiftf0_oracle.md` (track R).
 ///
-/// The bank keeps running in **either** mode — it also drives the spectrum waterfall, the
-/// reassigned spiral and the salience-heat layer, none of which RT-SWIPE produces. This enum
-/// only redirects the *note decision*.
+/// The experimental sieve supplies its own scores and harmonic fits to the same trellis;
+/// its C2..C8 range and measured limitations are in `docs/harmonic_sieve.md` (H6).
+/// The bank keeps running in every mode for the spectrum waterfall and reassigned spiral.
+/// Salience heat follows the selected frontend. This enum only redirects the note evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum PitchFrontend {
     /// The resonator bank (`dsp::resonator`). The shipped detector, and the default.
@@ -466,6 +467,9 @@ pub enum PitchFrontend {
     ResonatorBank,
     /// SWIPE′ over windowed FFTs (`dsp::rtswipe`).
     RtSwipe,
+    /// Experimental harmonic sieve on C2..C8; shares the melody trellis.
+    /// Not exposed in the controls pending the H6 decision.
+    Sieve,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

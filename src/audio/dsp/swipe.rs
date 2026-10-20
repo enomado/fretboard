@@ -285,12 +285,20 @@ fn refine_on_partials(magnitudes: &[f32], coarse_bin: f32, bins_per_semitone: f3
 pub(crate) struct SalienceFrame {
     /// Pitch strength per bin of the bank's output grid.
     curve:             Vec<f32>,
-    /// The **raw** column — `gamma`-free, as the contract above demands.
-    magnitudes:        Vec<f32>,
+    /// Frontend-owned fine pitch evidence, independent of display gamma.
+    resolution:        PitchResolution,
     min_midi:          f32,
     bins_per_semitone: f32,
     /// `‖√|X|‖₂`, the per-frame constant that turns a salience into a 0..1 confidence.
     norm:              f32,
+}
+
+/// Fine pitch belongs to the frontend that measured the evidence. Spectral peaks already
+/// provide a harmonic fit; treating that fit as a magnitude column would refine it twice.
+#[derive(Clone, Debug)]
+enum PitchResolution {
+    Partials(Vec<f32>),
+    FittedMidi(Vec<f32>),
 }
 
 impl SalienceFrame {
@@ -310,7 +318,7 @@ impl SalienceFrame {
         }
         Some(Self {
             curve: kernel.salience_curve(&warped),
-            magnitudes: magnitudes.to_vec(),
+            resolution: PitchResolution::Partials(magnitudes.to_vec()),
             min_midi,
             bins_per_semitone,
             norm,
@@ -354,7 +362,29 @@ impl SalienceFrame {
         );
         Self {
             curve,
-            magnitudes,
+            resolution: PitchResolution::Partials(magnitudes),
+            min_midi,
+            bins_per_semitone,
+            norm: 1.0,
+        }
+    }
+
+    /// Adopt normalized candidate scores and their harmonic least-squares fits on one
+    /// grid. The score selects a bin; the fit only resolves the bin already selected.
+    pub(crate) fn from_fitted_curve(
+        curve: Vec<f32>,
+        fitted_midi: Vec<f32>,
+        min_midi: f32,
+        bins_per_semitone: f32,
+    ) -> Self {
+        assert_eq!(
+            curve.len(),
+            fitted_midi.len(),
+            "one harmonic fit per candidate bin"
+        );
+        Self {
+            curve,
+            resolution: PitchResolution::FittedMidi(fitted_midi),
             min_midi,
             bins_per_semitone,
             norm: 1.0,
@@ -451,6 +481,9 @@ impl SalienceFrame {
     /// Splitting the decision from the resolution is what lets continuity overrule the
     /// argmax without costing a single cent of precision.
     pub(crate) fn resolve(&self, bin: usize) -> (f32, f32) {
+        if let PitchResolution::FittedMidi(fits) = &self.resolution {
+            return (fits[bin], (self.curve[bin] / self.norm).clamp(0.0, 1.0));
+        }
         // The salience decides the harmonic series, to within its own grid: parabola-refined
         // and clamped to ±½ bin, because a peak that is not a clean local extremum must not
         // fling the estimate across the grid. This is a *coarse* f0 — good enough to identify
@@ -458,7 +491,10 @@ impl SalienceFrame {
         let coarse = parabolic_tau(&self.curve, bin).clamp(bin as f32 - 0.5, bin as f32 + 0.5);
         // The partials decide the frequency. See `refine_on_partials` for why this is a
         // separate step and not a refinement of the line above.
-        let refined = refine_on_partials(&self.magnitudes, coarse, self.bins_per_semitone);
+        let PitchResolution::Partials(magnitudes) = &self.resolution else {
+            unreachable!("fitted pitch returned above")
+        };
+        let refined = refine_on_partials(magnitudes, coarse, self.bins_per_semitone);
         let midi = self.min_midi + refined / self.bins_per_semitone;
         (midi, (self.curve[bin] / self.norm).clamp(0.0, 1.0))
     }

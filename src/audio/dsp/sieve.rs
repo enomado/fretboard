@@ -37,7 +37,7 @@
 //! # Causal by right-alignment
 //!
 //! As in `dsp::rtswipe`, the window ends at the newest sample, so the estimate describes the
-//! signal half a window ago: [`HarmonicSieve::delay_seconds`].
+//! signal half a window ago (exposed as `delay_seconds` in the benchmark probes).
 
 use std::sync::Arc;
 
@@ -53,8 +53,17 @@ use super::analysis_math::{
     slide_in,
     subtract_moving_mean,
 };
+use super::swipe::SalienceFrame;
 use crate::audio::sample_rate::SampleRate;
 use crate::core_types::pitch::Hz;
+
+/// H6's experimental frontend range is independent of the display's bank sliders.
+/// C2 keeps the 2048-sample window at 44.1 kHz/A440 used by the MDB comparison;
+/// at 48 kHz the same three-period rule rounds up to 4096. C8 clears violin E7.
+/// Below C2 this frontend deliberately supplies no candidates (the bank remains default).
+pub(crate) const FRONTEND_MIN_MIDI: f32 = 36.0;
+pub(crate) const FRONTEND_MAX_MIDI: f32 = super::pitch::TRACKED_MAX_MIDI;
+pub(crate) const FRONTEND_BINS_PER_SEMITONE: f32 = 5.0;
 
 /// Periods of the **lowest** searchable pitch that the window must span.
 ///
@@ -80,6 +89,7 @@ const MAX_PEAKS: usize = 40;
 /// The fundamental itself need not be among the peaks — on the violin's G string it is often
 /// the weakest partial — but some strong partial always is, and the fundamental is one of
 /// its integer fractions.
+#[cfg(test)]
 const CANDIDATE_SEEDS: usize = 3;
 
 /// Highest harmonic number a candidate is judged on. Peaks above this harmonic of the
@@ -126,6 +136,7 @@ fn whitening_bins(bin_hz: f32) -> usize {
 
 /// Independent H4/H5 experiments. Baseline remains the default until acceptance.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)] // H4/H5 alternatives are selected only by the benchmark, never the engine.
 pub(crate) enum ScoringVariant {
     #[default]
     Baseline,
@@ -136,6 +147,7 @@ pub(crate) enum ScoringVariant {
 }
 
 impl ScoringVariant {
+    #[cfg(test)]
     pub(crate) fn from_env() -> Self {
         match std::env::var("PITCH_BENCH_SIEVE_VARIANT").as_deref() {
             Err(std::env::VarError::NotPresent) | Ok("baseline") => Self::Baseline,
@@ -161,6 +173,7 @@ const VOICING_THRESHOLD: f32 = 0.1;
 
 /// Least-squares refinement passes per candidate. Each re-matches the peaks at the refined
 /// f0, so a candidate that started a bin off can pull in partials it first missed.
+#[cfg(test)]
 const REFINE_PASSES: usize = 2;
 
 /// How far refinement may move a candidate, in semitones. It is a fit, not a search: a
@@ -211,7 +224,8 @@ struct SlotMatch {
 /// One candidate, matched against the frame's peaks.
 #[derive(Clone, Copy, Debug)]
 struct Verdict {
-    f0:    Hz,
+    #[cfg(test)] // The standalone search needs the candidate; the curve already names its bin.
+    f0: Hz,
     /// `≤ 1`; 1 = every slot up to the top peak holds exactly one peak dead on its harmonic,
     /// and every peak is on a harmonic.
     score: f32,
@@ -221,6 +235,7 @@ struct Verdict {
 
 /// A frame's answer.
 #[derive(Clone, Copy, Debug)]
+#[cfg(test)]
 pub(crate) struct SieveEstimate {
     pub(crate) hz:    Hz,
     /// The winning candidate's normalised score — see [`Verdict::score`].
@@ -255,6 +270,19 @@ pub(crate) struct HarmonicSieve {
 }
 
 impl HarmonicSieve {
+    pub(crate) fn frontend(sample_rate: SampleRate, concert_pitch: Hz) -> Self {
+        // An unselected frontend is still warmed by the engine. It must not make a
+        // low-rate stream (e.g. 8 kHz) panic merely because C8 lies above Nyquist.
+        let nyquist_midi = Hz(sample_rate.hz() / 2.0).to_midi(concert_pitch).0;
+        let max_midi = FRONTEND_MAX_MIDI
+            .min(((nyquist_midi * FRONTEND_BINS_PER_SEMITONE).ceil() - 1.0) / FRONTEND_BINS_PER_SEMITONE);
+        Self::new(
+            sample_rate,
+            Hz(concert_pitch.0 * ((FRONTEND_MIN_MIDI - 69.0) / 12.0).exp2()),
+            Hz(concert_pitch.0 * ((max_midi - 69.0) / 12.0).exp2()),
+        )
+    }
+
     /// A sieve searching `min_hz..=max_hz`.
     ///
     /// The range is the instrument's, and it matters twice: `min_hz` sets the window length
@@ -298,18 +326,54 @@ impl HarmonicSieve {
         }
     }
 
-    /// Feed the newest samples; the frame is computed on demand by [`Self::estimate`].
+    /// Feed the newest samples; [`Self::frame`] scores them on demand. The benchmark's
+    /// standalone `estimate` also reads this history, using its original seed search.
     pub(crate) fn process_samples(&mut self, samples: &[f32]) {
         slide_in(&mut self.history, samples);
     }
 
     /// How late an estimate is: half the window, since the window ends at the newest sample.
+    #[cfg(test)]
     pub(crate) fn delay_seconds(&self) -> f32 {
         self.taper.len() as f32 / 2.0 / self.sample_rate.hz()
     }
 
+    /// H6 bridge: score the centre of every 20-cent bin with the same matcher as the
+    /// standalone sieve. No candidate seeding, temporal filter or octave decision here.
+    /// The least-squares fit travels with its bin, so melody can resolve whichever bin its
+    /// shared trellis selected. Unjudgeable bins have zero likelihood (`score = −∞`).
+    pub(crate) fn frame(&mut self, concert_pitch: Hz) -> Option<SalienceFrame> {
+        let bin_hz = self.sample_rate.hz() / self.taper.len() as f32;
+        self.fill_levels();
+        if !self.pick_peaks(bin_hz) {
+            return None;
+        }
+        let min_midi = self.min_hz.to_midi(concert_pitch).0;
+        let max_midi = self.max_hz.to_midi(concert_pitch).0;
+        let count = ((max_midi - min_midi) * FRONTEND_BINS_PER_SEMITONE).round() as usize + 1;
+        let mut curve = Vec::with_capacity(count);
+        let mut fits = Vec::with_capacity(count);
+        for bin in 0..count {
+            let midi = min_midi + bin as f32 / FRONTEND_BINS_PER_SEMITONE;
+            let hz = Hz(concert_pitch.0 * ((midi - 69.0) / 12.0).exp2());
+            let verdict = match_candidate(&self.peaks, hz, bin_hz, &mut self.slots, self.variant);
+            curve.push(verdict.map_or(f32::NEG_INFINITY, |v| v.score));
+            // No peaks to fit: the centre is the no-op resolution if continuity holds
+            // this bin through the shared trellis's numerical emission floor.
+            fits.push(verdict.map_or(midi, |v| {
+                v.fit
+                    .to_midi(concert_pitch)
+                    .0
+                    .clamp(midi - REFINE_LIMIT_SEMITONES, midi + REFINE_LIMIT_SEMITONES)
+            }));
+        }
+        (curve.iter().copied().fold(f32::NEG_INFINITY, f32::max) >= VOICING_THRESHOLD)
+            .then(|| SalienceFrame::from_fitted_curve(curve, fits, min_midi, FRONTEND_BINS_PER_SEMITONE))
+    }
+
     /// Estimate f0 over the history as it stands. `None` = silence, no peaks, or no
     /// candidate scoring above [`VOICING_THRESHOLD`].
+    #[cfg(test)]
     pub(crate) fn estimate(&mut self) -> Option<SieveEstimate> {
         let bin_hz = self.sample_rate.hz() / self.taper.len() as f32;
         self.fill_levels();
@@ -418,6 +482,7 @@ impl HarmonicSieve {
 
     /// Match `f0`, then refine it by least squares while that improves the score. `None` as
     /// [`match_candidate`]'s.
+    #[cfg(test)]
     fn refine(&mut self, f0: Hz, bin_hz: f32) -> Option<Verdict> {
         let lo = f0.0 * (-REFINE_LIMIT_SEMITONES / 12.0).exp2();
         let hi = f0.0 * (REFINE_LIMIT_SEMITONES / 12.0).exp2();
@@ -529,7 +594,12 @@ fn match_candidate(
     // No slot inside its mesh: nothing to fit, so the fit is the candidate itself — which
     // makes the refinement step a no-op rather than a jump.
     let fit = if fit_den > 0.0 { Hz(fit_num / fit_den) } else { f0 };
-    Some(Verdict { f0, score, fit })
+    Some(Verdict {
+        #[cfg(test)]
+        f0,
+        score,
+        fit,
+    })
 }
 
 /// How well a peak `deviation` Hz off harmonic `k` of `f0` sits in that harmonic's mesh.
@@ -600,6 +670,75 @@ mod tests {
     /// A sawtooth-like series: 1/k over twelve harmonics.
     fn bright() -> Vec<f32> {
         (1..=12).map(|k| 1.0 / k as f32).collect()
+    }
+
+    /// Numerical oracle for the bridge: every bin is the existing candidate matcher,
+    /// and resolving a bin reads that bin's own fit even when it did not win the argmax.
+    #[test]
+    fn frontend_curve_and_fits_are_the_candidate_matcher() {
+        let mut sieve = HarmonicSieve::frontend(SR, Hz::A4_STANDARD);
+        sieve.process_samples(&tone(443.0, &bright(), 4096));
+        let frame = sieve.frame(Hz::A4_STANDARD).unwrap();
+        assert_eq!(frame.bins_per_semitone(), FRONTEND_BINS_PER_SEMITONE);
+        assert!((frame.min_midi() - FRONTEND_MIN_MIDI).abs() < 1e-5);
+        let bin_hz = SR.hz() / sieve.taper.len() as f32;
+        for bin in frame.tracked_bins().unwrap() {
+            let midi = frame.midi_of_bin(bin);
+            let hz = Hz(Hz::A4_STANDARD.0 * ((midi - 69.0) / 12.0).exp2());
+            let verdict = match_candidate(&sieve.peaks, hz, bin_hz, &mut sieve.slots, sieve.variant);
+            assert_eq!(
+                frame.salience_at(bin),
+                verdict.map_or(f32::NEG_INFINITY, |v| v.score)
+            );
+            if let Some(verdict) = verdict {
+                let expected = verdict
+                    .fit
+                    .to_midi(Hz::A4_STANDARD)
+                    .0
+                    .clamp(midi - REFINE_LIMIT_SEMITONES, midi + REFINE_LIMIT_SEMITONES);
+                assert_eq!(frame.resolve(bin).0, expected);
+            }
+        }
+        assert!(
+            cents(
+                Hz(440.0 * ((frame.argmax().unwrap().0 - 69.0) / 12.0).exp2()),
+                443.0
+            )
+            .abs()
+                < 5.0
+        );
+    }
+
+    #[test]
+    fn frontend_covers_the_violin_ceiling_and_retunes_its_fits() {
+        for concert in [Hz(415.0), Hz::A4_STANDARD, Hz(466.0)] {
+            let mut sieve = HarmonicSieve::frontend(SR, concert);
+            sieve.process_samples(&tone(2637.0, &bright()[..5], 8192));
+            let frame = sieve.frame(concert).unwrap();
+            let (midi, _) = frame.argmax().unwrap();
+            assert!(
+                (midi - Hz(2637.0).to_midi(concert).0).abs() < 0.1,
+                "concert={concert:?} midi={midi}"
+            );
+            assert!(
+                (frame.midi_of_bin(*frame.tracked_bins().unwrap().end()) - FRONTEND_MAX_MIDI).abs() < 1e-4
+            );
+        }
+        let mut silence = HarmonicSieve::frontend(SR, Hz::A4_STANDARD);
+        assert!(silence.frame(Hz::A4_STANDARD).is_none());
+    }
+
+    #[test]
+    fn frontend_at_a_low_device_rate_stays_below_nyquist() {
+        let sr = SampleRate(8_000);
+        let mut sieve = HarmonicSieve::frontend(sr, Hz::A4_STANDARD);
+        assert!(sieve.max_hz.0 < sr.hz() / 2.0);
+        let samples: Vec<f32> = (0..2048)
+            .map(|i| 0.2 * (std::f32::consts::TAU * 440.0 * i as f32 / sr.hz()).sin())
+            .collect();
+        sieve.process_samples(&samples);
+        let frame = sieve.frame(Hz::A4_STANDARD).unwrap();
+        assert!((frame.argmax().unwrap().0 - 69.0).abs() < 0.1);
     }
 
     #[test]

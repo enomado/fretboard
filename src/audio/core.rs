@@ -46,6 +46,7 @@ use crate::audio::dsp::resonator::{
 };
 use crate::audio::dsp::rtswipe::RtSwipe;
 use crate::audio::dsp::segmenter::NoteSegmenter;
+use crate::audio::dsp::sieve::HarmonicSieve;
 use crate::audio::dsp::spectrum::spectrum_bars_for_window;
 use crate::audio::dsp::swipe::SalienceFrame;
 use crate::audio::sample_rate::SampleRate;
@@ -220,6 +221,8 @@ pub(crate) struct ResonatorPipeline {
     /// only *scored* (`frame()` runs eight FFTs) at publish time when it is the active
     /// frontend — so the parallel run costs a memcpy per push while the bank is selected.
     rtswipe:      RtSwipe,
+    /// H6 curve frontend. Like RT-SWIPE, fed continuously and scored only when selected.
+    sieve:        HarmonicSieve,
     /// The A4 `rtswipe` was built against. Its ladder and grid are cut from the concert
     /// pitch, so a retune has to rebuild it — see [`Self::sync_settings`], which mirrors the
     /// bank's own rebuild-on-settings-change.
@@ -285,6 +288,7 @@ impl ResonatorPipeline {
         Self {
             analyzer: ResonatorAnalyzer::new(sample_rate),
             rtswipe: RtSwipe::new(sample_rate, rtswipe_ref),
+            sieve: HarmonicSieve::frontend(sample_rate, rtswipe_ref),
             rtswipe_ref,
             last_publish: Instant::now() - Duration::from_millis(16),
             sample_rate,
@@ -331,6 +335,7 @@ impl ResonatorPipeline {
         // a switch must be able to score the very next frame, and this is only a memcpy. The
         // eight FFTs of `frame()` are deferred to publish, and only when it is the frontend.
         self.rtswipe.process_samples(&samples);
+        self.sieve.process_samples(&samples);
 
         let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
         if now.duration_since(self.last_publish) < publish_interval {
@@ -338,12 +343,13 @@ impl ResonatorPipeline {
         }
         self.last_publish = now;
         let frontend = analysis_settings.resonator.frontend;
-        // The note frontend RT-SWIPE offers this frame — scored only when it is the one that
-        // will decide the note, so the bank path pays nothing for it. The bank's own snapshot
-        // still drives every display layer regardless (the parallel-run the user chose).
-        let rtswipe_frame = (frontend == PitchFrontend::RtSwipe)
-            .then(|| self.rtswipe.frame())
-            .flatten();
+        // Score only the selected alternative. The bank's snapshot still drives the
+        // spectrum display regardless of which frontend supplies the note evidence.
+        let source = match frontend {
+            PitchFrontend::ResonatorBank => None,
+            PitchFrontend::RtSwipe => self.rtswipe.frame(),
+            PitchFrontend::Sieve => self.sieve.frame(analysis_settings.concert_pitch_hz),
+        };
         // The level the 40 ms analysis plane last measured. Up to one analysis hop
         // stale, which is exactly what the panels' own gate read before it moved here
         // — same atomic, same staleness, one copy of the rule instead of two.
@@ -353,7 +359,7 @@ impl ResonatorPipeline {
             self.analyzer
                 .snapshot(analysis_settings.resonator.reassign, analysis_settings.accidental),
             FrontendFrame {
-                source: rtswipe_frame,
+                source,
                 frontend,
                 gamma: analysis_settings.resonator.gamma,
             },
@@ -375,6 +381,7 @@ impl ResonatorPipeline {
         // *frontend* alone never gets here, which is right: no grid changed.
         if settings.concert_pitch_hz != self.rtswipe_ref {
             self.rtswipe = RtSwipe::new(self.sample_rate, settings.concert_pitch_hz);
+            self.sieve = HarmonicSieve::frontend(self.sample_rate, settings.concert_pitch_hz);
             self.rtswipe_ref = settings.concert_pitch_hz;
         }
         let mut state = shared.lock().unwrap();
@@ -648,8 +655,8 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
 /// together: which frame decides the note, which detector it came from, and the display
 /// `gamma` its salience layer is drawn with.
 struct FrontendFrame {
-    /// The RT-SWIPE frame to decode the note from, or `None` to use the bank's own
-    /// (`snapshot.salience`). `Some` only when `frontend` is `RtSwipe`.
+    /// The alternative frontend's frame. `None` means it found no evidence; it never
+    /// authorizes substituting another detector's curve at this frontend's β.
     source:   Option<SalienceFrame>,
     /// Which detector `source` is — it selects the β (`melody::salience_beta`), not inferable
     /// from the frame, because the two frontends' curves are on different scales (see
@@ -685,9 +692,11 @@ fn publish_resonator_snapshot(
     // the errors left on a real violin are 4–6% near-ties, and a scalar cannot express a
     // tie for continuity to break. See `dsp::melody::SalienceDecoder`.
     //
-    // The salience the note is decoded from: RT-SWIPE's frame when it is the chosen
-    // frontend, the bank's own otherwise.
-    let melody_source = melody_override.as_ref().or(snapshot.salience.as_ref());
+    // Never substitute the bank when the selected alternative has no evidence.
+    let melody_source = match frontend {
+        PitchFrontend::ResonatorBank => snapshot.salience.as_ref(),
+        PitchFrontend::RtSwipe | PitchFrontend::Sieve => melody_override.as_ref(),
+    };
     // The roll's salience layer, from the frame that actually decided the note — so it
     // mirrors the *chosen* detector, not always the bank. Built here rather than in the
     // snapshot (which only ever knows the bank) and on the frame's **own** grid: the bank
@@ -944,7 +953,7 @@ mod tests {
         assert!(voiced > 0, "RT-SWIPE decided no pitch on a real violin, ever");
     }
 
-    /// REGRESSION: selecting the **RT-SWIPE** frontend routes its frame through the real
+    /// REGRESSION: selecting an FFT frontend routes its frame through the real
     /// engine wiring to the melody line — and the bank keeps driving the display alongside it.
     ///
     /// The twin of [`engine_writes_a_played_note_end_to_end`] with one field flipped, because
@@ -954,31 +963,69 @@ mod tests {
     /// for the waterfall. A break anywhere on that path is invisible below `core` and total to
     /// a user who picked RT-SWIPE — the staff would stay empty while the spectrum still moved.
     #[test]
-    fn engine_decodes_with_the_rtswipe_frontend() {
+    fn engine_decodes_with_the_fft_frontends() {
+        for frontend in [PitchFrontend::RtSwipe, PitchFrontend::Sieve] {
+            let sr = SampleRate(48_000);
+            let mut rig = Rig::new(sr);
+            rig.settings.lock().unwrap().resonator.frontend = frontend;
+
+            // Same A4 as the bank twin. RT-SWIPE reads A4 in ~9 ms, so 0.4 s is ample.
+            rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
+            let line = rig.note_line();
+            assert_eq!(
+                line.current.map(|n| n.midi.as_u8()),
+                Some(69),
+                "{frontend:?} should be holding A4; note_line = {line:?}"
+            );
+
+            // The bank runs in parallel and still feeds the display: the waterfall is the bank's
+            // even while the note is RT-SWIPE's. If this is empty the parallel run is not
+            // happening, i.e. picking RT-SWIPE silently killed the spectrum.
+            let has_display = rig
+                .shared
+                .lock()
+                .unwrap()
+                .reading
+                .as_ref()
+                .is_some_and(|r| !r.resonator_spectrum.is_empty());
+            assert!(
+                has_display,
+                "the bank stopped driving the display under {frontend:?}"
+            );
+        }
+    }
+
+    /// Absence is evidence from the selected detector, not permission to substitute the
+    /// bank at an unrelated emission scale. This used to be hidden by Option::or.
+    #[test]
+    fn a_silent_alternative_frontend_does_not_decode_the_bank() {
         let sr = SampleRate(48_000);
-        let mut rig = Rig::new(sr);
-        rig.settings.lock().unwrap().resonator.frontend = PitchFrontend::RtSwipe;
-
-        // Same A4 as the bank twin. RT-SWIPE reads A4 in ~9 ms, so 0.4 s is ample.
-        rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
-        let line = rig.note_line();
-        assert_eq!(
-            line.current.map(|n| n.midi.as_u8()),
-            Some(69),
-            "the RT-SWIPE frontend should be holding A4; note_line = {line:?}"
-        );
-
-        // The bank runs in parallel and still feeds the display: the waterfall is the bank's
-        // even while the note is RT-SWIPE's. If this is empty the parallel run is not
-        // happening, i.e. picking RT-SWIPE silently killed the spectrum.
-        let has_display = rig
-            .shared
-            .lock()
-            .unwrap()
-            .reading
-            .as_ref()
-            .is_some_and(|r| !r.resonator_spectrum.is_empty());
-        assert!(has_display, "the bank stopped driving the display under RT-SWIPE");
+        let mut analyzer = ResonatorAnalyzer::new(sr);
+        analyzer.process_samples(&violin_tone(440.0, sr, 24_000), true);
+        for frontend in [PitchFrontend::RtSwipe, PitchFrontend::Sieve] {
+            let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
+            assert!(
+                snapshot.salience.is_some(),
+                "the bank must offer a competing frame"
+            );
+            let shared = Arc::new(Mutex::new(SharedState::new()));
+            publish_resonator_snapshot(
+                &shared,
+                snapshot,
+                FrontendFrame {
+                    source: None,
+                    frontend,
+                    gamma: 0.72,
+                },
+                52,
+                1.0,
+                0.5,
+            );
+            let frames = shared.lock().unwrap().melody_since(None);
+            assert_eq!(frames.len(), 1);
+            assert!(frames[0].pitch.is_none());
+            assert!(frames[0].salience.is_none());
+        }
     }
 
     /// REGRESSION: the roll's salience layer mirrors the **frontend that decoded the note**,
@@ -992,43 +1039,55 @@ mod tests {
     /// grid then starts at MIDI 36, RT-SWIPE's still at 12, and painting one on the other
     /// lands the whole curve almost two octaves off (`ui::pianoroll::draw_heat`).
     #[test]
-    fn the_salience_layer_carries_the_rtswipe_grid_not_the_banks() {
+    fn the_salience_layer_carries_the_selected_frontends_grid_not_the_banks() {
         use crate::audio::dsp::analysis_math::{
             NOTE_BUCKET_MIN_MIDI,
             SPIRAL_BIN_COUNT,
         };
         use crate::core_types::pitch::PNote;
 
-        let sr = SampleRate(48_000);
-        let mut rig = Rig::new(sr);
-        {
-            let mut s = rig.settings.lock().unwrap();
-            s.resonator.frontend = PitchFrontend::RtSwipe;
-            // Narrow the bank so its grid (min 36) cannot be mistaken for RT-SWIPE's (min 12).
-            s.resonator.min_midi = PNote::new(36).unwrap();
-            s.resonator.max_midi = PNote::new(96).unwrap();
+        for (frontend, min_midi, bps, count) in [
+            (
+                PitchFrontend::RtSwipe,
+                NOTE_BUCKET_MIN_MIDI as f32,
+                8.0,
+                SPIRAL_BIN_COUNT,
+            ),
+            (PitchFrontend::Sieve, 36.0, 5.0, 361),
+        ] {
+            let sr = SampleRate(48_000);
+            let mut rig = Rig::new(sr);
+            {
+                let mut s = rig.settings.lock().unwrap();
+                s.resonator.frontend = frontend;
+                // The narrowed bank is 36..96 at 8 bins/semitone: neither frontend's grid.
+                s.resonator.min_midi = PNote::new(36).unwrap();
+                s.resonator.max_midi = PNote::new(96).unwrap();
+            }
+            rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
+            let salience = rig
+                .melody_since(None)
+                .into_iter()
+                .rev()
+                .find_map(|f| f.salience)
+                .expect("no scored salience frame under the selected frontend");
+
+            // Sieve reconstructs MIDI from Hz: allow 0.01 cent of round-off, while a
+            // different frontend's floor differs by whole octaves.
+            assert!(
+                (salience.min_midi - min_midi).abs() < 1e-4,
+                "wrong detector's floor under {frontend:?}"
+            );
+            assert_eq!(
+                salience.bins_per_semitone, bps,
+                "wrong detector's resolution under {frontend:?}"
+            );
+            assert_eq!(
+                salience.data.len(),
+                count,
+                "wrong detector's span under {frontend:?}"
+            );
         }
-        rig.feed(&violin_tone(440.0, sr, (sr.hz() * 0.4) as usize), sr);
-
-        let salience = rig
-            .melody_since(None)
-            .into_iter()
-            .rev()
-            .find_map(|f| f.salience)
-            .expect("no scored salience frame under RT-SWIPE");
-
-        // The RT-SWIPE grid, verbatim — not the narrowed bank's (36, span 60 → 481 bins).
-        assert_eq!(
-            salience.min_midi, NOTE_BUCKET_MIN_MIDI as f32,
-            "salience layer took the bank's min_midi, not RT-SWIPE's — it is mirroring the \
-             wrong detector's grid"
-        );
-        assert_eq!(salience.bins_per_semitone, 8.0);
-        assert_eq!(
-            salience.data.len(),
-            SPIRAL_BIN_COUNT,
-            "salience length is the bank column's, not RT-SWIPE's fixed grid"
-        );
     }
 
     /// REGRESSION: the melody history is published on the **audio** clock, and a

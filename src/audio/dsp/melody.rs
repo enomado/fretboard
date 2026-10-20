@@ -123,6 +123,14 @@ const SALIENCE_BETA_BANK: f32 = 40.0;
 /// not β's to fix) and pays for it in latency, which is the exact trade the two sweeps price.
 const SALIENCE_BETA_RTSWIPE: f32 = 20.0;
 
+/// H6 experimental compromise from both sweeps (five real takes, four intervals, both
+/// device rates). Relative to β=20 it improves the nominal low-register/octave changes
+/// by 16 ms, with <0.1 pp in-band movement on either trill. It still FAILS the unchanged
+/// end-to-end budget (A4->E5: 72 > 60 ms), and some step phases approach 100 ms. Lower βs
+/// suppress more octave excursions on the real leap. This is an experimental scale,
+/// not an accepted default; see `docs/harmonic_sieve.md` (H6).
+const SALIENCE_BETA_SIEVE: f32 = 80.0;
+
 /// The frame length both βs were swept at — `beta_sweep` steps every take at this hop — and
 /// therefore the frame length a β's "nats per unit salience" is **per**.
 ///
@@ -141,12 +149,13 @@ const SALIENCE_BETA_RTSWIPE: f32 = 20.0;
 /// same nats however it is sliced, and leaves both βs exactly as swept at this cadence.
 const BETA_CALIBRATION_DT: f32 = 0.016;
 
-/// The exchange rate for a given frontend — the one place the two βs are chosen between, so a
+/// The exchange rate for a given frontend — the one place the frontend's β is chosen, so a
 /// caller passes *which frontend*, never a bare number it might pick wrong.
 pub(crate) fn salience_beta(frontend: PitchFrontend) -> f32 {
     match frontend {
         PitchFrontend::ResonatorBank => SALIENCE_BETA_BANK,
         PitchFrontend::RtSwipe => SALIENCE_BETA_RTSWIPE,
+        PitchFrontend::Sieve => SALIENCE_BETA_SIEVE,
     }
 }
 
@@ -583,6 +592,7 @@ mod beta_sweep {
     use super::*;
     use crate::audio::dsp::resonator::ResonatorAnalyzer;
     use crate::audio::dsp::rtswipe::RtSwipe;
+    use crate::audio::dsp::sieve::HarmonicSieve;
     use crate::audio::sample_rate::SampleRate;
     use crate::core_types::note::AccidentalStyle;
     use crate::core_types::pitch::Hz;
@@ -591,6 +601,199 @@ mod beta_sweep {
     /// prior on this number was "nobody knows" — pYIN's implied rate (its emissions are
     /// deltas) is effectively infinite, and the linear link is β = 1.
     const CANDIDATES: [f32; 7] = [1.0, 5.0, 10.0, 20.0, 40.0, 80.0, 200.0];
+
+    /// H6 accuracy edge, using the same takes/truth and β grid as the other frontends.
+    /// All decoders see the very same frame; only the evidence exchange rate differs.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn sieve_beta_sweep() {
+        for Take {
+            name,
+            lo,
+            hi,
+            must_remain,
+        } in TAKES
+        {
+            let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
+            let mut reader = hound::WavReader::open(path).unwrap();
+            let sr = SampleRate(reader.spec().sample_rate);
+            let samples: Vec<f32> = reader
+                .samples::<i16>()
+                .map(|s| s.unwrap() as f32 / 32768.0)
+                .collect();
+            let mut sieve = HarmonicSieve::frontend(sr, Hz::A4_STANDARD);
+            let mut decoders = CANDIDATES.map(SalienceDecoder::with_beta);
+            let mut verdicts: [Vec<Option<f32>>; 7] = std::array::from_fn(|_| Vec::new());
+            let mut raw = Vec::new();
+            let hop = (sr.hz() * BETA_CALIBRATION_DT) as usize;
+            for (index, chunk) in samples.chunks_exact(hop).enumerate() {
+                sieve.process_samples(chunk);
+                let now = ((index + 1) * hop) as f64 / sr.hz() as f64;
+                let frame = sieve.frame(Hz::A4_STANDARD);
+                for (decoder, output) in decoders.iter_mut().zip(&mut verdicts) {
+                    let decoded = frame.as_ref().and_then(|frame| decoder.decode(frame, now));
+                    if frame.is_none() {
+                        decoder.reset();
+                    }
+                    if now >= 1.0 {
+                        output.push(decoded.map(|(midi, _)| midi));
+                    }
+                }
+                if now >= 1.0 {
+                    raw.push(frame.and_then(|f| f.argmax()).map(|(midi, _)| midi));
+                }
+            }
+            println!("\n--- sieve {name}, truth {lo}..={hi}, {} frames ---", raw.len());
+            for (label, output) in std::iter::once(("argmax".to_owned(), &raw)).chain(
+                CANDIDATES
+                    .iter()
+                    .zip(&verdicts)
+                    .map(|(beta, v)| (format!("beta {beta}"), v)),
+            ) {
+                let (inside, octave) = tally(output, lo..=hi);
+                print!(
+                    "{label:<12} in {inside:.4}% octave {octave:.4}% voiced={}/{}",
+                    output.iter().flatten().count(),
+                    output.len()
+                );
+                for MustRemain { label, midi } in must_remain {
+                    print!(" {label} {:.4}%", on_note(output, *midi));
+                }
+                println!();
+            }
+        }
+    }
+
+    fn sieve_change_latency_ms(from: f32, to: f32, beta: f32, sr: SampleRate, dt: f32, phase_ms: f32) -> f32 {
+        let hold = (sr.hz() * (0.6 + phase_ms / 1000.0)) as usize;
+        let mut signal = violin_tone(from, sr, hold);
+        signal.extend(violin_tone(to, sr, (sr.hz() * 0.6) as usize));
+        let mut sieve = HarmonicSieve::frontend(sr, Hz::A4_STANDARD);
+        let mut decoder = SalienceDecoder::with_beta(beta);
+        let target = Hz(to).to_midi(Hz::A4_STANDARD).0;
+        let hop = (sr.hz() * dt) as usize;
+        for (index, chunk) in signal.chunks_exact(hop).enumerate() {
+            sieve.process_samples(chunk);
+            let fed = (index + 1) * hop;
+            let now = fed as f64 / sr.hz() as f64;
+            let frame = sieve.frame(Hz::A4_STANDARD);
+            let decoded = frame.as_ref().and_then(|frame| decoder.decode(frame, now));
+            if frame.is_none() {
+                decoder.reset();
+            }
+            if fed > hold && decoded.is_some_and(|(midi, _)| (midi - target).abs() < 0.5) {
+                return (fed - hold) as f32 / sr.hz() * 1000.0;
+            }
+        }
+        f32::INFINITY
+    }
+
+    /// H6 latency edge: both device rates, four intervals, all 16 phases of the 16 ms hop.
+    /// The table is a measurement, including values that miss the product's latency budget.
+    #[test]
+    #[ignore = "measurement sweep — run with --ignored --nocapture"]
+    fn sieve_beta_latency_sweep() {
+        for sr in [SampleRate(44_100), SampleRate(48_000)] {
+            println!(
+                "\nSieve latency sr={} hop=16ms; range across 16 step phases (ms)",
+                sr.0
+            );
+            for beta in CANDIDATES {
+                print!("beta {beta:<5}");
+                for (from, to) in [(440.0, 493.88), (440.0, 659.25), (440.0, 880.0), (196.0, 293.66)] {
+                    let times: Vec<f32> = (0..16)
+                        .map(|phase| {
+                            sieve_change_latency_ms(from, to, beta, sr, BETA_CALIBRATION_DT, phase as f32)
+                        })
+                        .collect();
+                    print!(
+                        " {from:.0}->{to:.0} {:.2}..{:.2}",
+                        times.iter().copied().fold(f32::INFINITY, f32::min),
+                        times.iter().copied().fold(0.0, f32::max)
+                    );
+                }
+                println!();
+            }
+        }
+    }
+
+    /// The latency cadence regression used for the other frontends, on the real sieve.
+    #[test]
+    fn sieve_follows_a_played_octave_at_every_cadence() {
+        for sr in [SampleRate(44_100), SampleRate(48_000)] {
+            for dt in [0.008, 0.016, 0.020, 0.040, 0.080] {
+                let ms = sieve_change_latency_ms(440.0, 880.0, SALIENCE_BETA_SIEVE, sr, dt, 0.0);
+                assert!(
+                    ms.is_finite() && ms <= 160.0,
+                    "sieve octave sr={sr:?} dt={dt}: {ms}ms"
+                );
+            }
+        }
+    }
+
+    /// H6's final product on the five takes, including the anchor, repair layer and gate.
+    /// Same Rig as H0; truth is the player's bands, not a guessed frame annotation.
+    #[test]
+    #[ignore = "needs testdata/*.wav — run with --ignored --nocapture"]
+    fn h6_live_line() {
+        use crate::audio::test_rig::Rig;
+        for frontend in [
+            PitchFrontend::ResonatorBank,
+            PitchFrontend::RtSwipe,
+            PitchFrontend::Sieve,
+        ] {
+            for Take {
+                name,
+                lo,
+                hi,
+                must_remain,
+            } in TAKES
+            {
+                let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
+                let mut reader = hound::WavReader::open(path).unwrap();
+                let sr = SampleRate(reader.spec().sample_rate);
+                let samples: Vec<f32> = reader
+                    .samples::<i16>()
+                    .map(|s| s.unwrap() as f32 / 32768.0)
+                    .collect();
+                let mut rig = Rig::new(sr);
+                rig.settings.lock().unwrap().resonator.frontend = frontend;
+                let mut cursor = None;
+                let mut verdicts = Vec::new();
+                for part in samples.chunks(Rig::chunk(sr) * 50) {
+                    rig.feed(part, sr);
+                    for frame in rig.melody_since(cursor) {
+                        cursor = Some(frame.seq);
+                        if frame.t >= 1.0 {
+                            verdicts.push(frame.pitch.map(|midi| midi.0));
+                        }
+                    }
+                }
+                assert!(!verdicts.is_empty(), "no engine output for {name}");
+                let (inside, octave) = tally(&verdicts, lo..=hi);
+                print!(
+                    "{frontend:?} {name} frames={} in={inside:.4}% octave={octave:.4}% voiced={}",
+                    verdicts.len(),
+                    verdicts.iter().flatten().count()
+                );
+                for MustRemain { label, midi } in must_remain {
+                    print!(" {label}={:.4}%", on_note(&verdicts, *midi));
+                }
+                println!();
+                if frontend == PitchFrontend::Sieve {
+                    if name == "g_open_slow_strokes" || name == "g_open_fast_strokes" {
+                        assert_eq!(octave, 0.0, "phantom octave on {name}");
+                    }
+                    for MustRemain { midi, .. } in must_remain {
+                        assert!(
+                            on_note(&verdicts, *midi) > 0.0,
+                            "played note {midi} deleted on {name}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// Decode one take at one β; returns the MIDI verdict per bank frame (`None` = no
     /// pitch). Drives the production `SalienceDecoder` over the production snapshot, so this

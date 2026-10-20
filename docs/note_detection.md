@@ -198,6 +198,17 @@ Two things about the output are easy to miss and both are deliberate:
 
 ### Stage 2 — the decode (`dsp::melody::MelodyTracker`)
 
+H6 also wires an **experimental harmonic-sieve frontend** (`PitchFrontend::Sieve`)
+into this same decoder: 361 candidate scores on C2..C8 at 5 bins/semitone, with
+each bin's harmonic least-squares pitch fit. Its independently swept β is 80 per
+16 ms, scaled by the actual audio-clock `dt`. It has no second trellis or octave
+filter. It is not exposed in Controls and does not replace the bank default:
+the unchanged end-to-end A4→E5 budget fails (72 ms against 60), and the live
+vocal takes are still missing. See [`harmonic_sieve.md`, H6](harmonic_sieve.md#h6-кривая-решета-под-общим-треллисом-2026-10-20)
+for both β sweeps and the range/window limitations. An absent frame from a
+selected FFT frontend now remains absent; it cannot fall back to the bank at
+another frontend's emission scale.
+
 Runs at **plane B's cadence** and is the **only** place the melody line's octave is
 decided. Two stages, and only the first has a model of time:
 

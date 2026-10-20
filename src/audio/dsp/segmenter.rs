@@ -203,13 +203,13 @@ mod tests {
     /// the user perceives, and its absence is exactly how the melody came to be driven
     /// from pYIN alone (128 ms ordinary / 328 ms on an octave) without anyone
     /// noticing.
-    #[test]
-    fn end_to_end_latency_probe() {
+    fn melody_latency_probe(frontend: crate::audio::types::PitchFrontend) {
         use std::f32::consts::TAU;
 
         use crate::audio::dsp::melody::MelodyTracker;
         use crate::audio::dsp::pyin::PitchTracker;
         use crate::audio::dsp::resonator::ResonatorAnalyzer;
+        use crate::audio::dsp::sieve::HarmonicSieve;
         use crate::audio::sample_rate::SampleRate;
         use crate::core_types::note::AccidentalStyle;
         use crate::core_types::pitch::Hz;
@@ -230,7 +230,7 @@ mod tests {
         }
 
         /// Drive the whole stack and return ms until the line shows `to_hz`.
-        fn probe(from_hz: f32, to_hz: f32) -> f32 {
+        fn probe(from_hz: f32, to_hz: f32, frontend: crate::audio::types::PitchFrontend) -> f32 {
             let sr = SampleRate(48_000);
             let window_size = 6144usize;
             let analysis_hop = 1920usize; // ANALYSIS_INTERVAL = 40 ms
@@ -243,11 +243,13 @@ mod tests {
 
             let mut tracker = PitchTracker::new();
             let mut bank = ResonatorAnalyzer::new(sr);
+            let mut sieve = HarmonicSieve::frontend(sr, Hz::A4_STANDARD);
             let mut melody = MelodyTracker::default();
             let mut segmenter = NoteSegmenter::default();
             // Prime the bank with everything up to the first publish, as the live bank
             // (fed continuously from the audio callback) would already be.
             bank.process_samples(&sig[..window_size], true);
+            sieve.process_samples(&sig[..window_size]);
 
             let mut anchor: Option<(f32, f32)> = None;
             let mut next_analysis = window_size;
@@ -264,6 +266,7 @@ mod tests {
                 // The bank consumes audio continuously and republishes every ~16 ms.
                 if now_samples > bank_fed {
                     bank.process_samples(&sig[bank_fed..now_samples], true);
+                    sieve.process_samples(&sig[bank_fed..now_samples]);
                     bank_fed = now_samples;
                 }
                 // The pYIN path rebuilds the octave anchor every 40 ms.
@@ -279,12 +282,15 @@ mod tests {
                     // also what the melody's Viterbi measures its frame length off.
                     let now = now_samples as f64 / sr.0 as f64;
                     let snapshot = bank.snapshot(true, AccidentalStyle::Sharps);
-                    let melody_pitch = melody.update(
-                        snapshot.salience.as_ref(),
-                        anchor,
-                        now,
-                        crate::audio::types::PitchFrontend::ResonatorBank,
-                    );
+                    let sieve_frame = (frontend == crate::audio::types::PitchFrontend::Sieve)
+                        .then(|| sieve.frame(Hz::A4_STANDARD))
+                        .flatten();
+                    let frame = match frontend {
+                        crate::audio::types::PitchFrontend::ResonatorBank => snapshot.salience.as_ref(),
+                        crate::audio::types::PitchFrontend::Sieve => sieve_frame.as_ref(),
+                        crate::audio::types::PitchFrontend::RtSwipe => unreachable!("not part of this probe"),
+                    };
+                    let melody_pitch = melody.update(frame, anchor, now, frontend);
                     let line = segmenter.update(melody_pitch.map(|(m, _)| m), NO_ONSET, now);
                     if current(&line).map(|(m, _)| m) == Some(target_midi) {
                         return t_ms - change_ms;
@@ -351,7 +357,7 @@ mod tests {
         // the way to make it smaller is the bank's ring-down (a time/frequency trade in
         // `heuristic_alpha`), not a weaker kernel.
         const LOW_REGISTER_BUDGET_MS: f32 = 130.0;
-        println!("\n=== melody end-to-end latency (what the user sees) ===");
+        println!("\n=== {frontend:?} melody end-to-end latency (what the user sees) ===");
         let cases = [
             ("A4->B4  (2nd)  ", 440.0f32, 493.88f32, BUDGET_MS),
             ("A4->D5  (4th)  ", 440.0, 587.33, BUDGET_MS),
@@ -364,7 +370,7 @@ mod tests {
         // (Exactly how Phase 1.11's two slow cases were told apart from each other.)
         let measured: Vec<(&str, f32, f32)> = cases
             .iter()
-            .map(|&(name, from, to, budget)| (name, probe(from, to), budget))
+            .map(|&(name, from, to, budget)| (name, probe(from, to, frontend), budget))
             .collect();
         for (name, ms, budget) in &measured {
             println!("{name} -> {ms:>7.1} ms  (budget {budget:.0})");
@@ -375,6 +381,18 @@ mod tests {
                 "{name}: the line took {ms:.1} ms to show the note, budget {budget:.0} ms"
             );
         }
+    }
+
+    #[test]
+    fn end_to_end_latency_probe() {
+        melody_latency_probe(crate::audio::types::PitchFrontend::ResonatorBank);
+    }
+
+    /// H6 must meet the same budgets, including the anchor, repair and segmentation.
+    #[test]
+    #[ignore = "H6 acceptance gate: A4->E5 is 72 ms > 60; see docs/harmonic_sieve.md"]
+    fn sieve_end_to_end_latency_probe() {
+        melody_latency_probe(crate::audio::types::PitchFrontend::Sieve);
     }
 
     /// A one-frame blip shorter than `MIN_NOTE_SECONDS` is shown live but never

@@ -95,8 +95,7 @@ pub(crate) fn hann_taper(len: usize) -> Vec<f32> {
 
 /// Subtract a centred moving mean, reflecting each edge without repeating its bin.
 /// `width` is odd, `width / 2 < levels.len()`, and callers reuse both scratch buffers.
-/// Kept test-only with the two benchmark frontends that currently use it.
-#[cfg(test)]
+/// Shared by the simple detector's benchmark and the sieve's experimental H5 weighting.
 pub(crate) fn subtract_moving_mean(levels: &[f32], width: usize, contrast: &mut [f32], padded: &mut [f32]) {
     let half = width / 2;
     let n = levels.len();
