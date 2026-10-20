@@ -104,6 +104,39 @@ const MESH_SIGMA_RELATIVE: f32 = 0.005;
 /// Charging the shortfall took that to 0.9 %, at −0.7 points of corpus RPA.
 const MISSING_HARMONIC_PENALTY: f32 = 1.5;
 
+/// H4 experiments from `docs/detector_hypotheses_plan.md`, fixed before corpus runs.
+/// The half-frequency valley is weighted 1.8; the other four valleys have unit weight.
+const INTERHARMONIC_VALLEYS: [(f32, f32); 5] = [
+    (0.5, 1.8),
+    (1.5, 1.0),
+    (2.5, 1.0),
+    (1.0 / 3.0, 1.0),
+    (2.0 / 3.0, 1.0),
+];
+const FUNDAMENTAL_SHORTFALL_MULTIPLIER: f32 = 2.0;
+
+/// Independent H4 scoring experiments. Baseline remains the default until acceptance.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ScoringVariant {
+    #[default]
+    Baseline,
+    Interharmonic,
+    Fundamental,
+    Combined,
+}
+
+impl ScoringVariant {
+    pub(crate) fn from_env() -> Self {
+        match std::env::var("PITCH_BENCH_SIEVE_VARIANT").as_deref() {
+            Err(std::env::VarError::NotPresent) | Ok("baseline") => Self::Baseline,
+            Ok("a") => Self::Interharmonic,
+            Ok("b") => Self::Fundamental,
+            Ok("c") => Self::Combined,
+            value => panic!("PITCH_BENCH_SIEVE_VARIANT must be baseline/a/b/c, got {value:?}"),
+        }
+    }
+}
+
 /// Weight of the measured → predicted sum against the predicted → measured one (TWM's ρ).
 const UNEXPLAINED_PEAK_WEIGHT: f32 = 1.0;
 
@@ -184,6 +217,7 @@ pub(crate) struct SieveEstimate {
 }
 
 pub(crate) struct HarmonicSieve {
+    variant:     ScoringVariant,
     sample_rate: SampleRate,
     min_hz:      Hz,
     max_hz:      Hz,
@@ -213,6 +247,15 @@ impl HarmonicSieve {
     /// (`PERIODS_PER_WINDOW` of its periods) and both ends bound the candidates, so a pitch
     /// outside the range cannot be reported at all.
     pub(crate) fn new(sample_rate: SampleRate, min_hz: Hz, max_hz: Hz) -> Self {
+        Self::with_variant(sample_rate, min_hz, max_hz, ScoringVariant::Baseline)
+    }
+
+    pub(crate) fn with_variant(
+        sample_rate: SampleRate,
+        min_hz: Hz,
+        max_hz: Hz,
+        variant: ScoringVariant,
+    ) -> Self {
         assert!(
             0.0 < min_hz.0 && min_hz.0 < max_hz.0 && max_hz.0 < sample_rate.hz() / 2.0,
             "sieve range {min_hz:?}..{max_hz:?} must sit inside (0, Nyquist) at {sample_rate:?}"
@@ -222,6 +265,7 @@ impl HarmonicSieve {
         let full_scale = taper.iter().sum::<f32>() / 2.0;
         let fft = RealFftPlanner::<f32>::new().plan_fft_forward(size);
         Self {
+            variant,
             sample_rate,
             min_hz,
             max_hz,
@@ -337,13 +381,13 @@ impl HarmonicSieve {
     fn refine(&mut self, f0: Hz, bin_hz: f32) -> Option<Verdict> {
         let lo = f0.0 * (-REFINE_LIMIT_SEMITONES / 12.0).exp2();
         let hi = f0.0 * (REFINE_LIMIT_SEMITONES / 12.0).exp2();
-        let mut verdict = match_candidate(&self.peaks, f0, bin_hz, &mut self.slots)?;
+        let mut verdict = match_candidate(&self.peaks, f0, bin_hz, &mut self.slots, self.variant)?;
         for _ in 0..REFINE_PASSES {
             let fitted = Hz(verdict.fit.0.clamp(lo, hi));
             // Refinement moves f0 by at most half a semitone, so the peaks a candidate
             // judged stay inside `MAX_HARMONICS` of it; a `None` here would still be an
             // honest "the fit explains nothing", and keeps the unrefined verdict.
-            match match_candidate(&self.peaks, fitted, bin_hz, &mut self.slots) {
+            match match_candidate(&self.peaks, fitted, bin_hz, &mut self.slots, self.variant) {
                 Some(next) if next.score >= verdict.score => verdict = next,
                 _ => break,
             }
@@ -357,7 +401,13 @@ impl HarmonicSieve {
 ///
 /// `None` when every peak sits above harmonic [`MAX_HARMONICS`] of `f0`: the candidate is
 /// then not wrong but unjudgeable, and has no score to compare.
-fn match_candidate(peaks: &[Peak], f0: Hz, bin_hz: f32, slots: &mut [Option<SlotMatch>]) -> Option<Verdict> {
+fn match_candidate(
+    peaks: &[Peak],
+    f0: Hz,
+    bin_hz: f32,
+    slots: &mut [Option<SlotMatch>],
+    variant: ScoringVariant,
+) -> Option<Verdict> {
     slots.iter_mut().for_each(|slot| *slot = None);
 
     let mut total_weight = 0.0f32;
@@ -401,7 +451,13 @@ fn match_candidate(peaks: &[Peak], f0: Hz, bin_hz: f32, slots: &mut [Option<Slot
     let (mut fit_num, mut fit_den) = (0.0f32, 0.0f32);
     for (k, slot) in slots.iter().enumerate().take(top.0 + 1).skip(1) {
         let found = slot.map_or(0.0, |matched| matched.contribution.max(0.0));
-        predicted += found - MISSING_HARMONIC_PENALTY * (typical - found).max(0.0);
+        let shortfall_weight =
+            if k == 1 && matches!(variant, ScoringVariant::Fundamental | ScoringVariant::Combined) {
+                FUNDAMENTAL_SHORTFALL_MULTIPLIER
+            } else {
+                1.0
+            };
+        predicted += found - MISSING_HARMONIC_PENALTY * shortfall_weight * (typical - found).max(0.0);
         // Only partials inside their mesh vote on the fit; a slot whose best peak is off to
         // the side would drag the fit toward a neighbour.
         if let Some(matched) = slot
@@ -410,6 +466,21 @@ fn match_candidate(peaks: &[Peak], f0: Hz, bin_hz: f32, slots: &mut [Option<Slot
             let k = k as f32;
             fit_num += matched.weight * k * matched.hz.0;
             fit_den += matched.weight * k * k;
+        }
+    }
+
+    if matches!(variant, ScoringVariant::Interharmonic | ScoringVariant::Combined) {
+        // Same positive mesh and best-peak policy as the harmonic slots. Fractional
+        // positions use their own frequency for the relative bandwidth. A valley never
+        // rewards energy outside it, and its penalty is not multiplied by the number of
+        // neighbouring noise peaks. The existing measured → predicted term is unchanged.
+        for (ratio, weight) in INTERHARMONIC_VALLEYS {
+            let target = Hz(ratio * f0.0);
+            let energy = peaks
+                .iter()
+                .map(|peak| peak.weight * mesh(peak.hz.0 - target.0, Harmonic(1), target, bin_hz).max(0.0))
+                .fold(0.0, f32::max);
+            predicted -= weight * energy;
         }
     }
 
@@ -454,7 +525,12 @@ mod tests {
 
     /// The violin's range with a semitone of margin each side: G3 − 1 .. E7 + 1.
     fn violin_sieve() -> HarmonicSieve {
-        HarmonicSieve::new(SR, Hz(185.0), Hz(2794.0))
+        let variant = ScoringVariant::from_env();
+        if variant == ScoringVariant::Baseline {
+            HarmonicSieve::new(SR, Hz(185.0), Hz(2794.0))
+        } else {
+            HarmonicSieve::with_variant(SR, Hz(185.0), Hz(2794.0), variant)
+        }
     }
 
     /// `len` samples of a harmonic tone: `amplitudes[i]` is harmonic `i + 1`.
@@ -553,6 +629,118 @@ mod tests {
         assert!(cents(found.hz, 220.0).abs() < 5.0, "{found:?}");
     }
 
+    /// An arithmetic oracle on exact peaks: the absent fundamental costs one extra
+    /// typical peak in b; a half-frequency peak costs precisely 1.8 times its weight in a.
+    #[test]
+    fn h4_score_terms_match_hand_calculated_penalties() {
+        let mut slots = vec![None; MAX_HARMONICS + 1];
+        let peaks = [
+            Peak {
+                hz:     Hz(400.0),
+                weight: 30.0,
+            },
+            Peak {
+                hz:     Hz(600.0),
+                weight: 30.0,
+            },
+        ];
+        let baseline = match_candidate(&peaks, Hz(200.0), 1.0, &mut slots, ScoringVariant::Baseline).unwrap();
+        let b = match_candidate(&peaks, Hz(200.0), 1.0, &mut slots, ScoringVariant::Fundamental).unwrap();
+        assert!((baseline.score - 0.625).abs() < 1e-6);
+        assert!((b.score - 0.25).abs() < 1e-6);
+        let peaks = [
+            Peak {
+                hz:     Hz(200.0),
+                weight: 30.0,
+            },
+            Peak {
+                hz:     Hz(100.0),
+                weight: 10.0,
+            },
+        ];
+        let score = |variant, slots: &mut [Option<SlotMatch>]| {
+            match_candidate(&peaks, Hz(200.0), 1.0, slots, variant)
+                .unwrap()
+                .score
+        };
+        let base = score(ScoringVariant::Baseline, &mut slots);
+        let a = score(ScoringVariant::Interharmonic, &mut slots);
+        let c = score(ScoringVariant::Combined, &mut slots);
+        assert!((base - a - 18.0 / 80.0).abs() < 1e-6);
+        assert!((a - c).abs() < 1e-6, "no fundamental shortfall in this example");
+    }
+
+    /// Real-audio acceptance probe for H4. Truth is the played first-position band,
+    /// not an inferred per-frame note; only voiced estimates are its denominator.
+    #[test]
+    #[ignore = "H4 probe: needs testdata/a_string_trill.wav"]
+    fn h4_live_a_trill() {
+        let variant = ScoringVariant::from_env();
+        let mut reader = hound::WavReader::open("testdata/a_string_trill.wav").unwrap();
+        let sr = SampleRate(reader.spec().sample_rate);
+        assert_eq!(reader.spec().channels, 1);
+        let samples: Vec<f32> = reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect();
+        let mut sieve = HarmonicSieve::with_variant(sr, Hz(174.6), Hz(2794.0), variant);
+        let (mut voiced, mut position, mut down, mut unvoiced) = (0, 0, 0, 0);
+        for chunk in samples.chunks_exact(256) {
+            sieve.process_samples(chunk);
+            if let Some(found) = sieve.estimate() {
+                voiced += 1;
+                let midi = found.hz.to_midi(Hz::A4_STANDARD).0;
+                position += i32::from((68.5..=76.5).contains(&midi));
+                down += i32::from((56.5..=64.5).contains(&midi));
+            } else {
+                unvoiced += 1;
+            }
+        }
+        println!(
+            "H4 A trill {variant:?}: voiced={voiced}, in_position={position}, octave_down={down}, unvoiced={unvoiced}; in_position={:.4}%, down={:.4}%",
+            100.0 * position as f32 / voiced as f32,
+            100.0 * down as f32 / voiced as f32
+        );
+        assert!(voiced > 0);
+    }
+
+    /// Phase sweep of an abrupt harmonic-tone change on the corpus range and hop.
+    /// Reports first correct frame after the change (not group delay); the correct
+    /// answer must persist for the rest of the probe, so an early isolated guess loses.
+    #[test]
+    #[ignore = "H4 latency measurement, 16 onset phases"]
+    fn h4_step_latency() {
+        let variant = ScoringVariant::from_env();
+        let hop = (SR.hz() * 0.016) as usize;
+        for target in [493.8833, 880.0] {
+            let mut delays = Vec::new();
+            for phase in 0..16 {
+                let onset = 10 * hop + phase * hop / 16;
+                let mut samples = tone(440.0, &bright(), onset);
+                samples.extend(tone(target, &bright(), 10 * hop));
+                let mut sieve = HarmonicSieve::with_variant(SR, Hz(65.0), Hz(2093.0), variant);
+                let mut settled = None;
+                for (index, chunk) in samples.chunks_exact(hop).enumerate() {
+                    sieve.process_samples(chunk);
+                    let end = (index + 1) * hop;
+                    if end < onset {
+                        continue;
+                    }
+                    if sieve
+                        .estimate()
+                        .is_some_and(|found| cents(found.hz, target).abs() <= 50.0)
+                    {
+                        settled.get_or_insert(end);
+                    } else {
+                        settled = None;
+                    }
+                }
+                delays.push(1000.0 * (settled.expect("step must settle") - onset) as f32 / SR.hz());
+            }
+            println!("H4 step {variant:?} 440->{target} Hz: {delays:?} ms");
+        }
+    }
+
     /// Only even harmonics present is, physically, a tone an octave up — and must read so.
     #[test]
     fn even_harmonics_alone_read_as_the_octave() {
@@ -604,7 +792,7 @@ mod tests {
             .samples::<i16>()
             .map(|s| s.unwrap() as f32 / 32768.0)
             .collect();
-        let mut sieve = HarmonicSieve::new(sample_rate, Hz(lo), Hz(hi));
+        let mut sieve = HarmonicSieve::with_variant(sample_rate, Hz(lo), Hz(hi), ScoringVariant::from_env());
         let delay = sieve.delay_seconds();
         let (from, to) = (seconds("SIEVE_DUMP_FROM"), seconds("SIEVE_DUMP_TO"));
 

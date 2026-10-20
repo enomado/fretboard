@@ -42,6 +42,7 @@
 //! `docs/pitch_benchmark.md`.
 
 use std::collections::BTreeMap;
+mod transitions;
 use std::path::{
     Path,
     PathBuf,
@@ -55,7 +56,10 @@ use crate::audio::dsp::peak_comb::{
 use crate::audio::dsp::pyin::PitchTracker;
 use crate::audio::dsp::resonator::ResonatorAnalyzer;
 use crate::audio::dsp::rtswipe::RtSwipe;
-use crate::audio::dsp::sieve::HarmonicSieve;
+use crate::audio::dsp::sieve::{
+    HarmonicSieve,
+    ScoringVariant,
+};
 use crate::audio::dsp::swipe::tracked_bins;
 use crate::audio::sample_rate::SampleRate;
 use crate::audio::test_rig::Rig;
@@ -149,6 +153,7 @@ struct Tally {
     correct_cents:   f32,
     /// The «calm» metrics — what the user sees on the roll and RPA does not: see [`Calm`].
     calm:            Calm,
+    transitions:     transitions::Diagnostics,
 }
 
 /// What one frame was scored as. RPA only needs the counts; [`Calm`] needs the sequence.
@@ -287,6 +292,7 @@ impl Calm {
 
 impl Tally {
     fn merge(&mut self, other: &Tally) {
+        self.transitions.merge(&other.transitions);
         self.calm.merge(&other.calm);
         self.voiced += other.voiced;
         self.correct += other.correct;
@@ -575,7 +581,9 @@ fn bench_rtswipe(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) ->
 /// track, so unlike RT-SWIPE a single lag *does* fit it, and the sweep should find it.
 fn bench_sieve(audio: &Path, annotation: &Annotation, scorings: &[Scoring], range: (Hz, Hz)) -> Vec<Tally> {
     let (sample_rate, samples) = corpus_audio(audio);
-    let mut sieve = HarmonicSieve::new(sample_rate, range.0, range.1);
+    let mut sieve = HarmonicSieve::with_variant(sample_rate, range.0, range.1, ScoringVariant::from_env());
+    let changes = std::env::var_os("PITCH_BENCH_SIEVE_DIAGNOSTICS")
+        .map(|_| transitions::ReferenceChanges::new(annotation));
     let hop = (sample_rate.hz() * BANK_HOP_SECONDS) as usize;
     let mut tallies = vec![Tally::default(); scorings.len()];
 
@@ -590,6 +598,16 @@ fn bench_sieve(audio: &Path, annotation: &Annotation, scorings: &[Scoring], rang
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(tally, seconds, annotation, scoring, estimate);
+            if let Some(changes) = &changes {
+                let frame = tally.calm.prev.unwrap();
+                tally.transitions.follow(
+                    changes,
+                    seconds - scoring.lag_seconds,
+                    frame.verdict,
+                    frame.truth,
+                    frame.estimate,
+                );
+            }
         }
     }
     tallies
@@ -1419,6 +1437,7 @@ fn rtswipe_rpa_on_corpus() {
 #[test]
 #[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
 fn sieve_rpa_on_corpus() {
+    println!("H4 sieve variant: {:?}", ScoringVariant::from_env());
     let range = (Hz(REFERENCE_MDB_MASK_HZ.0), Hz(REFERENCE_MDB_MASK_HZ.1));
     run_corpus(
         "harmonic sieve RPA · MDB-stem-synth",
@@ -1933,6 +1952,9 @@ fn report(headline: &str, lags_ms: &[f32], per_lag: &[Tally]) {
             pct(tally.other, tally.voiced),
             pct(adjacent, missed)
         );
+    }
+    for (lag_ms, tally) in lags_ms.iter().zip(per_lag) {
+        tally.transitions.report(*lag_ms);
     }
     // H1: what the roll shows. Per lag, because «correct» — and with it the jitter pairs and
     // the octave runs — depends on which moment of the truth a frame is held to.
