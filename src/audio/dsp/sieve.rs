@@ -904,7 +904,7 @@ mod tests {
             .collect();
         let mut sieve = HarmonicSieve::with_variant(sr, Hz(174.6), Hz(2794.0), variant);
         let (mut voiced, mut position, mut down, mut unvoiced) = (0, 0, 0, 0);
-        for chunk in samples.chunks_exact(256) {
+        for chunk in samples.as_chunks::<256>().0 {
             sieve.process_samples(chunk);
             if let Some(found) = sieve.estimate() {
                 voiced += 1;

@@ -83,8 +83,29 @@ pub fn parse_notes(input: &str) -> IResult<&str, Vec<ANote>> {
 }
 
 #[test]
-fn brr() {
+fn parses_standard_guitar_tuning() {
     let input = "E2–A2–D3–G3–B3–E4";
-    let (_, notes) = parse_notes(input).unwrap();
-    println!("{:?}", notes);
+    let (remaining, notes) = parse_notes(input).unwrap();
+    assert!(remaining.is_empty());
+    let expected = [
+        (Note::E, 2),
+        (Note::A, 2),
+        (Note::D, 3),
+        (Note::G, 3),
+        (Note::B, 3),
+        (Note::E, 4),
+    ]
+    .map(|(note, octave)| {
+        ANote {
+            note,
+            ass: Accidental::Natural,
+            octave: Octave(octave),
+        }
+    });
+    assert_eq!(notes.len(), expected.len());
+    for (actual, expected) in notes.iter().zip(expected) {
+        assert_eq!(actual.note, expected.note);
+        assert_eq!(actual.ass, expected.ass);
+        assert_eq!(actual.octave, expected.octave);
+    }
 }

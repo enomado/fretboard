@@ -18,7 +18,7 @@
 - [x] platform-upgrade — обновить wasm-bindgen/js-sys/web-sys, Android/JNI и hot-reload зависимости, восстановить web/Android/desktop пути при изменении API.
 - [x] remaining-dependencies — обновить остальные прямые и транзитивные зависимости и Cargo.lock; повторно проверить свежесть и отсутствие ненужных дублей egui; разобрать standalone probe с учётом его назначения.
 - [x] upgrade-validation — проверить итоговый граф на desktop, wasm и Android, прогнать подходящие тесты и rustdoc; исправить регрессии, записать итоговые версии, реальные исключения и остаток.
-- [ ] smell-baseline — после завершения upgrade-validation выполнить MCP-аудиты, clippy и code_smell stats/каталог/применимые детекторы, собрать адресный backlog с приоритетами и известными FP.
+- [x] smell-baseline — после завершения upgrade-validation выполнить MCP-аудиты, clippy и code_smell stats/каталог/применимые детекторы, собрать адресный backlog с приоритетами и известными FP.
 - [ ] domain-types — разобрать primitive obsession, голые индексы/единицы и половинчатые миграции; использовать существующие канонические типы и проводить тип через внутренние вызовы.
 - [ ] error-contracts — разобрать fallback-затычки, Option, NaN и внешние ошибки; исправить подтверждённые нарушения контрактов без подавления диагностики.
 - [ ] reuse-and-boundaries — разобрать дубли, feature envy, длинные цепочки, data/arg clumps и циклы модулей; колокализовать инварианты, переиспользуя существующее.
@@ -191,7 +191,7 @@ Node builtins и сохранённый aubio WASM; Python имеет PEP 723-з
   APK/браузер/физическое аудио не запускались; итоговые проверки нового графа
   по-прежнему обязательны в upgrade-validation.
 
-## Текущее состояние
+## Итог обновлений (сессия 6)
 
 Сессия 6: upgrade-validation завершён, все шесть областей обновления закрыты;
 блокеров и выявленных регрессий нет. Исходники и lockfile в этой сессии
@@ -258,8 +258,138 @@ registry-зависимостей (три имени standalone probe входя
   hot-reload patch этим проходом не проверялись; окно Стаса не запускалось.
 - `git diff --check` — pass.
 
-Остатка по обновлениям нет. Следующая область — smell-baseline в отдельной
-чистой сессии; smell-аудит здесь не начинался. Исходные результаты будущего
-аудита сохранять в `/home/sc/t/scratch/fretboard_deps_codex_autorun`.
-Чужая untracked `.claude/` не затронута; временные браузер/сервер остановлены,
-собственный scratch удалён.
+Остатка по обновлениям нет. Smell-аудит в сессии 6 не начинался.
+
+## Текущее состояние — хендоф сессии 7
+
+`smell-baseline` завершён. Следующая область — **domain-types**; следующие
+пункты очереди здесь не выполнялись. Блокеров продолжения нет. Baseline:
+`/home/sc/t/scratch/fretboard_deps_codex_autorun/s7-baseline/` — исходные
+MCP JSON, stdout/stderr и отдельные `.exit`, каталоги обоих бинарей,
+compiler facts, принятые `scoped-*.log`, проверки и boundary-probe.
+Первичный снимок — `ea08692`; две последующие правки затрагивают только тесты.
+
+Сделано сверх инвентаризации: `.code_smell.toml` описывает реальные дома
+UI-токенов/темы и включает census клавиш и тестовых утверждений. Allowlist
+и закрытых зон нет: локальные цвета данных разрешены контрактом `tokens.rs`,
+число литералов само по себе не нарушение. Тест `brr` заменён проверкой всех
+шести нот/октав/альтераций и полного потребления строки. В H4 probe цикл
+`chunks_exact(256)` заменён эквивалентным `as_chunks::<256>().0`, с тем же
+отбрасыванием хвоста; DSP и эталоны не менялись.
+
+Реально проверено: `cargo test --locked --all-targets` — **244 lib + 2 UI**
+passed, 36 ignored, пять bin harness без тестов; отдельный тест парсера — pass.
+`cargo clippy --locked --all-targets` — pass, warning устранён.
+`policy-check` — 3 пути/96 файлов, 0 находок; `git diff --check` — pass.
+Wasm/Android/rustdoc после тестовых правок не повторялись; их итоговый проход
+остаётся за smell-validation. Ignored H4 probe с новой формой цикла собран,
+но не исполнялся. UI-поведение не менялось; существующие egui_kittest прошли.
+
+## Smell-baseline: охват, backlog и FP
+
+- Scoped MCP healthy/fresh; гиперграф: 6 локальных targets, 1273 items.
+  `workspace_stats`, `dead_pub_report` (182), `semantic_overlaps` (1273 seeds,
+  4980 пар при 0.8, без усечения), `crate_dependency_metric`,
+  `pub_use_pub_type_audit` (0), `unsafe_audit` (1), `mut_static_audit` (0),
+  `channel_capacity_audit` (1), `derive_audit(Debug)` (24), `fn_body_audit`
+  (107: 90 unwrap, 9 self-recursion, 8 panic) сохранены. Это desktop HIR;
+  `pub` и derive — worklist, не разрешение массово сужать API/добавлять Debug.
+- Затем обычный clippy; дополнительный проход с `too_many_lines`,
+  `cognitive_complexity`, `excessive_nesting` дал 10 уникальных адресов только
+  `too_many_lines` (15 сообщений с повторами lib/lib-test), не build-gate.
+- Первая команда суиты — `stats`: 1 пакет fretboard, **95 src-файлов,
+  1221 fn, 162 struct, 1381 параметр**, 0 файлов с parse ERROR.
+  Выполнены `prim --mode all --top 10000 --sites 10`, `range-sub` (8),
+  `god-file` (0 grab-bag/5 size-only), `dep-cycle` (1 local/0 cross-cut),
+  `co-change` (124 из 249 коммитов; 150 cross-module/96 neighbor пар),
+  `option-crutch --mode all` (34 fallback/3 error, 60 полей, 16 co-field
+  структур), `frame-ledger` (7 кандидатов/0 после сита), `serial-await` (0).
+  Syntax arg-clump: 16 params/7 fields; scan-loop: 9 кандидатов;
+  nan-clamp: 5 domain/1 divisor/27 fold; nan-swallow: 4/4 предиката разобрано,
+  0 swallow/order.
+- Compiler/Dylint выполнены: **arg-clump, iter-chain, feature-envy,
+  nan-clamp, nan-swallow, scan-loop, scan-rank, range-order, range-flow,
+  key-read**. Основной охват — 86 src-файлов + main.rs; nan-clamp сообщает
+  87 файлов. Только host lib/bins/default features, без test targets и
+  wasm/Android cfg. Arg-clump: 720 fn/132 struct baskets, 10/6 клумпов;
+  iter-chain: 16 сайтов/2 группы; feature-envy: 16 + 7 demoted, JSON помечен
+  `pilot_only=true`, подтверждён RA. Nan-clamp: 4 domain/19 fold;
+  nan-swallow: 4/4 предиката, 0 swallow/order. Scan-loop/rank: 6 сайтов.
+  Range-order: 45 Known + **2 OutsideCompiler** (`analysis_math.rs:303`,
+  `sieve.rs:491`, обе test-only функции). Range-flow: 58 HIR fn/104 sinks,
+  0 кандидатов, **4 outside-compiler**, 0 params-unresolved. Key-read: 1 Known.
+  Первые scan-loop/key-read отвергли изменившиеся тесты (exit 2); приняты
+  только повторные `*-compiler-stable.json` с Ran, exit 0.
+- Semantic-бинарь собран из установленного tool checkout с `--features semantic`.
+  Первичный RA обход ошибочно включил вложенный чужой worktree: эти отчёты
+  **не baseline**. Приняты повторные `scoped-*` на отдельной копии текущих
+  src/tests/assets и Cargo-файлов без `.claude/`: stats те же 95 файлов,
+  HIR обход 98 VFS-файлов/896 fn. Over-borrow 13; envy 16 + 7 demoted;
+  cross 0; iter-chain 16 сайтов/2 группы; scan-rank 1 high/1 med/2 low.
+  Repack-flow high-signal: 95 файлов/273 constructions/0 находок, это только
+  узкая lossless форма. Option calls: 55 ret/49 param, 1 firm-кандидат;
+  fields-semantic: 60 полей, **635 unresolved**, разобрано 101/2751 доступов
+  и 67/906 полей в литералах — ноль tighten не оправдывает все поля.
+  RA range-flow: 69 prefilter/58 HIR fn/104 sinks, 0 кандидатов/params-unresolved.
+  Блока потерянных из-за panic тел нет. Копия исходников и сборка удалены;
+  команды и исходные результаты сохранены.
+- Egui дополнительно: ui-token 164 literal (49 token-home, 13 theme, 102 domain)
+  + 19 derived; key-read syntax/compiler согласны. Test-no-assert: **96 файлов,
+  282 теста**; до фикса 259 asserts/21 panic-only/2 mute, после 260/20/2;
+  5676 unresolved вызовов после фикса — это не сертификат полноты.
+  `calc-in-panel` без политики дал exit 2; временный override DSP-дома
+  на одном пакете дал **0 индексированных файлов/имён**, хотя exit 0.
+  Инструмент ищет межкрейтовые вызовы, поэтому ноль класса A не засчитан.
+  Класс B (10 функций) — только worklist геометрии/панелей.
+- `half-migration` — exit 2: нет пакетов с библиотекой алгебры, класс неприменим.
+  Grid-text-color не имеет канонического helper/общего токена сетки fretboard;
+  SQL, MD/геокоординаты, Project/undo-mutations и пара computed/live model
+  не являются доменами этого приложения. Соответствующие policy-детекторы
+  не покрыты; чужие имена/политику не заимствовали. Отсутствие политики,
+  exit 2, OutsideCompiler и unresolved нигде не объявлены pass.
+
+### Адресный backlog
+
+P1 — подтверждённая ошибка внешнего ввода; P2 — полезная мишень/проверка
+контракта, ещё не приговор; P3 — низкий приоритет. Порядок областей прежний.
+
+| Область / приоритет | Адрес и следующий конкретный разбор |
+|---|---|
+| domain-types / P2 | `audio/types.rs:16` (`TunerReading.frequency_hz`), `audio/core.rs:267`, `app/fretboard_panel.rs:233`: сырой f32 проходит внутри приложения и снова заворачивается в уже существующий `Hz`. Провести канонический тип через внутренний путь, сохранив wire и арифметику. |
+| domain-types / P2 | `audio/types.rs:153`, `dsp/swipe.rs:290`, `dsp/trellis.rs:81`: `min_midi`/сетка как raw f32, рядом уже есть `Midi`, `PitchState`, `BankRange`. Различить индекс сетки, высоту и разрешение; не плодить второй PitchGrid и не менять границы/интерполяцию. |
+| error-contracts / **P1** | `app/take_marks.rs:88,104` → `note.rs:232` → `pitch.rs:15`: Declaration принимает `Cb4/E#4/Fb4/B#4/C10`, затем `.midi()` паникует; `C21/G255` молча дают MIDI **8/7** из-за `as u8`. Подтверждено исполняемым `declaration-boundary-probe.log` на неизменённом коде. Нужна валидация пользовательской границы до создания Declaration; расширение поддерживаемой энгармоники не решать попутно. |
+| error-contracts / P2 | `audio/worker_proto.rs:63–70`: generic encode гасит ошибку сериализации пустым пакетом; комментарий про callback не доказывает контракт всех callers. Проверить worker/main обработку и сохранить причину ошибки. `bin/mic_probe.rs:285`: join panic превращён в пустые данные. |
+| reuse-and-boundaries / P2 | `app.rs:365,401,407,413`, `app/controls.rs:59,63,111`: 7 повторных поисков `AudioInputOption` по id/kind, 2 группы обоих движков. Общая навигация должна сохранять приоритет preferred/fallback и реальное отсутствие устройства. |
+| reuse-and-boundaries / P3 | `audio/core.rs:307,498`: идентичные push_samples-обёртки; `native/imp/devices.rs:324` и `bin/mic_probe.rs:403`: повтор device label. Обёртки разных pipeline не требуют объединения DSP; оценить только полезный общий контракт. Local cycle `core_types::note ↔ pitch` низкоприоритетный, ожидаем для представлений одной ноты. |
+| audio-code-smells / P2 | `native/imp.rs:239,361–480`: unbounded очередь команд при медленном открытии устройства; проверить поток UI→control thread и способ ограничения/коалесцирования без блокирования UI. `core.rs:307,498`/arg-clump AudioContext — учитывать владение/порядок остановки. |
+| audio-code-smells / P2 | `dsp/rtswipe.rs:499`, `sieve.rs:425`, `swipe.rs:612`, `trellis.rs:320`: 4 compiler domain NaN clamps, плюс 19 fold. Прочитать finite/nonnegative контракты источников; не менять sqrt/log/likelihood и эталоны ради счётчика. |
+| ui-code-smells / P2 | `ui/pianoroll.rs:193`, `app/take_roll.rs:537`: вычисляемые Rect при узком plot и клиппинге marks; проверить реальные min/max и ввод через egui_kittest. `controls.rs:44,646`, `ui/snail.rs:64`: длинные UI-функции/over-borrow; выносить только связный инвариант, не набор виджетов ради LOC. |
+| remaining-findings / P2 | `src/main.rs:48`: единственный desktop unsafe без объяснения доверия к jump table; прочитать subsecond apply_patch Safety и контракт devserver, не сочинять гарантию корректности указателей по одному PID. MCP 182 dead-pub/24 missing Debug — только выборочный разбор реальных потребителей. |
+| smell-validation | Повторить принятые движки с теми же flags/охватом; RA из чистой копии без вложенных деревьев. Держать unresolved/неактивный cfg отдельными ограничениями, сопоставлять `.exit` и JSON verdict, затем выполнить итоговые target-гейты выше. |
+
+### Уже разобранные FP и неизменяемые решения
+
+- `MelodyHistory::oldest` (`audio/types.rs:258`) **не ужесточать** по единственному
+  unwrap caller: пустая/очищенная история законна, `.front()` действительно None.
+  `Declaration::parse(...).ok()` законен как «ещё не нота», но это не оправдание
+  P1 отсутствия проверки переводимости принятой ноты в MIDI.
+- `workers.rs:145` — **полный** `batch.drain(..)`, хвоста для сдвига нет;
+  это не MidCut O(N²). Поиск pYIN ограничен `N_THRESHOLDS`, что видно в коде,
+  а не доказывается эвристикой «Vec::new ⇒ константа». Строковые contains
+  в классификации устройств перебирают фиксированный набор маркеров.
+  Реальный high-кандидат `take_panel.rs:177` (corpus × takes) требует
+  scaling-проверки до оптимизации, не выдан за измеренную проблему.
+- Arg-clump signatures `egui_tiles::Behavior` определены внешним трейтом;
+  `ANote/Accidental/Octave`, `RollMapping`, wire `Latest/WorkerSnapshot` —
+  доменные бандлы/граница, не повод слить независимые модели.
+  Envy рисовалки к DTO не переносится в `core_types`/DSP; читать как вопрос
+  сужения UI borrow. MCP 9 «self-recursion» — совпадения имён методов разных
+  типов (`new`, `name`, `sanitized`, делегирование tracked_bins), не рекурсия.
+- `take_roll.rs:976` Escape отменяет незавершённую отметку, второго читателя
+  в src нет; конфликт не подтверждён, для изменения фокуса нужен kittest.
+  `take_roll.rs:620,657` заранее делают `whole.max(MIN_...)`: порядок clamp
+  обеспечен кодом. Цвета спектра/высоты и локальные const разрешены `tokens.rs`.
+  Два MUTE и большинство PANIC-ONLY — диагностические DSP/preview probes;
+  не придумывать численный эталон вместо их роли.
+- Locked §7, H3/H7, ремонтный слой, sample clock, две staff-линейки и
+  независимость pitch/heat сохранены. Чужая `.claude/` не изменялась.

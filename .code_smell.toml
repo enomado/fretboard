@@ -1,0 +1,27 @@
+# Baseline fretboard: только существующие контракты, без подавления находок.
+# Локальные цвета данных и геометрия допустимы по src/ui/tokens.rs; ui-token
+# оставлен advisory, чтобы его счётчик не превращался в новый продуктовый запрет.
+[ui_token]
+
+[[ui_token.zones]]
+path = "src/ui/tokens.rs"
+zone = "token-home"
+reason = "Общий словарь chrome-ролей, описанный в module-doc tokens.rs."
+
+[[ui_token.zones]]
+path = "src/ui/theme.rs"
+zone = "theme-defaults"
+reason = "Здесь задаются Visuals, шрифты и размеры штатных виджетов egui."
+
+[[ui_token.zones]]
+path = "src/"
+zone = "domain"
+reason = "Код fretboard; цвет данных и осмысленные локальные const требуют ручного триажа."
+
+# Централизованного keymap нет: аудит перечисляет всех читателей, затем проверяем
+# конфликт клавиш и фокус. Escape локального draft пока тоже остаётся в отчёте.
+[key_read]
+
+# Утверждения проверяем без allowlist; PANIC-ONLY и helper-вызовы разбираем по роли.
+[test_no_assert]
+
