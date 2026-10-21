@@ -1,0 +1,2561 @@
+{
+  "reference": "R2 preserved aubio WASM, explicit yinfft; tools/yinfft_oracle_fixture.cjs",
+  "window_samples": 2048,
+  "cases": [
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 55.41767501831055
+    },
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 55.41767501831055
+    },
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 55.040199279785156
+    },
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 55.54811477661133
+    },
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 65.72804260253906
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 65.7280502319336
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 65.44202423095703
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 65.61457824707031
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 110.17768096923828
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 110.17771911621094
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 110.02220916748047
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 110.3166732788086
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 220.1211395263672
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 220.1211395263672
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 220.07803344726562
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 220.08604431152344
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 440.66986083984375
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 440.66986083984375
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 440.8442687988281
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 440.9546813964844
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 885.2335205078125
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 885.2335205078125
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 885.5419921875
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 886.081787109375
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 216.68516540527344
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 216.68516540527344
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 100.0009536743164
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 100.00308227539062
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 160.0193634033203
+    },
+    {
+      "rate": 8000,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 160.0193634033203
+    },
+    {
+      "rate": 8000,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 2717.47314453125
+    },
+    {
+      "rate": 8000,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 2717.47314453125
+    },
+    {
+      "rate": 8000,
+      "hz": 3500,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 500.0904235839844
+    },
+    {
+      "rate": 8000,
+      "hz": 3500,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 8000,
+      "hz": 3500,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 500.0904235839844
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "noise",
+      "expected_hz": 3983.201416015625
+    },
+    {
+      "rate": 8000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "dc",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 56.69845962524414
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 56.69845962524414
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 55.15946960449219
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 55.02177429199219
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 66.69629669189453
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 66.6962890625
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 65.5373764038086
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 65.58888244628906
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 110.6885986328125
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 110.68860626220703
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 110.06591033935547
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 110.74041748046875
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 220.2722930908203
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 220.27236938476562
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 220.03857421875
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 220.1627197265625
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 440.2084655761719
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 440.20849609375
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 440.1549072265625
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 440.21087646484375
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 881.3277587890625
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 881.3277587890625
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 881.7072143554688
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 881.8484497070312
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 433.4672546386719
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 433.4672546386719
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 433.2727355957031
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 433.31976318359375
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 1770.4749755859375
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 1770.4749755859375
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 3832.504638671875
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 1771.6700439453125
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 2669.087890625
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 2669.087890625
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 5454.7314453125
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 2670.171630859375
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 3500,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 500.1475524902344
+    },
+    {
+      "rate": 16000,
+      "hz": 3500,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 3500,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 500.1475524902344
+    },
+    {
+      "rate": 16000,
+      "hz": 4186,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 380.6947937011719
+    },
+    {
+      "rate": 16000,
+      "hz": 4186,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 4186,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 380.6947937011719
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 16000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "dc",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 65.08213806152344
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 65.08224487304688
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 161.5068359375
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 56.312889099121094
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 74.26090240478516
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 74.260986328125
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 190.03103637695312
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 65.765625
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 115.0661849975586
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 115.06623840332031
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 110.48462677001953
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 110.80579376220703
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 221.9938201904297
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 221.99392700195312
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 220.20095825195312
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 220.6667938232422
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 440.7607727050781
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 440.7608337402344
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 440.11553955078125
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 440.18035888671875
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 880.452392578125
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 880.4525756835938
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 880.2464599609375
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 880.3218383789062
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 1300.7672119140625
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 1300.7672119140625
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 1300.4844970703125
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 1300.754150390625
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 1761.5997314453125
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 1761.5997314453125
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 3410.69189453125
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 1761.5662841796875
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 879.23828125
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 879.23828125
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 659.2349243164062
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 659.2425537109375
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 3497.498046875
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 3497.498046875
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 700.0587768554688
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 700.10888671875
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 3500,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 4188.2900390625
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 4188.2900390625
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 4179.494140625
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 4186.72265625
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 4186,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 44100,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "dc",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 68.39897155761719
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 68.3989028930664
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 160.6414337158203
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 160.3724822998047
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 55,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 74.60417938232422
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 74.60417938232422
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 190.8424072265625
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 66.75448608398438
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 65.40639,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 115.85684967041016
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 115.85685729980469
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 110.57746124267578
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 111.09563446044922
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 110,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 222.35682678222656
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 222.3567657470703
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 220.23605346679688
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 220.24526977539062
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 220,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 440.8926696777344
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 440.89251708984375
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 440.1307373046875
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 440.3675231933594
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 880.3780517578125
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 880.3781127929688
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 880.1156005859375
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 880.2279663085938
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 880,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 1300.72802734375
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 1300.727783203125
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 1300.429931640625
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 1300.528076171875
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1300,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 1761.2423095703125
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 1761.242431640625
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 3398.267333984375
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 1761.34619140625
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 1760,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 2640.98095703125
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 2640.980712890625
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 5356.48193359375
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 2641.7353515625
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 2637,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 1167.0736083984375
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 1167.0736083984375
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 500.0182800292969
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 1167.20849609375
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 3500,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.6,
+      "kind": "pure",
+      "expected_hz": 4192.89111328125
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.004,
+      "kind": "pure",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.005,
+      "kind": "pure",
+      "expected_hz": 4192.89111328125
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.6,
+      "kind": "missing",
+      "expected_hz": 4198.35498046875
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.004,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.005,
+      "kind": "missing",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.6,
+      "kind": "harmonic_noise",
+      "expected_hz": 4196.6416015625
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.004,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 4186,
+      "amplitude": 0.005,
+      "kind": "harmonic_noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "noise",
+      "expected_hz": 0
+    },
+    {
+      "rate": 48000,
+      "hz": 440,
+      "amplitude": 0.6,
+      "kind": "dc",
+      "expected_hz": 0
+    }
+  ]
+}

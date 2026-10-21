@@ -34,3 +34,5 @@ pub(crate) mod sieve;
 pub(crate) mod spectrum;
 pub(crate) mod swipe;
 pub(crate) mod trellis;
+// Spectral YIN's shared native/web calculation; line integration follows in R4.
+pub(crate) mod yinfft;

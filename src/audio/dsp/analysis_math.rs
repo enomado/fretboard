@@ -76,7 +76,9 @@ pub(crate) fn slide_in(history: &mut [f32], samples: &[f32]) {
     history[capacity - fresh..].copy_from_slice(&samples[samples.len() - fresh..]);
 }
 
-/// A symmetric Hann taper of `len` points — the one window shape this app analyses with.
+/// A symmetric Hann taper of `len` points, shared by the spectral display and
+/// FFT SWIPE/sieve frontends. Spectral YIN retains R2's periodic Hann (N rather
+/// than N−1 in the denominator) for numerical compatibility with its oracle.
 ///
 /// Shared rather than inlined at each call site because there are now two: the display's
 /// FFT ([`super::spectrum`], which tapers a fresh buffer every frame) and `dsp::rtswipe`

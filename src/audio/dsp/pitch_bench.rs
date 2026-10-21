@@ -61,6 +61,10 @@ use crate::audio::dsp::sieve::{
     ScoringVariant,
 };
 use crate::audio::dsp::swipe::tracked_bins;
+use crate::audio::dsp::yinfft::{
+    self,
+    YinFft,
+};
 use crate::audio::sample_rate::SampleRate;
 use crate::audio::test_rig::Rig;
 use crate::audio::types::{
@@ -611,6 +615,89 @@ fn bench_sieve(audio: &Path, annotation: &Annotation, scorings: &[Scoring], rang
         }
     }
     tallies
+}
+
+/// R3: complete windows at exactly R2's phase, with the same audio/noise as all
+/// other internal benchmarks. Optional oracle CSVs are compared by row, never
+/// interpolated; a timestamp mismatch is a different experiment and must fail.
+fn bench_yinfft(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Vec<Tally> {
+    let (sample_rate, samples) = corpus_audio(audio);
+    let mut detector = YinFft::new(sample_rate);
+    let hop = sample_rate.samples_in(yinfft::HOP);
+    let mut tallies = vec![Tally::default(); scorings.len()];
+    let oracle = std::env::var_os("PITCH_BENCH_YINFFT_ORACLE_DIR").map(|directory| {
+        load_annotation(&PathBuf::from(directory).join(audio.with_extension("csv").file_name().unwrap()))
+    });
+    let mut comparison = YinFftComparison::default();
+    let mut rows = 0;
+    for start in (0..samples.len().saturating_sub(yinfft::WINDOW_SAMPLES - 1)).step_by(hop) {
+        let end = start + yinfft::WINDOW_SAMPLES;
+        // R2 divides integer sample counts in JS f64, then the CSV loader
+        // rounds seconds to f32. Casting end first loses a sample past 2^24.
+        let seconds = (end as f64 / sample_rate.0 as f64) as f32;
+        let estimate = detector
+            .estimate(&samples[start..end])
+            .map(|found| (found.hz.to_midi(CONCERT_PITCH_HZ).0, found.periodicity));
+        if let Some(oracle) = &oracle {
+            assert_eq!(
+                oracle.times[rows],
+                seconds,
+                "oracle timestamp, {} row {rows}",
+                audio.display()
+            );
+            comparison.follow(estimate.map(|(midi, _)| midi), oracle.midi[rows]);
+        }
+        rows += 1;
+        for (tally, scoring) in tallies.iter_mut().zip(scorings) {
+            score_frame(tally, seconds, annotation, scoring, estimate);
+        }
+    }
+    if let Some(oracle) = oracle {
+        assert_eq!(
+            rows,
+            oracle.times.len(),
+            "oracle frame count, {}",
+            audio.display()
+        );
+        println!(
+            "YINFFT oracle {}: {comparison:?}",
+            audio.file_stem().unwrap().to_str().unwrap()
+        );
+        // These limits express numerical equivalence, not a quality threshold.
+        // Report the maximum and counts before applying the numerical limits.
+        assert_eq!(comparison.voicing_mismatches, 0);
+        assert_eq!(comparison.over_one_cent, 0);
+    }
+    tallies
+}
+
+#[derive(Default, Debug)]
+struct YinFftComparison {
+    frames:             usize,
+    both_voiced:        usize,
+    voicing_mismatches: usize,
+    max_cents:          f32,
+    max_frame:          usize,
+    over_one_cent:      usize,
+}
+
+impl YinFftComparison {
+    fn follow(&mut self, actual: Option<f32>, expected: Option<f32>) {
+        self.frames += 1;
+        match (actual, expected) {
+            (Some(actual), Some(expected)) => {
+                self.both_voiced += 1;
+                let cents = 100.0 * (actual - expected).abs();
+                if cents > self.max_cents {
+                    self.max_cents = cents;
+                    self.max_frame = self.frames - 1;
+                }
+                self.over_one_cent += usize::from(cents > 1.0);
+            }
+            (None, None) => {}
+            _ => self.voicing_mismatches += 1,
+        }
+    }
 }
 
 /// Drive the **peak comb** (`dsp::peak_comb`) over a track at its own cadence
@@ -1445,6 +1532,16 @@ fn sieve_rpa_on_corpus() {
         |audio, annotation, scorings| bench_sieve(audio, annotation, scorings, range),
     );
     print_baselines();
+}
+
+#[test]
+#[ignore = "needs datasets/MDB-stem-synth; optionally PITCH_BENCH_YINFFT_ORACLE_DIR with R2 CSVs"]
+fn yinfft_rpa_on_corpus() {
+    run_corpus(
+        "Rust YINFFT 2048/~16 ms RPA · MDB-stem-synth",
+        &[0.0, 8.0, 16.0, 24.0, 32.0, 48.0, 64.0, 80.0, 96.0],
+        bench_yinfft,
+    );
 }
 
 /// **pYIN's number** — the shipped `PitchTracker`, at its own 40 ms cadence.
