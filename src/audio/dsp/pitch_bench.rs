@@ -1332,9 +1332,13 @@ pub(super) fn tracks() -> Vec<(String, PathBuf, PathBuf)> {
 fn selected_tracks() -> Vec<(String, PathBuf, PathBuf)> {
     let filter = std::env::var("PITCH_BENCH_FILTER").unwrap_or_default();
     let instruments = instrument_filter();
+    // Unset = no limit. Set but unparsable is a typo, not "no limit": quietly running
+    // the whole 15.5 hours instead of the handful asked for is the worst way to find out.
     let limit: usize = std::env::var("PITCH_BENCH_LIMIT")
-        .ok()
-        .and_then(|v| v.parse().ok())
+        .map(|v| {
+            v.parse()
+                .unwrap_or_else(|e| panic!("PITCH_BENCH_LIMIT={v:?}: {e}"))
+        })
         .unwrap_or(usize::MAX);
     let selected: Vec<_> = tracks()
         .into_iter()

@@ -20,7 +20,7 @@
 - [x] upgrade-validation — проверить итоговый граф на desktop, wasm и Android, прогнать подходящие тесты и rustdoc; исправить регрессии, записать итоговые версии, реальные исключения и остаток.
 - [x] smell-baseline — после завершения upgrade-validation выполнить MCP-аудиты, clippy и code_smell stats/каталог/применимые детекторы, собрать адресный backlog с приоритетами и известными FP.
 - [x] domain-types — разобрать primitive obsession, голые индексы/единицы и половинчатые миграции; использовать существующие канонические типы и проводить тип через внутренние вызовы.
-- [ ] error-contracts — разобрать fallback-затычки, Option, NaN и внешние ошибки; исправить подтверждённые нарушения контрактов без подавления диагностики. Готовое решение s10 (take_marks/take_roll/PITCH_BENCH_LIMIT) — в `~/t/scratch/fretboard-deps_autorun/STOP.s10-worktree-guard`; блокер s10 (harness требовал worktree) снят `bgIsolation: none` в настройках серии.
+- [x] error-contracts — разобрать fallback-затычки, Option, NaN и внешние ошибки; исправить подтверждённые нарушения контрактов без подавления диагностики. Сессии 9 и 11: остаток s10 (take_marks/take_roll/PITCH_BENCH_LIMIT) исправлен, см. хендоф.
 - [ ] piano-roll-ui — (Стас, 21.10.2026: «улучшить пианоролл») разобрать пианоролл как инструмент: `src/ui/pianoroll.rs`, `src/app/pitch_roll_panel.rs`, `src/app/take_roll.rs`. Сначала снять текущее поведение kittest-сценариями и скриншотами (масштаб/скролл по времени и высоте, подписи рядов, читаемость нот/вибрато, выделение и разметка, производительность длинного тейка), записать список конкретных неудобств с адресами, затем исправить самые ценные. Locked-решения violin_trainer_plan (стафф ≠ пианоролл, LABEL_MIN_ROW_H и т. п.) не ломать; спорные продуктовые развилки — в хендоф вопросом Стасу, не молча.
 - [ ] phone-ui — (Стас, 21.10.2026: «улучшить UI для телефона») Android/узкий портрет: прогнать ключевые панели в kittest на ширинах 360–420 dp и в портрете/ландшафте, найти обрезания, мелкие touch-цели (<~44 dp), жесты, которые требуют мыши/hover, переполнение тулбаров и панелей egui_tiles. Учитывать `docs/android/GOTCHA_egui_layout_width_doubling.md`. Исправить подтверждённое, Android `--lib` сборка обязательна; живой прогон на телефоне — за Стасом, назвать отдельно.
 - [ ] deps-refresh — повторная сверка свежести прямых зависимостей с registry/upstream (резолвер `cargo update --dry-run`, свежие major); обновить то, что вышло после upgrade-validation, с проверкой desktop/wasm/Android. Нечего обновлять — закрыть одной строкой.
@@ -263,14 +263,33 @@ registry-зависимостей (три имени standalone probe входя
 
 Остатка по обновлениям нет. Smell-аудит в сессии 6 не начинался.
 
-## Текущее состояние — хендоф сессии 9, DRAIN → Claude
+## Текущее состояние — хендоф сессии 11 (Claude)
 
-По прямому поручению Стаса серия передаётся из Codex в Claude через Fleet.
-DRAIN соблюдён; STOP не нужен, реальных блокеров нет. **error-contracts пока
-не закрыт**: следующий исполнитель продолжает два кандидата этой области
-из backlog ниже, затем переходит к reuse-and-boundaries. Новые области здесь
-не начинались. Domain-types и все обновления остаются завершёнными.
-Baseline: `s7-baseline/`; текущие выводы и воспроизводимый браузерный стенд —
+**error-contracts закрыт.** Следующая область — `piano-roll-ui`, затем
+`phone-ui`, `deps-refresh` и smell-области по очереди. Блокеров нет.
+Сессия 10 ушла в STOP из-за worktree-guard харнесса, кода не меняла;
+guard снят настройкой серии, сессия 11 работала прямо в `main`.
+
+Сессия 11 исправила оба остатка s9:
+- `take_marks::load_marks` → `Result`: только `NotFound` = «разметки ещё нет»,
+  прочая ошибка открытия и сбой чтения строки (I/O, не-UTF-8) — `Err` с путём
+  и номером строки; пропуск malformed JSON-строк сохранён.
+- `take_roll`: `save_error: Option<String>` заменён на `MarksFile`
+  (`InSync`/`WriteFailed`/`Unreadable`). Нечитаемый при открытии файл
+  блокирует запись до переоткрытия тейка, статус «marks file unreadable,
+  not overwritten: …»; прежнее «marks NOT saved: …» сохранено.
+- `pitch_bench` `PITCH_BENCH_LIMIT`: unset = без лимита, неразбираемое
+  значение — panic с именем и значением, как у соседних `PITCH_BENCH_*`.
+
+Проверки s11: `cargo test --release --lib take_` — 35 passed/2 ignored,
+включая новые отказные тесты EISDIR/не-UTF-8 и egui_kittest «две реальные
+клики по нечитаемому файлу не меняют ни байта»; `cargo clippy --all-targets`,
+wasm `--lib --bins`, Android `--lib` (NDK r27c, API 26), rustdoc lib
+`-D warnings` — pass. Полный `cargo test --all-targets` в s11 не гонялся.
+
+### Хендоф сессии 9 (Codex → Claude), история
+
+Baseline: `s7-baseline/`; выводы s9 и воспроизводимый браузерный стенд —
 `/home/sc/t/scratch/fretboard_deps_codex_autorun/s9-error-contracts/`.
 
 Исправлены все три прежние строки error-contracts: Declaration проверяет
@@ -386,8 +405,7 @@ P1 — подтверждённая ошибка внешнего ввода; P2
 
 | Область / приоритет | Адрес и следующий конкретный разбор |
 |---|---|
-| error-contracts / P2, остаток DRAIN | `app/take_marks.rs:191–201`, `take_roll.rs:LoadedTake::new`: load_marks считает любой File::open error отсутствием файла, а map_while(Result::ok) обрывает чтение на I/O/UTF-8 ошибке. Проверить передачу ошибки вместо «пустых/частичных marks», исключить последующую перезапись нечитаемой разметки. Законную политику skip malformed JSON-line сохранить; неполный файл не объявлять полным. Кандидат найден чтением, отказный сценарий ещё не запускался. |
-| error-contracts / P2, остаток DRAIN | `audio/dsp/pitch_bench.rs:1335–1338`: PITCH_BENCH_LIMIT с неверным числом через ok/and_then становится usize::MAX. Проверить контракт внешнего параметра, различить отсутствие и ошибку ввода, не менять DSP/корпус/эталоны. Остальные разобранные env defaults означают отсутствие фильтра/переопределения; instrument_filter None при unset законен. |
+| error-contracts — закрыто s11 | load_marks/MarksFile и PITCH_BENCH_LIMIT исправлены (см. хендоф). Остальные env defaults pitch_bench означают отсутствие фильтра/переопределения; instrument_filter None при unset законен. |
 | reuse-and-boundaries / P2 | `app.rs:365,401,407,413`, `app/controls.rs:59,63,111`: 7 повторных поисков `AudioInputOption` по id/kind, 2 группы обоих движков. Общая навигация должна сохранять приоритет preferred/fallback и реальное отсутствие устройства. |
 | reuse-and-boundaries / P3 | `audio/core.rs:307,498`: идентичные push_samples-обёртки; `native/imp/devices.rs:324` и `bin/mic_probe.rs:403`: повтор device label. Обёртки разных pipeline не требуют объединения DSP; оценить только полезный общий контракт. Local cycle `core_types::note ↔ pitch` низкоприоритетный, ожидаем для представлений одной ноты. |
 | audio-code-smells / P2 | `native/imp.rs:239,361–480`: unbounded очередь команд при медленном открытии устройства; проверить поток UI→control thread и способ ограничения/коалесцирования без блокирования UI. `core.rs:307,498`/arg-clump AudioContext — учитывать владение/порядок остановки. |
