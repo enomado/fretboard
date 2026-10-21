@@ -1226,8 +1226,8 @@ mod tests {
                             rig.plot = pianoroll::plot_rect(rect);
                             rig.take.interact(ui, &resp, rig.plot, bank(), rig.marking);
                         });
-                    rig.offset_y = out.state.offset.y;
-                    rig.offset_x = out.state.offset.x;
+                    rig.offset_y = out.state.unclamped_offset().y;
+                    rig.offset_x = out.state.unclamped_offset().x;
                 },
                 Rig {
                     take,
@@ -1259,6 +1259,7 @@ mod tests {
                 unit: MouseWheelUnit::Point,
                 delta: egui::Vec2::new(0.0, delta_y),
                 phase: TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
                 modifiers,
             },
             modifiers,

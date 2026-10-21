@@ -30,9 +30,11 @@ fn render_row(caption: bool) -> image::RgbaImage {
     let mut harness = Harness::builder()
         .with_pixels_per_point(PPP)
         .with_size(egui::Vec2::new(230.0, 40.0))
+        .with_context_setup(|ctx| {
+            fretboard::ui::theme::install_fonts(ctx);
+            fretboard::ui::theme::apply_theme(ctx);
+        })
         .build_ui(move |ui| {
-            fretboard::ui::theme::install_fonts(ui.ctx());
-            fretboard::ui::theme::apply_theme(ui.ctx());
             ui.painter()
                 .rect_filled(ui.max_rect(), 0.0, Color32::from_rgb(24, 27, 31));
             ui.add_space(5.0);

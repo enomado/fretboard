@@ -184,4 +184,37 @@ mod tests {
             egui_tiles::Tile::Container(_) => None,
         }
     }
+
+    /// Dependency upgrades must read the old layout, including the root ID,
+    /// split proportions, tab order, active tab and hidden panes.
+    #[test]
+    fn workspace_layout_from_egui_tiles_0_17_1_still_loads() {
+        use super::WorkspaceTab;
+
+        let old: egui_tiles::Tree<WorkspaceTab> = ron::from_str(include_str!(
+            "../../tests/fixtures/workspace_egui_tiles_0_17_1.ron"
+        ))
+        .unwrap();
+
+        let mut tiles = egui_tiles::Tiles::default();
+        let controls = tiles.insert_pane(WorkspaceTab::Controls);
+        let staff = tiles.insert_pane(WorkspaceTab::Staff);
+        let roll = tiles.insert_pane(WorkspaceTab::PitchRoll);
+        let mut tabs = egui_tiles::Tabs::new(vec![controls, staff]);
+        tabs.set_active(staff);
+        let left = tiles.insert_container(tabs);
+        let root = tiles.insert_container(egui_tiles::Linear::new_binary(
+            egui_tiles::LinearDir::Horizontal,
+            [left, roll],
+            0.3,
+        ));
+        let mut expected =
+            egui_tiles::Tree::new(eframe::egui::Id::unique("fretboard_workspace_tree"), root, tiles);
+        expected.set_visible(controls, false);
+
+        assert!(
+            old == expected,
+            "saved workspace layout changed during egui upgrade"
+        );
+    }
 }

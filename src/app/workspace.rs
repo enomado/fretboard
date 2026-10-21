@@ -308,5 +308,8 @@ fn close_workspace_tab(tree: &mut egui_tiles::Tree<WorkspaceTab>, tab: Workspace
 
 pub(super) fn default_workspace_tree() -> egui_tiles::Tree<WorkspaceTab> {
     // Дефолт = все панели в одной полосе вкладок. Реестр панелей — `WorkspaceTab::ALL`.
-    egui_tiles::Tree::new_tabs("fretboard_workspace_tree", WorkspaceTab::ALL.to_vec())
+    egui_tiles::Tree::new_tabs(
+        egui::Id::unique("fretboard_workspace_tree"),
+        WorkspaceTab::ALL.to_vec(),
+    )
 }

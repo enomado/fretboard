@@ -1,0 +1,39 @@
+// Serialized by egui_tiles 0.17.1 / egui 0.36.2 / ron 0.12.2.
+// Horizontal 30/70 split: Controls (hidden) + Staff (active) tabs, then PitchRoll.
+(
+    id: (17911279808499307576),
+    root: Some((5)),
+    tiles: (
+        next_tile_id: 6,
+        tiles: {
+            (2): Pane(Staff),
+            (1): Pane(Controls),
+            (5): Container(Linear((
+                children: [
+                    (4),
+                    (3),
+                ],
+                dir: Horizontal,
+                shares: (
+                    shares: {
+                        (3): 1.4,
+                        (4): 0.6,
+                    },
+                ),
+            ))),
+            (4): Container(Tabs((
+                children: [
+                    (1),
+                    (2),
+                ],
+                active: Some((2)),
+            ))),
+            (3): Pane(PitchRoll),
+        },
+        invisible: [
+            (1),
+        ],
+    ),
+    height: None,
+    width: None,
+)

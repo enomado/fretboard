@@ -13,7 +13,7 @@
 
 <!-- AUTORUN_TASKS_START -->
 - [x] dependency-inventory — проверить все прямые, целевые, dev- и git-зависимости, доступные релизы и совместимость; снять исходные проверки и записать короткий список обновлений/осознанных исключений.
-- [ ] egui-upgrade — согласованно обновить eframe/egui, egui_tiles, egui_kittest и граф рендеринга до свежих совместимых версий, мигрировать используемые API, проверить desktop и UI-тесты.
+- [x] egui-upgrade — согласованно обновить eframe/egui, egui_tiles, egui_kittest и граф рендеринга до свежих совместимых версий, мигрировать используемые API, проверить desktop и UI-тесты.
 - [ ] audio-upgrade — обновить cpal, ringbuf, rustfft, realfft, resonators и остальные аудиозависимости; сохранить расчётные контракты, проверить затронутый DSP и нативное аудио.
 - [ ] platform-upgrade — обновить wasm-bindgen/js-sys/web-sys, Android/JNI и hot-reload зависимости, восстановить web/Android/desktop пути при изменении API.
 - [ ] remaining-dependencies — обновить остальные прямые и транзитивные зависимости и Cargo.lock; повторно проверить свежесть и отсутствие ненужных дублей egui; разобрать standalone probe с учётом его назначения.
@@ -193,9 +193,35 @@ Node builtins и сохранённый aubio WASM; Python имеет PEP 723-з
 
 ## Текущее состояние
 
-Сессия 1: dependency-inventory завершён; блокеров нет. Следующая область —
-egui-upgrade: применить набор 0.37.0/tiles 0.18.0 с desktop clipboard,
-мигрировать API и проверить desktop/UI. Аудио, platform и остальные обновления
-остаются своим следующим сессиям; корневой граф пока исходный.
-Сохранены все 14 пунктов единой очереди; smell не начинался и ждёт
-upgrade-validation. Чужая untracked `.claude/` не затронута.
+Сессия 2: egui-upgrade завершён; блокеров нет. Свежесть повторно проверена
+через live crates.io API/upstream 2026-10-21. Корневой граф обновлён:
+eframe/egui/epaint/egui-wgpu/egui-winit/egui_glow/kittest 0.37.0,
+tiles 0.18.0, согласованный AccessKit. Desktop clipboard включён явно.
+`cargo metadata --locked` и `cargo tree --locked --target all --invert egui`
+подтвердили один egui и отсутствие dockyard; новый docking движок не добавлялся.
+wgpu/core/hal/types/naga 30.0.1 и winit 0.30.13 уже актуальны;
+адресный `cargo update` не изменил их. [glow](https://crates.io/api/v1/crates/glow)
+0.17.0 сохранён: свежая 0.18.0 не входит в требования eframe/egui_glow 0.37.
+Форк resonators и оба Cargo-файла lifecycle_probe не менялись.
+
+Мигрированы root ID дерева (`Id::unique`, прежнее значение сохранено),
+чтение фактического scroll offset и источник wheel-события в kittest;
+fonts/theme пиксельного стенда ставятся до первого прохода через
+`with_context_setup`. Ожидания тестов не ослаблены. Добавлен fixture,
+реально сериализованный tiles 0.17.1 / egui 0.36.2: чтение новой версией
+сохраняет ID, split 30/70, порядок/активность вкладок и скрытую панель.
+
+Реально выполнено на новом графе (cargo с `--locked`):
+- `cargo test --all-targets`: 242 lib + 2 UI passed, 36 ignored;
+  затем оба persistence-теста, включая новый legacy fixture, passed.
+- `cargo clippy --all-targets`: pass; только прежний
+  `chunks_exact_to_as_chunks` в `src/audio/dsp/sieve.rs:907`.
+- wasm `cargo check --target wasm32-unknown-unknown --lib --bins`: pass.
+- Android `cargo check --target aarch64-linux-android --lib`: pass,
+  NDK r27c с теми же CC/API 26 и AR, что в исходной проверке.
+- `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --lib`: pass.
+
+Следующая область — audio-upgrade; platform и remaining-dependencies
+остаются в очереди. Итоговый проход после всех обновлений — upgrade-validation;
+smell до его завершения не начинать. APK/браузер/физическое аудио не запускались.
+Чужая untracked `.claude/` не затронута.
