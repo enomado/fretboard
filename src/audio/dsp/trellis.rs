@@ -60,6 +60,8 @@
 //! (`melody::BETA_CALIBRATION_DT`, 2026-09-23: before it, a played octave was never
 //! followed at 30 ms cadence and up). pYIN's caller runs at a fixed 40 ms and does not need to.
 
+use crate::core_types::pitch::Midi;
+
 /// Which bin of a [`PitchGrid`] the trellis is in.
 ///
 /// A newtype because this module traffics in **two** index domains that are trivially
@@ -78,7 +80,7 @@ pub(crate) struct PitchState(pub(crate) usize);
 /// constant would blur the very peaks the decision is made from.
 #[derive(Clone, Debug)]
 pub(crate) struct PitchGrid {
-    min_midi:          f32,
+    min_midi:          Midi,
     bins_per_semitone: f32,
     n_pitch:           usize,
 }
@@ -89,8 +91,8 @@ impl PitchGrid {
     /// Contract: the span must be non-empty and the resolution positive — both are
     /// compile-time-ish facts at every call site (module constants), so a bad grid is a
     /// programming error, not an input to handle.
-    pub(crate) fn new(min_midi: f32, max_midi: f32, bins_per_semitone: f32) -> Self {
-        assert!(max_midi > min_midi, "empty pitch grid {min_midi}..{max_midi}");
+    pub(crate) fn new(min_midi: Midi, max_midi: Midi, bins_per_semitone: f32) -> Self {
+        assert!(max_midi > min_midi, "empty pitch grid {min_midi:?}..{max_midi:?}");
         assert!(
             bins_per_semitone > 0.0,
             "grid resolution {bins_per_semitone} must be positive"
@@ -98,7 +100,7 @@ impl PitchGrid {
         Self {
             min_midi,
             bins_per_semitone,
-            n_pitch: ((max_midi - min_midi) * bins_per_semitone) as usize,
+            n_pitch: ((max_midi.0 - min_midi.0) * bins_per_semitone) as usize,
         }
     }
 
@@ -108,13 +110,13 @@ impl PitchGrid {
 
     /// Fractional bin of a MIDI pitch. May fall outside `0..n_pitch` — the caller decides
     /// what an off-grid observation means, because that answer differs by channel.
-    pub(crate) fn bin_of_midi(&self, midi: f32) -> f32 {
-        (midi - self.min_midi) * self.bins_per_semitone
+    pub(crate) fn bin_of_midi(&self, midi: Midi) -> f32 {
+        (midi.0 - self.min_midi.0) * self.bins_per_semitone
     }
 
     /// The MIDI pitch at a state's bin *centre*.
-    pub(crate) fn midi_of_state(&self, state: PitchState) -> f32 {
-        self.min_midi + state.0 as f32 / self.bins_per_semitone
+    pub(crate) fn midi_of_state(&self, state: PitchState) -> Midi {
+        Midi(self.min_midi.0 + state.0 as f32 / self.bins_per_semitone)
     }
 
     /// How far a transition may reach, in bins: ±1 octave. Beyond that a move must go
@@ -444,7 +446,7 @@ mod tests {
 
     /// pYIN's grid, so the calibration tests speak in the numbers the old kernel used.
     fn pyin_grid() -> PitchGrid {
-        PitchGrid::new(24.0, 108.0, 10.0)
+        PitchGrid::new(Midi(24.0), Midi(108.0), 10.0)
     }
 
     /// **The calibration.** This module claims to *generalize* pYIN's kernel rather than
@@ -601,8 +603,8 @@ mod tests {
     #[test]
     fn a_lone_outlier_does_not_move_the_path() {
         let grid = pyin_grid();
-        let a4 = PitchState(grid.bin_of_midi(69.0) as usize);
-        let a5 = PitchState(grid.bin_of_midi(81.0) as usize);
+        let a4 = PitchState(grid.bin_of_midi(Midi(69.0)) as usize);
+        let a5 = PitchState(grid.bin_of_midi(Midi(81.0)) as usize);
         let mut trellis = PitchTrellis::new(grid, CALIBRATION_DT);
 
         let mut steady = Emissions::zeroed(trellis.grid());
@@ -625,8 +627,8 @@ mod tests {
     #[test]
     fn sustained_evidence_moves_the_path() {
         let grid = pyin_grid();
-        let a4 = PitchState(grid.bin_of_midi(69.0) as usize);
-        let a5 = PitchState(grid.bin_of_midi(81.0) as usize);
+        let a4 = PitchState(grid.bin_of_midi(Midi(69.0)) as usize);
+        let a5 = PitchState(grid.bin_of_midi(Midi(81.0)) as usize);
         let mut trellis = PitchTrellis::new(grid, CALIBRATION_DT);
 
         let mut steady = Emissions::zeroed(trellis.grid());
@@ -653,9 +655,9 @@ mod tests {
     #[test]
     fn leap_latency_probe() {
         for dt in [0.008f32, 0.016, 0.040] {
-            let grid = PitchGrid::new(24.0, 108.0, 8.0);
-            let a4 = PitchState(grid.bin_of_midi(69.0) as usize);
-            let a5 = PitchState(grid.bin_of_midi(81.0) as usize);
+            let grid = PitchGrid::new(Midi(24.0), Midi(108.0), 8.0);
+            let a4 = PitchState(grid.bin_of_midi(Midi(69.0)) as usize);
+            let a5 = PitchState(grid.bin_of_midi(Midi(81.0)) as usize);
             let mut trellis = PitchTrellis::new(grid, dt);
 
             let mut steady = Emissions::zeroed(trellis.grid());
@@ -687,8 +689,8 @@ mod tests {
     #[test]
     fn reset_forgets_the_path() {
         let grid = pyin_grid();
-        let a4 = PitchState(grid.bin_of_midi(69.0) as usize);
-        let a5 = PitchState(grid.bin_of_midi(81.0) as usize);
+        let a4 = PitchState(grid.bin_of_midi(Midi(69.0)) as usize);
+        let a5 = PitchState(grid.bin_of_midi(Midi(81.0)) as usize);
         let mut trellis = PitchTrellis::new(grid, CALIBRATION_DT);
 
         let mut steady = Emissions::zeroed(trellis.grid());
@@ -718,12 +720,12 @@ mod tests {
     /// The grid's two directions round-trip, so a state means the pitch it says it means.
     #[test]
     fn grid_round_trips() {
-        let grid = PitchGrid::new(24.0, 108.0, 8.0);
+        let grid = PitchGrid::new(Midi(24.0), Midi(108.0), 8.0);
         assert_eq!(grid.n_pitch(), 84 * 8);
         for midi in [24.0f32, 55.0, 69.0, 107.875] {
-            let state = PitchState(grid.bin_of_midi(midi).round() as usize);
+            let state = PitchState(grid.bin_of_midi(Midi(midi)).round() as usize);
             let back = grid.midi_of_state(state);
-            assert!((back - midi).abs() < 0.07, "{midi} round-tripped to {back}");
+            assert!((back.0 - midi).abs() < 0.07, "{midi} round-tripped to {back:?}");
         }
     }
 }

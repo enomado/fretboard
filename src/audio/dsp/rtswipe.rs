@@ -246,7 +246,7 @@ impl RtSwipe {
         // The winner must be found *before* the frame is built, because it decides which of
         // the eight columns the frame carries. `tracked_bins` is called rather than
         // re-derived: see its docs for what re-deriving it cost last time.
-        let candidates = tracked_bins(curve.len(), MIN_MIDI, BINS_PER_SEMITONE).unwrap();
+        let candidates = tracked_bins(curve.len(), Midi(MIN_MIDI), BINS_PER_SEMITONE).unwrap();
         let winner = candidates
             .max_by(|&left, &right| curve[left].total_cmp(&curve[right]))
             .unwrap();
@@ -271,7 +271,7 @@ impl RtSwipe {
         Some(SalienceFrame::from_curve(
             curve,
             self.scratch_columns[rung].clone(),
-            MIN_MIDI,
+            Midi(MIN_MIDI),
             BINS_PER_SEMITONE,
         ))
     }
@@ -662,7 +662,7 @@ mod tests {
         // `sample_rate` — голое число только для сообщений ассертов.
         for sample_rate in [8_000, 16_000, 22_050, 44_100, 48_000, 96_000] {
             let rtswipe = RtSwipe::new(SampleRate(sample_rate), Hz::A4_STANDARD);
-            let candidates = tracked_bins(SPIRAL_BIN_COUNT, MIN_MIDI, BINS_PER_SEMITONE).unwrap();
+            let candidates = tracked_bins(SPIRAL_BIN_COUNT, Midi(MIN_MIDI), BINS_PER_SEMITONE).unwrap();
             for bin in candidates {
                 let taps = &rtswipe.lambda[bin];
                 let midi = MIN_MIDI + bin as f32 / BINS_PER_SEMITONE;
@@ -751,7 +751,7 @@ mod tests {
         let shipped = driven.blend(&warped, &norms);
 
         let peak = |curve: &[f32]| {
-            let bin = tracked_bins(curve.len(), MIN_MIDI, BINS_PER_SEMITONE)
+            let bin = tracked_bins(curve.len(), Midi(MIN_MIDI), BINS_PER_SEMITONE)
                 .unwrap()
                 .max_by(|&left, &right| curve[left].total_cmp(&curve[right]))
                 .unwrap();
@@ -848,7 +848,7 @@ mod tests {
                 .unwrap();
             println!(
                 "  {midi_truth:>5.0}  {:>11.2}  {midi:>9.2}  {:>+6.0}¢",
-                frame.midi_of_bin(coarse),
+                frame.midi_of_bin(coarse).0,
                 (midi - midi_truth) * 100.0
             );
             assert!(

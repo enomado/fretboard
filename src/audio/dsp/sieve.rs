@@ -348,13 +348,13 @@ impl HarmonicSieve {
         if !self.pick_peaks(bin_hz) {
             return None;
         }
-        let min_midi = self.min_hz.to_midi(concert_pitch).0;
+        let min_midi = self.min_hz.to_midi(concert_pitch);
         let max_midi = self.max_hz.to_midi(concert_pitch).0;
-        let count = ((max_midi - min_midi) * FRONTEND_BINS_PER_SEMITONE).round() as usize + 1;
+        let count = ((max_midi - min_midi.0) * FRONTEND_BINS_PER_SEMITONE).round() as usize + 1;
         let mut curve = Vec::with_capacity(count);
         let mut fits = Vec::with_capacity(count);
         for bin in 0..count {
-            let midi = min_midi + bin as f32 / FRONTEND_BINS_PER_SEMITONE;
+            let midi = min_midi.0 + bin as f32 / FRONTEND_BINS_PER_SEMITONE;
             let hz = Hz(concert_pitch.0 * ((midi - 69.0) / 12.0).exp2());
             let verdict = match_candidate(&self.peaks, hz, bin_hz, &mut self.slots, self.variant);
             curve.push(verdict.map_or(f32::NEG_INFINITY, |v| v.score));
@@ -680,10 +680,10 @@ mod tests {
         sieve.process_samples(&tone(443.0, &bright(), 4096));
         let frame = sieve.frame(Hz::A4_STANDARD).unwrap();
         assert_eq!(frame.bins_per_semitone(), FRONTEND_BINS_PER_SEMITONE);
-        assert!((frame.min_midi() - FRONTEND_MIN_MIDI).abs() < 1e-5);
+        assert!((frame.min_midi().0 - FRONTEND_MIN_MIDI).abs() < 1e-5);
         let bin_hz = SR.hz() / sieve.taper.len() as f32;
         for bin in frame.tracked_bins().unwrap() {
-            let midi = frame.midi_of_bin(bin);
+            let midi = frame.midi_of_bin(bin).0;
             let hz = Hz(Hz::A4_STANDARD.0 * ((midi - 69.0) / 12.0).exp2());
             let verdict = match_candidate(&sieve.peaks, hz, bin_hz, &mut sieve.slots, sieve.variant);
             assert_eq!(
@@ -721,7 +721,7 @@ mod tests {
                 "concert={concert:?} midi={midi}"
             );
             assert!(
-                (frame.midi_of_bin(*frame.tracked_bins().unwrap().end()) - FRONTEND_MAX_MIDI).abs() < 1e-4
+                (frame.midi_of_bin(*frame.tracked_bins().unwrap().end()).0 - FRONTEND_MAX_MIDI).abs() < 1e-4
             );
         }
         let mut silence = HarmonicSieve::frontend(SR, Hz::A4_STANDARD);

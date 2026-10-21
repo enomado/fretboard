@@ -19,7 +19,7 @@
 - [x] remaining-dependencies — обновить остальные прямые и транзитивные зависимости и Cargo.lock; повторно проверить свежесть и отсутствие ненужных дублей egui; разобрать standalone probe с учётом его назначения.
 - [x] upgrade-validation — проверить итоговый граф на desktop, wasm и Android, прогнать подходящие тесты и rustdoc; исправить регрессии, записать итоговые версии, реальные исключения и остаток.
 - [x] smell-baseline — после завершения upgrade-validation выполнить MCP-аудиты, clippy и code_smell stats/каталог/применимые детекторы, собрать адресный backlog с приоритетами и известными FP.
-- [ ] domain-types — разобрать primitive obsession, голые индексы/единицы и половинчатые миграции; использовать существующие канонические типы и проводить тип через внутренние вызовы.
+- [x] domain-types — разобрать primitive obsession, голые индексы/единицы и половинчатые миграции; использовать существующие канонические типы и проводить тип через внутренние вызовы.
 - [ ] error-contracts — разобрать fallback-затычки, Option, NaN и внешние ошибки; исправить подтверждённые нарушения контрактов без подавления диагностики.
 - [ ] reuse-and-boundaries — разобрать дубли, feature envy, длинные цепочки, data/arg clumps и циклы модулей; колокализовать инварианты, переиспользуя существующее.
 - [ ] audio-code-smells — разобрать подтверждённые smells native/wasm capture, workers, replay и DSP; сохранить аудиочасы, численные алгоритмы и realtime-свойства.
@@ -260,30 +260,47 @@ registry-зависимостей (три имени standalone probe входя
 
 Остатка по обновлениям нет. Smell-аудит в сессии 6 не начинался.
 
-## Текущее состояние — хендоф сессии 7
+## Текущее состояние — хендоф сессии 8
 
-`smell-baseline` завершён. Следующая область — **domain-types**; следующие
-пункты очереди здесь не выполнялись. Блокеров продолжения нет. Baseline:
-`/home/sc/t/scratch/fretboard_deps_codex_autorun/s7-baseline/` — исходные
-MCP JSON, stdout/stderr и отдельные `.exit`, каталоги обоих бинарей,
-compiler facts, принятые `scoped-*.log`, проверки и boundary-probe.
-Первичный снимок — `ea08692`; две последующие правки затрагивают только тесты.
+`domain-types` завершён. Следующая область — **error-contracts**, начиная с
+P1 в `Declaration`; её исправление здесь не начиналось. Блокеров нет.
+Исходный baseline сохранён в `s7-baseline/`, результаты этой сессии —
+`/home/sc/t/scratch/fretboard_deps_codex_autorun/s8-domain-types/`.
 
-Сделано сверх инвентаризации: `.code_smell.toml` описывает реальные дома
-UI-токенов/темы и включает census клавиш и тестовых утверждений. Allowlist
-и закрытых зон нет: локальные цвета данных разрешены контрактом `tokens.rs`,
-число литералов само по себе не нарушение. Тест `brr` заменён проверкой всех
-шести нот/октав/альтераций и полного потребления строки. В H4 probe цикл
-`chunks_exact(256)` заменён эквивалентным `as_chunks::<256>().0`, с тем же
-отбрасыванием хвоста; DSP и эталоны не менялись.
+Проведены существующие типы: `Hz` от выхода pYIN через `PitchEstimate`, held
+frequency, `TunerReading` и `frequency_to_note` до `TunerTarget`; `Midi` через
+`PitchGrid`, начала salience-сеток всех фронтендов, `SalienceHeat` и `HeatGrid`.
+Границы виолончельных позиций теперь сразу `Fret`. `PitchState` и `BankRange`
+сохранены; второй grid не введён. Формулы, интервалы, порядок операций,
+sample clock и DSP-эталоны прежние. Числовые serde-поля сохранены transparent
+типами; добавлен тест чтения и записи прежней формы snapshot.
 
-Реально проверено: `cargo test --locked --all-targets` — **244 lib + 2 UI**
-passed, 36 ignored, пять bin harness без тестов; отдельный тест парсера — pass.
-`cargo clippy --locked --all-targets` — pass, warning устранён.
+Аудит: scoped MCP healthy/fresh, census 158 типов и pub-use audit 0;
+clippy до и после чистый. `stats`: 95 src-файлов, 1222 fn, 162 struct,
+1381 параметр, parse ERROR 0. `prim --mode all`: объявления примитивов
+858→836, parameter leaks 8→7; dup-arity 43→46 — новые пары `Hz`/`Midi`/`Fret`
+обозначают эталон/измерение и границы диапазонов, не требуют роль-типов.
+Численные индексы одного буфера, fractional-bin арифметика, плотность сетки,
+FFT-шаг и численные массивы внутри ядра не равны высоте/абсолютной частоте;
+`input_kind` с уровнем, chroma с максимумом и диагностические tuple-sort keys
+не подтверждают утечку одного домена. Allowlist не добавлялся.
+
+Повторены egui Dylint range-order (45 Known, 2 OutsideCompiler test-only) и
+range-flow (86 src + main, 58 HIR fn/104 sinks, 0 кандидатов, 4 outside-compiler,
+0 params-unresolved). Semantic-сборка на отдельной копии без `.claude/`:
+range-flow — 98 VFS-файлов, те же 58/104, 0 кандидатов/unresolved;
+repack-flow high-signal — 95 файлов/273 constructions/0 source-target pairs.
+Это узкие классы, не общий pass типов. `half-migration` снова exit 2:
+библиотек алгебры нет, класс неприменим. Полный каталог — в разделе Smell-baseline.
+
+Реально проверено на итоговом коде: `cargo test --locked --all-targets` —
+**245 lib + 2 UI passed**, 36 ignored, пять пустых bin harness;
+`cargo clippy --locked --all-targets`, wasm `--lib --bins`, Android `--lib`
+(NDK 27.0.12077973, API 26) и desktop rustdoc с `-D warnings` — pass.
 `policy-check` — 3 пути/96 файлов, 0 находок; `git diff --check` — pass.
-Wasm/Android/rustdoc после тестовых правок не повторялись; их итоговый проход
-остаётся за smell-validation. Ignored H4 probe с новой формой цикла собран,
-но не исполнялся. UI-поведение не менялось; существующие egui_kittest прошли.
+UI-интеракция не менялась. Физическое аудио/Android-устройство, ignored probes
+и браузерный runtime здесь не проверялись; общий финальный проход остаётся
+за smell-validation. Locked §7, H3/H7 и ремонтный слой сохранены.
 
 ## Smell-baseline: охват, backlog и FP
 
@@ -355,10 +372,9 @@ P1 — подтверждённая ошибка внешнего ввода; P2
 
 | Область / приоритет | Адрес и следующий конкретный разбор |
 |---|---|
-| domain-types / P2 | `audio/types.rs:16` (`TunerReading.frequency_hz`), `audio/core.rs:267`, `app/fretboard_panel.rs:233`: сырой f32 проходит внутри приложения и снова заворачивается в уже существующий `Hz`. Провести канонический тип через внутренний путь, сохранив wire и арифметику. |
-| domain-types / P2 | `audio/types.rs:153`, `dsp/swipe.rs:290`, `dsp/trellis.rs:81`: `min_midi`/сетка как raw f32, рядом уже есть `Midi`, `PitchState`, `BankRange`. Различить индекс сетки, высоту и разрешение; не плодить второй PitchGrid и не менять границы/интерполяцию. |
 | error-contracts / **P1** | `app/take_marks.rs:88,104` → `note.rs:232` → `pitch.rs:15`: Declaration принимает `Cb4/E#4/Fb4/B#4/C10`, затем `.midi()` паникует; `C21/G255` молча дают MIDI **8/7** из-за `as u8`. Подтверждено исполняемым `declaration-boundary-probe.log` на неизменённом коде. Нужна валидация пользовательской границы до создания Declaration; расширение поддерживаемой энгармоники не решать попутно. |
 | error-contracts / P2 | `audio/worker_proto.rs:63–70`: generic encode гасит ошибку сериализации пустым пакетом; комментарий про callback не доказывает контракт всех callers. Проверить worker/main обработку и сохранить причину ошибки. `bin/mic_probe.rs:285`: join panic превращён в пустые данные. |
+| error-contracts / P2 | `app/persist.rs:40,84`: wire `test_note_midi: usize` сужается через `as u8` до проверки `PNote::new`; 256 становится законным MIDI 0 вопреки комментарию fail-fast. Проверить загрузку повреждённого/старого RON, сохраняя действующую политику восстановления настроек. |
 | reuse-and-boundaries / P2 | `app.rs:365,401,407,413`, `app/controls.rs:59,63,111`: 7 повторных поисков `AudioInputOption` по id/kind, 2 группы обоих движков. Общая навигация должна сохранять приоритет preferred/fallback и реальное отсутствие устройства. |
 | reuse-and-boundaries / P3 | `audio/core.rs:307,498`: идентичные push_samples-обёртки; `native/imp/devices.rs:324` и `bin/mic_probe.rs:403`: повтор device label. Обёртки разных pipeline не требуют объединения DSP; оценить только полезный общий контракт. Local cycle `core_types::note ↔ pitch` низкоприоритетный, ожидаем для представлений одной ноты. |
 | audio-code-smells / P2 | `native/imp.rs:239,361–480`: unbounded очередь команд при медленном открытии устройства; проверить поток UI→control thread и способ ограничения/коалесцирования без блокирования UI. `core.rs:307,498`/arg-clump AudioContext — учитывать владение/порядок остановки. |

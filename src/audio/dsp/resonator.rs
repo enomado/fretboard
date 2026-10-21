@@ -212,8 +212,8 @@ impl ResonatorViewSettings {
     }
 
     /// Fractional MIDI of the bank's bin 0 — where every grid built on the bank starts.
-    fn lo_midi(&self) -> f32 {
-        Midi::from(self.bank.lo()).0
+    fn lo_midi(&self) -> Midi {
+        Midi::from(self.bank.lo())
     }
 }
 
@@ -407,7 +407,7 @@ fn build_resonator_bank(sample_rate: SampleRate, settings: &ResonatorViewSetting
     let bin_count = settings.bank.semitones() * settings.bins_per_semitone + 1;
     let configs: Vec<ResonatorConfig> = (0..bin_count)
         .map(|i| {
-            let midi = settings.lo_midi() + i as f32 / settings.bins_per_semitone as f32;
+            let midi = settings.lo_midi().0 + i as f32 / settings.bins_per_semitone as f32;
             let frequency = Midi(midi).to_hz(settings.reference_hz).0;
             // Floor guards only alpha > 0 (a zero coefficient is a dead resonator);
             // it must sit well below base_alpha * min(slider). The old floor of 1e-4
@@ -484,7 +484,7 @@ fn raw_column(
         let gate = (-0.5 * (ds / GATE_SIGMA_SEMITONES).powi(2)).exp();
 
         let midi = Hz(f_hat).to_midi(settings.reference_hz).0;
-        let position = (midi - settings.lo_midi()) * OUTPUT_BINS_PER_SEMITONE as f32;
+        let position = (midi - settings.lo_midi().0) * OUTPUT_BINS_PER_SEMITONE as f32;
         splat_linear(&mut spectrum, position, weight * gate);
     }
     spectrum
@@ -498,7 +498,7 @@ mod tests {
 
     /// MIDI of an output-grid bin index, given the analyzer's range/resolution.
     fn bin_midi(an: &ResonatorAnalyzer, idx: usize) -> f32 {
-        an.settings.lo_midi() + idx as f32 / OUTPUT_BINS_PER_SEMITONE as f32
+        an.settings.lo_midi().0 + idx as f32 / OUTPUT_BINS_PER_SEMITONE as f32
     }
 
     fn peak_index(spectrum: &[f32]) -> usize {
@@ -785,7 +785,7 @@ mod tests {
         feed(&mut an, &a4_and_octave(0.05, 0.6), hop);
         let loud = feed(&mut an, &a4_and_octave(0.5, 0.2), hop);
         let cell =
-            |midi: f32| ((midi - an.settings.lo_midi()) * OUTPUT_BINS_PER_SEMITONE as f32).round() as usize;
+            |midi: f32| ((midi - an.settings.lo_midi().0) * OUTPUT_BINS_PER_SEMITONE as f32).round() as usize;
         let octave = peak(&loud.spectrum[cell(80.5)..=cell(81.5)]);
         assert!(
             (peak(&loud.spectrum) - 1.0).abs() < 1e-3,

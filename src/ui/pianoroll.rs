@@ -96,7 +96,7 @@ pub struct RollColumn<'a> {
 /// disagree about resolution without one of them drawing at the wrong height.
 #[derive(Clone, Copy)]
 pub struct HeatGrid {
-    pub min_midi:          f32,
+    pub min_midi:          Midi,
     pub bins_per_semitone: f32,
 }
 
@@ -596,7 +596,7 @@ fn draw_heat(painter: &Painter, map: RollMapping, columns: &[RollColumn<'_>], ba
     }
     // The bank fallback, for columns with no grid of their own (the spectrum layer).
     let bank_grid = HeatGrid {
-        min_midi:          Midi::from(bank.lo()).0,
+        min_midi:          Midi::from(bank.lo()),
         bins_per_semitone: (bin_count - 1) as f32 / bank.span_f32(),
     };
     // A cell is one *frame*, so it is as wide as the gap between frames — measured,
@@ -632,7 +632,7 @@ fn draw_heat(painter: &Painter, map: RollMapping, columns: &[RollColumn<'_>], ba
             if value < HEAT_GATE {
                 continue;
             }
-            let midi = grid.min_midi + bin as f32 / grid.bins_per_semitone;
+            let midi = grid.min_midi.0 + bin as f32 / grid.bins_per_semitone;
             let cy = map.y_of(midi);
             if cy < plot.top() || cy > plot.bottom() {
                 continue; // off the visible pitch window

@@ -28,7 +28,6 @@ use super::{
 };
 use crate::core_types::note::Accidental;
 use crate::core_types::pitch::{
-    Hz,
     Midi,
     PCNote,
 };
@@ -230,9 +229,9 @@ impl App {
             return Vec::new();
         };
         let reference_hz = self.audio.analysis_settings().concert_pitch_hz;
-        let detected_midi = Hz(reading.frequency_hz).to_midi(reference_hz).0.round() as u8;
+        let detected_midi = reading.frequency_hz.to_midi(reference_hz).0.round() as u8;
         let detected_frequency = Midi(detected_midi as f32).to_hz(reference_hz).0;
-        let cents = 1200.0 * (reading.frequency_hz / detected_frequency).log2();
+        let cents = 1200.0 * (reading.frequency_hz.0 / detected_frequency).log2();
         let mut matches = Vec::new();
 
         for string in tuning.iter_strings() {

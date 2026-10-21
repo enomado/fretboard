@@ -650,7 +650,7 @@ mod beta_sweep {
                 let window = violin_tone(hz, sr, 6144);
                 let expected = original
                     .process(&window, sr)
-                    .map(|p| Hz(p.0).to_midi(Hz::A4_STANDARD).0);
+                    .map(|p| p.0.to_midi(Hz::A4_STANDARD).0);
                 let frame = source.frame(&window, sr, Hz::A4_STANDARD);
                 // Deliberately contradictory and maximally confident. Self-evidence
                 // cannot corroborate an octave, even when the tuner disagrees.
@@ -1579,7 +1579,10 @@ mod tests {
     use super::*;
     use crate::audio::dsp::analysis_math::SPIRAL_BINS_PER_SEMITONE;
     use crate::audio::dsp::swipe::SwipeKernel;
-    use crate::core_types::pitch::Hz;
+    use crate::core_types::pitch::{
+        Hz,
+        Midi,
+    };
 
     /// REGRESSION, and it was total: **the bank's span is a slider, and the decoder assumed
     /// it was the default.**
@@ -1618,7 +1621,7 @@ mod tests {
             }
         }
 
-        let frame = SalienceFrame::score(&column, min_midi, bps, &kernel).unwrap();
+        let frame = SalienceFrame::score(&column, Midi(min_midi), bps, &kernel).unwrap();
         let mut decoder = SalienceDecoder::default();
         let decoded = decoder.decode(&frame, 0.0);
 
@@ -1660,7 +1663,7 @@ mod tests {
                     curve[centre + offset] = s;
                 }
             }
-            SalienceFrame::from_curve(curve.clone(), curve, min_midi, bps)
+            SalienceFrame::from_curve(curve.clone(), curve, Midi(min_midi), bps)
         };
         // Held A4, then A5 leads by 0.1 — a clear lead, so the takeover is quick and the
         // frame-count law shows at full size rather than behind a ceiling.

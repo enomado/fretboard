@@ -21,12 +21,8 @@ use crate::core_types::pitch::{
     PNote,
 };
 
-pub(crate) fn frequency_to_note(
-    frequency_hz: f32,
-    reference_hz: Hz,
-    style: AccidentalStyle,
-) -> (String, f32) {
-    let (note, cents) = Hz(frequency_hz).to_midi(reference_hz).nearest_note();
+pub(crate) fn frequency_to_note(frequency_hz: Hz, reference_hz: Hz, style: AccidentalStyle) -> (String, f32) {
+    let (note, cents) = frequency_hz.to_midi(reference_hz).nearest_note();
     (style.midi_name(note), cents)
 }
 

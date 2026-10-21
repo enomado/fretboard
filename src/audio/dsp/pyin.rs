@@ -206,20 +206,20 @@ impl PyinFrontend {
     ) -> Option<super::swipe::SalienceFrame> {
         let c = cmndf(window, sample_rate)?;
         let (candidates, voiced) = pyin_candidates(&c, &self.prior, sample_rate);
-        let grid = PitchGrid::new(MIN_MIDI, MAX_MIDI, BINS_PER_SEMITONE);
+        let grid = PitchGrid::new(Midi(MIN_MIDI), Midi(MAX_MIDI), BINS_PER_SEMITONE);
         let mut emissions = Emissions::zeroed(&grid);
         let mut fits: Vec<f32> = (0..grid.n_pitch())
-            .map(|i| grid.midi_of_state(super::trellis::PitchState(i)))
+            .map(|i| grid.midi_of_state(super::trellis::PitchState(i)).0)
             .collect();
         let mut best = vec![0.0; grid.n_pitch()];
         for candidate in candidates {
-            let midi = Hz(candidate.frequency_hz).to_midi(reference).0;
+            let midi = Hz(candidate.frequency_hz).to_midi(reference);
             let bin = grid.bin_of_midi(midi);
             emissions.add_at_bin(bin, candidate.probability);
             for offset in -2..=2 {
                 let i = bin.round() as isize + offset;
                 if i >= 0 && (i as usize) < fits.len() && candidate.probability > best[i as usize] {
-                    fits[i as usize] = midi;
+                    fits[i as usize] = midi.0;
                     best[i as usize] = candidate.probability;
                 }
             }
@@ -232,7 +232,7 @@ impl PyinFrontend {
         Some(super::swipe::SalienceFrame::from_probabilities(
             curve,
             fits,
-            MIN_MIDI,
+            Midi(MIN_MIDI),
             BINS_PER_SEMITONE,
             (1.0 - voiced) / grid.n_pitch() as f32,
         ))
@@ -250,7 +250,10 @@ impl PitchTracker {
     pub(crate) fn new() -> Self {
         Self {
             prior:   ThresholdPrior::new(),
-            trellis: PitchTrellis::new(PitchGrid::new(MIN_MIDI, MAX_MIDI, BINS_PER_SEMITONE), FRAME_DT),
+            trellis: PitchTrellis::new(
+                PitchGrid::new(Midi(MIN_MIDI), Midi(MAX_MIDI), BINS_PER_SEMITONE),
+                FRAME_DT,
+            ),
         }
     }
 
@@ -277,7 +280,7 @@ impl PitchTracker {
     /// were quietly confirming each other rather than voting — see that module's
     /// "why the bank leads and YIN only pins the octave". The tuner and fretboard,
     /// this tracker's other consumers, want a steady reading over a prompt one.
-    pub(crate) fn process(&mut self, window: &[f32], sample_rate: SampleRate) -> Option<(f32, f32)> {
+    pub(crate) fn process(&mut self, window: &[f32], sample_rate: SampleRate) -> Option<(Hz, f32)> {
         let c = cmndf(window, sample_rate)?;
         let (candidates, voiced) = pyin_candidates(&c, &self.prior, sample_rate);
         self.step(&candidates, voiced)
@@ -290,13 +293,13 @@ impl PitchTracker {
     /// the mass of the thresholds that found no dip at all. That mapping — *this* is
     /// what makes the shared trellis pYIN's — is the only part of the HMM stage that
     /// belongs to this module.
-    fn step(&mut self, candidates: &[Candidate], voiced: f32) -> Option<(f32, f32)> {
+    fn step(&mut self, candidates: &[Candidate], voiced: f32) -> Option<(Hz, f32)> {
         let mut emissions = Emissions::zeroed(self.trellis.grid());
         for cand in candidates {
             emissions.add_at_bin(
                 self.trellis
                     .grid()
-                    .bin_of_midi(Hz(cand.frequency_hz).to_midi(GRID_A4).0),
+                    .bin_of_midi(Hz(cand.frequency_hz).to_midi(GRID_A4)),
                 cand.probability,
             );
         }
@@ -315,20 +318,20 @@ impl PitchTracker {
         // Report the winning *candidate's* frequency (sub-cent) rather than the
         // 10-cent bin centre, so the tuner's cents stay sharp. Fall back to the bin
         // centre if no candidate sits near the decoded bin.
-        let mut freq = Midi(self.trellis.grid().midi_of_state(state)).to_hz(GRID_A4).0;
+        let mut freq = self.trellis.grid().midi_of_state(state).to_hz(GRID_A4).0;
         let mut best_p = 0.0f32;
         for cand in candidates {
             let cb = self
                 .trellis
                 .grid()
-                .bin_of_midi(Hz(cand.frequency_hz).to_midi(GRID_A4).0)
+                .bin_of_midi(Hz(cand.frequency_hz).to_midi(GRID_A4))
                 .round() as isize;
             if (cb - state.0 as isize).abs() <= 2 && cand.probability > best_p {
                 best_p = cand.probability;
                 freq = cand.frequency_hz;
             }
         }
-        Some((freq, voiced))
+        Some((Hz(freq), voiced))
     }
 }
 
@@ -400,9 +403,9 @@ mod tests {
         }
         let out = t.step(&glitch, 0.9).unwrap();
         assert!(
-            (out.0 - 440.0).abs() < 20.0,
+            (out.0.0 - 440.0).abs() < 20.0,
             "octave outlier moved the pitch to {}",
-            out.0
+            out.0.0
         );
     }
 
@@ -425,7 +428,7 @@ mod tests {
         let mut last = 440.0;
         for _ in 0..40 {
             if let Some((f, _)) = t.step(&a5, 0.9) {
-                last = f;
+                last = f.0;
             }
         }
         assert!(
@@ -458,7 +461,7 @@ mod tests {
             last = t.process(&win, sr);
         }
         let (f, _) = last.expect("clean tone should be voiced");
-        assert!((f - 330.0).abs() < 3.0, "tracked {f}, expected ~330");
+        assert!((f.0 - 330.0).abs() < 3.0, "tracked {f:?}, expected ~330");
     }
 
     /// REGRESSION: the lag search and the HMM's pitch grid must agree about the
@@ -468,8 +471,8 @@ mod tests {
     /// below anything this HMM can represent, and every frame paid for it.
     #[test]
     fn floor_clears_the_hmm_grid() {
-        let grid = PitchGrid::new(MIN_MIDI, MAX_MIDI, BINS_PER_SEMITONE);
-        let lowest_state_hz = Midi(grid.midi_of_state(PitchState(0))).to_hz(GRID_A4).0;
+        let grid = PitchGrid::new(Midi(MIN_MIDI), Midi(MAX_MIDI), BINS_PER_SEMITONE);
+        let lowest_state_hz = grid.midi_of_state(PitchState(0)).to_hz(GRID_A4).0;
 
         // Downward: every pitch the HMM has a state for must be *findable*, with the
         // longest lag landing past that note's period rather than clipping its dip.
@@ -553,7 +556,7 @@ mod tests {
         while tick < sig.len() {
             let win = &sig[tick - window_size..tick];
             if let Some((f, _)) = t.process(win, sr) {
-                let cents = 1200.0 * (f / to_hz).log2();
+                let cents = 1200.0 * (f.0 / to_hz).log2();
                 if cents.abs() < 50.0 {
                     return (tick - change) as f32 / sr.hz() * 1000.0;
                 }
@@ -635,7 +638,7 @@ mod tests {
                 }
                 match out {
                     Some((f, _)) => {
-                        let cents = 1200.0 * (f / hz).log2();
+                        let cents = 1200.0 * (f.0 / hz).log2();
                         print!("{cents:>10.1}");
                     }
                     None => print!("{:>10}", "unvoiced"),
@@ -675,6 +678,7 @@ mod tests {
                 out = t.process(&win, sr);
             }
             let (f, _) = out.unwrap_or_else(|| panic!("{name}: went unvoiced on a clean tone"));
+            let f = f.0;
             let err = 12.0 * (f / hz).log2();
             println!("{name} -> {f:>8.1} Hz  ({err:>+6.2} semitones)");
             assert!(
@@ -895,8 +899,8 @@ mod tests {
         }
         let (f, _) = t.process(&win, sr).unwrap();
         assert!(
-            (f - 440.0).abs() < 20.0,
-            "window holds a clean A4, tracker reports {f}"
+            (f.0 - 440.0).abs() < 20.0,
+            "window holds a clean A4, tracker reports {f:?}"
         );
     }
 }

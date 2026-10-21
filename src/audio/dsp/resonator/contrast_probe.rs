@@ -677,7 +677,7 @@ fn truth_probe() {
                         let cols = columns(song.sample_rate, &song.mix, alpha, beta);
                         let masks: &Vec<Option<Vec<bool>>> = masks.get_or_insert_with(|| {
                             (0..cols.len())
-                                .map(|i| truth_mask(song, i, cols[0].len(), lo_midi))
+                                .map(|i| truth_mask(song, i, cols[0].len(), lo_midi.0))
                                 .collect()
                         });
                         inks.push(

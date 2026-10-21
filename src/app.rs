@@ -46,6 +46,7 @@ use crate::core_types::note::{
     Note,
 };
 use crate::core_types::pitch::{
+    Hz,
     PCNote,
     PNote,
 };
@@ -303,7 +304,7 @@ struct TunerTarget {
     string:       GString,
     fret:         Fret,
     note_name:    ANote,
-    frequency_hz: f32,
+    frequency_hz: Hz,
     cents:        f32,
 }
 

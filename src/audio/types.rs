@@ -13,7 +13,8 @@ use crate::core_types::pitch::{
 // main thread (postcard over postMessage). Inert on native.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TunerReading {
-    pub frequency_hz:          f32,
+    /// pYIN frequency; `Hz` keeps the worker wire representation as a bare f32.
+    pub frequency_hz:          Hz,
     pub note_name:             String,
     pub cents:                 f32,
     pub clarity:               f32,
@@ -150,7 +151,7 @@ pub struct SalienceHeat {
     /// Salience per bin, normalized for display (the same `gamma` the spectrum column gets).
     pub data:              Vec<f32>,
     /// MIDI of bin 0.
-    pub min_midi:          f32,
+    pub min_midi:          Midi,
     /// Bins per semitone on this grid.
     pub bins_per_semitone: f32,
 }
@@ -882,6 +883,40 @@ impl DroneState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Existing snapshots use bare numbers for frequency and grid origin. Introducing
+    /// domain types must keep both directions of that serde contract unchanged.
+    #[test]
+    fn reading_and_salience_keep_their_scalar_wire_fields() {
+        let old_reading = serde_json::json!({
+            "frequency_hz": 442.0,
+            "note_name": "A4",
+            "cents": 0.0,
+            "clarity": 1.0,
+            "spectrum": [],
+            "waterfall": [],
+            "note_spectrum": [],
+            "note_waterfall": [],
+            "spiral_spectrum": [],
+            "spiral_waterfall": [],
+            "resonator_spectrum": [],
+            "resonator_waterfall": [],
+            "resonator_note_labels": [],
+            "note_labels": [],
+            "onset_seq": 7,
+            "note_line": { "history": [], "current": null }
+        });
+        let reading: TunerReading = serde_json::from_value(old_reading.clone()).unwrap();
+        assert_eq!(reading.frequency_hz, Hz(442.0));
+        assert_eq!(serde_json::to_value(reading).unwrap(), old_reading);
+
+        let old_heat = serde_json::json!({
+            "data": [0.25, 1.0], "min_midi": 24.0, "bins_per_semitone": 10.0
+        });
+        let heat: SalienceHeat = serde_json::from_value(old_heat.clone()).unwrap();
+        assert_eq!(heat.min_midi, Midi(24.0));
+        assert_eq!(serde_json::to_value(heat).unwrap(), old_heat);
+    }
 
     /// A bank of one note has no span to map a bin across; `BankRange` refuses it at
     /// construction, which is what lets the painters divide by `semitones()` unchecked.

@@ -52,6 +52,7 @@ use super::pitch::{
     TRACKED_MAX_MIDI,
     TRACKED_MIN_MIDI,
 };
+use crate::core_types::pitch::Midi;
 
 /// Harmonics the SWIPE′ kernel keeps: `{1} ∪ primes`.
 ///
@@ -287,7 +288,7 @@ pub(crate) struct SalienceFrame {
     curve:             Vec<f32>,
     /// Frontend-owned fine pitch evidence, independent of display gamma.
     resolution:        PitchResolution,
-    min_midi:          f32,
+    min_midi:          Midi,
     bins_per_semitone: f32,
     /// `‖√|X|‖₂`, the per-frame constant that turns a salience into a 0..1 confidence.
     norm:              f32,
@@ -310,7 +311,7 @@ impl SalienceFrame {
     /// (`core::MELODY_LEVEL_GATE`).
     pub(crate) fn score(
         magnitudes: &[f32],
-        min_midi: f32,
+        min_midi: Midi,
         bins_per_semitone: f32,
         kernel: &SwipeKernel,
     ) -> Option<Self> {
@@ -356,7 +357,7 @@ impl SalienceFrame {
     pub(crate) fn from_curve(
         curve: Vec<f32>,
         magnitudes: Vec<f32>,
-        min_midi: f32,
+        min_midi: Midi,
         bins_per_semitone: f32,
     ) -> Self {
         assert_eq!(
@@ -379,7 +380,7 @@ impl SalienceFrame {
     pub(crate) fn from_fitted_curve(
         curve: Vec<f32>,
         fitted_midi: Vec<f32>,
-        min_midi: f32,
+        min_midi: Midi,
         bins_per_semitone: f32,
     ) -> Self {
         assert_eq!(
@@ -400,7 +401,7 @@ impl SalienceFrame {
     pub(crate) fn from_probabilities(
         curve: Vec<f32>,
         fits: Vec<f32>,
-        min: f32,
+        min: Midi,
         bps: f32,
         unvoiced: f32,
     ) -> Self {
@@ -423,7 +424,7 @@ impl SalienceFrame {
     /// grids (the bank's span is a user slider, RT-SWIPE's is fixed at the app's pitch
     /// domain), so a layer that assumed one grid for both would paint the other at the wrong
     /// pitch — which is exactly why this is carried per frame rather than read off the bank.
-    pub(crate) fn min_midi(&self) -> f32 {
+    pub(crate) fn min_midi(&self) -> Midi {
         self.min_midi
     }
 
@@ -486,8 +487,8 @@ impl SalienceFrame {
     /// how the crash came to be written: it answered "which bin is C8" for a grid that may
     /// well stop at C6, cheerfully, because the arithmetic cannot see how long the curve is.
     /// Bins now only ever come from [`Self::tracked_bins`], which can.
-    pub(crate) fn midi_of_bin(&self, bin: usize) -> f32 {
-        self.min_midi + bin as f32 / self.bins_per_semitone
+    pub(crate) fn midi_of_bin(&self, bin: usize) -> Midi {
+        Midi(self.min_midi.0 + bin as f32 / self.bins_per_semitone)
     }
 
     /// This frame's candidate bins — see [`tracked_bins`], the free function this delegates
@@ -517,7 +518,7 @@ impl SalienceFrame {
             unreachable!("fitted pitch returned above")
         };
         let refined = refine_on_partials(magnitudes, coarse, self.bins_per_semitone);
-        let midi = self.min_midi + refined / self.bins_per_semitone;
+        let midi = self.min_midi.0 + refined / self.bins_per_semitone;
         (midi, (self.curve[bin] / self.norm).clamp(0.0, 1.0))
     }
 
@@ -586,13 +587,13 @@ impl SalienceFrame {
 /// became callable instead.
 pub(crate) fn tracked_bins(
     len: usize,
-    min_midi: f32,
+    min_midi: Midi,
     bins_per_semitone: f32,
 ) -> Option<std::ops::RangeInclusive<usize>> {
-    let first = (((TRACKED_MIN_MIDI - min_midi) * bins_per_semitone)
+    let first = (((TRACKED_MIN_MIDI - min_midi.0) * bins_per_semitone)
         .ceil()
         .max(0.0)) as usize;
-    let last = (((TRACKED_MAX_MIDI - min_midi) * bins_per_semitone)
+    let last = (((TRACKED_MAX_MIDI - min_midi.0) * bins_per_semitone)
         .floor()
         .max(0.0) as usize)
         .min(len.saturating_sub(1));
@@ -698,7 +699,7 @@ mod tests {
         let min_midi = 12.0;
         let kernel = SwipeKernel::new(bps);
         let column = column_with_partials(196.0, &[0.08, 1.0, 0.7, 0.5], min_midi, bps);
-        let frame = SalienceFrame::score(&column, min_midi, bps, &kernel).unwrap();
+        let frame = SalienceFrame::score(&column, Midi(min_midi), bps, &kernel).unwrap();
         let display = frame.curve_over_tracked();
 
         assert_eq!(
@@ -743,7 +744,7 @@ mod tests {
         let min_midi = 12.0;
         let kernel = SwipeKernel::new(bps);
         let column = column_with_partials(196.0, &[0.08, 1.0, 0.7, 0.5, 0.4, 0.3, 0.22], min_midi, bps);
-        let frame = SalienceFrame::score(&column, min_midi, bps, &kernel).unwrap();
+        let frame = SalienceFrame::score(&column, Midi(min_midi), bps, &kernel).unwrap();
         let mut display = frame.curve_over_tracked();
         crate::audio::dsp::analysis_math::normalize_bars(&mut display, 0.72); // the default gamma
 

@@ -314,7 +314,7 @@ impl App {
                 painter.text(
                     pos2(rect.left() + 18.0, rect.top() + 54.0),
                     egui::Align2::LEFT_TOP,
-                    format!("{:.1} Hz", reading.frequency_hz),
+                    format!("{:.1} Hz", reading.frequency_hz.0),
                     FontId::proportional(15.0),
                     color::TEXT_HINT,
                 );

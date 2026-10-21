@@ -129,5 +129,5 @@ fn point_evidence(pitch: Midi) -> SalienceFrame {
             (-0.5 * distance * distance).exp()
         })
         .collect();
-    SalienceFrame::from_fitted_curve(curve, fits, MIN, BPS)
+    SalienceFrame::from_fitted_curve(curve, fits, Midi(MIN), BPS)
 }

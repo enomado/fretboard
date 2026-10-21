@@ -274,7 +274,7 @@ mod tests {
                     let win = &sig[next_analysis - window_size..next_analysis];
                     anchor = tracker
                         .process(win, sr)
-                        .map(|(f, c)| (Hz(f).to_midi(Hz::A4_STANDARD).0, c));
+                        .map(|(f, c)| (f.to_midi(Hz::A4_STANDARD).0, c));
                     next_analysis += analysis_hop;
                 }
                 if t_ms >= next_bank_publish_ms {

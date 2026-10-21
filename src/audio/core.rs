@@ -145,7 +145,7 @@ pub(crate) struct SharedState {
     /// question, and a consumer's cursor outlives any one stream. `MelodyFrame::t` is
     /// the one that restarts, because it is about the audio.
     pub(crate) melody_seq:          u64,
-    pub(crate) smoothed_frequency:  Option<f32>,
+    pub(crate) smoothed_frequency:  Option<Hz>,
 }
 
 impl SharedState {
@@ -264,7 +264,7 @@ pub(crate) struct AnalysisPipeline {
 
 #[derive(Clone, Copy, Debug)]
 struct PitchEstimate {
-    frequency_hz: f32,
+    frequency_hz: Hz,
     clarity:      f32,
 }
 
@@ -571,7 +571,7 @@ impl AnalysisPipeline {
                 .process(&window, self.sample_rate)
                 .and_then(|(f, c)| {
                     (LOWEST_TRACKED_FREQUENCY..=HIGHEST_TRACKED_FREQUENCY)
-                        .contains(&f)
+                        .contains(&f.0)
                         .then_some(PitchEstimate {
                             frequency_hz: f,
                             clarity:      c,
@@ -670,7 +670,7 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
     // concert pitch it was measured with, so the 16 ms bank path can snap to it
     // without reaching for the settings. Clarity is pYIN's voiced probability,
     // which is what decides whether the opinion is worth taking at all.
-    let anchor_midi = Hz(smoothed_frequency).to_midi(frame.concert_pitch_hz).0;
+    let anchor_midi = smoothed_frequency.to_midi(frame.concert_pitch_hz).0;
     state.octave_anchor = Some((anchor_midi, clarity));
     // Hand the attack counter to the bank path, which is what feeds it to the
     // segmenter. Onsets are found on this plane (off the window RMS) but consumed
@@ -1334,7 +1334,7 @@ mod tests {
             // Sieve reconstructs MIDI from Hz: allow 0.01 cent of round-off, while a
             // different frontend's floor differs by whole octaves.
             assert!(
-                (salience.min_midi - min_midi).abs() < 1e-4,
+                (salience.min_midi.0 - min_midi).abs() < 1e-4,
                 "wrong detector's floor under {frontend:?}"
             );
             assert_eq!(

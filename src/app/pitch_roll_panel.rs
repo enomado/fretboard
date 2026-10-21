@@ -544,7 +544,7 @@ mod tests {
         let sh = |data: Vec<f32>| {
             SalienceHeat {
                 data,
-                min_midi: 12.0,
+                min_midi: Midi(12.0),
                 bins_per_semitone: 8.0,
             }
         };

@@ -766,7 +766,7 @@ fn bench_pyin(audio: &Path, annotation: &Annotation, scorings: &[Scoring]) -> Ve
         let seconds = fed as f32 / sample_rate.hz();
         let estimate = tracker
             .process(&window, sample_rate)
-            .map(|(hz, voiced)| (Hz(hz).to_midi(CONCERT_PITCH_HZ).0, voiced));
+            .map(|(hz, voiced)| (hz.to_midi(CONCERT_PITCH_HZ).0, voiced));
 
         for (tally, scoring) in tallies.iter_mut().zip(scorings) {
             score_frame(tally, seconds, annotation, scoring, estimate);
@@ -931,7 +931,7 @@ fn salience_argmax(heat: &SalienceHeat) -> Option<(f32, f32)> {
         .map(|b| (b, heat.data[b]))
         .max_by(|a, b| a.1.total_cmp(&b.1))
         .unwrap();
-    (value > 0.0).then(|| (heat.min_midi + bin as f32 / heat.bins_per_semitone, value))
+    (value > 0.0).then(|| (heat.min_midi.0 + bin as f32 / heat.bins_per_semitone, value))
 }
 
 /// A corpus WAV as `f32` in −1..1. The corpus is 16-bit mono; anything else is a corpus
