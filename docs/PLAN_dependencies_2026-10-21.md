@@ -17,7 +17,7 @@
 - [x] audio-upgrade — обновить cpal, ringbuf, rustfft, realfft, resonators и остальные аудиозависимости; сохранить расчётные контракты, проверить затронутый DSP и нативное аудио.
 - [x] platform-upgrade — обновить wasm-bindgen/js-sys/web-sys, Android/JNI и hot-reload зависимости, восстановить web/Android/desktop пути при изменении API.
 - [x] remaining-dependencies — обновить остальные прямые и транзитивные зависимости и Cargo.lock; повторно проверить свежесть и отсутствие ненужных дублей egui; разобрать standalone probe с учётом его назначения.
-- [ ] upgrade-validation — проверить итоговый граф на desktop, wasm и Android, прогнать подходящие тесты и rustdoc; исправить регрессии, записать итоговые версии, реальные исключения и остаток.
+- [x] upgrade-validation — проверить итоговый граф на desktop, wasm и Android, прогнать подходящие тесты и rustdoc; исправить регрессии, записать итоговые версии, реальные исключения и остаток.
 - [ ] smell-baseline — после завершения upgrade-validation выполнить MCP-аудиты, clippy и code_smell stats/каталог/применимые детекторы, собрать адресный backlog с приоритетами и известными FP.
 - [ ] domain-types — разобрать primitive obsession, голые индексы/единицы и половинчатые миграции; использовать существующие канонические типы и проводить тип через внутренние вызовы.
 - [ ] error-contracts — разобрать fallback-затычки, Option, NaN и внешние ошибки; исправить подтверждённые нарушения контрактов без подавления диагностики.
@@ -193,60 +193,73 @@ Node builtins и сохранённый aubio WASM; Python имеет PEP 723-з
 
 ## Текущее состояние
 
-Сессия 5: remaining-dependencies завершён; блокеров нет. На 2026-10-21
-повторно проверены live crates.io API всех 26 прямых registry-зависимостей
-(включая три имени standalone probe), дополнительно egui, wgpu и winit.
-Все прямые registry-зависимости основного приложения теперь на последних stable.
-Требование serde_json и lockfile обновлены 1.0.151 → 1.0.154;
-[release notes](https://github.com/serde-rs/json/releases/tag/v1.0.154)
-и используемые JSON API просмотрены, миграция исходников не потребовалась.
-subsecond/dioxus-cli-config 0.8.0-alpha.3 и winit 0.31.0-beta.3 — prerelease,
-сохраняются stable 0.7.10 и 0.30.13 соответственно.
+Сессия 6: upgrade-validation завершён, все шесть областей обновления закрыты;
+блокеров и выявленных регрессий нет. Исходники и lockfile в этой сессии
+не потребовали изменений. На 2026-10-21 повторно проверены live
+[crates.io API](https://crates.io/api/v1/crates/eframe) всех 26 прямых
+registry-зависимостей (три имени standalone probe входят в этот набор),
+а также egui, wgpu и winit. Все прямые registry-зависимости приложения —
+последние stable. Итоговые locked-версии:
 
-Полный `cargo update --verbose` обновил 35 записей, включая serde_json:
-в частности arboard 3.7.0, cc 1.9.0, libc 0.2.191, smallvec 1.16.3,
-syn 3.0.9, thiserror 2.0.21, uuid 1.28.0 и TOML/zbus support-пакеты.
-Удалён windows-sys 0.60.2 с windows-targets 0.53 и восемью target-пакетами;
-граф уменьшился с 512 до 502 записей. Повторный `cargo update --dry-run --verbose`
-с обновлением registry/git показал 0 изменений.
+| Область | Версии |
+|---|---|
+| UI/рендеринг | eframe/egui/egui_kittest 0.37.0, egui_tiles 0.18.0, wgpu 30.0.1, winit 0.30.13 |
+| DSP/native | rustfft 6.4.1, realfft 3.5.0, cpal 0.18.2, ringbuf 0.5.3, hound 3.5.1 |
+| Общие | itertools 0.15.0, nom 8.0.0, serde 1.0.229, serde_json 1.0.154, web-time 1.1.0 |
+| Desktop hot reload | subsecond/dioxus-cli-config 0.7.10, tungstenite 0.30.0 |
+| Android | android-activity 0.6.1, jni 0.22.4, ndk-context 0.1.1 |
+| Wasm | wasm-bindgen 0.2.129, wasm-bindgen-futures 0.4.79, js-sys/web-sys 0.3.106, postcard 1.1.3 |
+| Остальные dev | ron 0.12.2, image 0.25.10 |
 
-По свежему registry index и resolved-рёбрам metadata проверены оставшиеся
-118 записей ниже latest stable: новую несовместимую версию исключает требование
-родительского crate. Например, eframe/egui_glow/wgpu удерживают glow ^0.17,
-epaint — harfrust ^0.12, skrifa ^0.44 и vello_cpu ^0.2;
-eframe/epaint/wgpu — parking_lot ^0.12, accesskit/atspi — zbus ^5,
-winit/arboard — x11rb ^0.13, cpal — alsa ^0.11.
-Остальные — image/rav1e, proc-macro и платформенные цепочки (objc2,
-smithay/rustix, Windows/WASI и т.д.). Их несовместимые major требуют миграции
-upstream; прямые пины/форки ради удаления дублей не добавлялись.
-`cargo tree --locked --target all --duplicates` и обратное дерево egui
-подтвердили один egui 0.37.0, eframe/egui_kittest 0.37.0,
-egui_tiles 0.18.0, wgpu 30.0.1; dockyard в полном графе отсутствует.
+`cargo metadata --locked`, `cargo tree --locked --target all --duplicates`
+и обратное дерево egui подтвердили 502 пакета, единственный egui 0.37.0
+и согласованный UI-граф; dockyard отсутствует. Повторный
+`cargo update --dry-run --verbose` с обновлением registry/git — 0 изменений.
 
-`git ls-remote` подтвердил прежний HEAD onepole-bank `67152aa9`;
-намеренный resonators fork и его locked commit сохранены.
-README, исходник и оба Cargo-файла lifecycle_probe рассмотрены:
-это самостоятельное воспроизведение android-activity#174 с сохранённым
-MIUI-замером, а не runtime-зависимость приложения. Все три прямые версии
-уже latest stable; probe Cargo.toml/Cargo.lock оставлены без изменений,
-чтобы транзитивное обновление не подменило окружение исходного наблюдения.
-Исключения Python/JVM/reference harness из инвентаризации остаются в силе.
+Реальные исключения:
 
-Реально выполнено на итоговом lockfile этой сессии (cargo с `--locked`):
+- resonators 0.1.1 — намеренный fork onepole-bank с OnePoleBank/f64 phase fix;
+  `git ls-remote` вновь подтвердил locked HEAD `67152aa9`. Crates.io не заменяет fork.
+- subsecond/dioxus-cli-config 0.8.0-alpha.3 и winit 0.31.0-beta.3 — prerelease;
+  сохраняются последние stable из таблицы.
+- 118 транзитивных записей ниже latest stable разобраны в сессии 5 по registry
+  index и resolved-рёбрам: несовместимые major исключены требованиями родителей.
+  Например, eframe/egui_glow/wgpu удерживают glow ^0.17; epaint — harfrust ^0.12,
+  skrifa ^0.44, vello_cpu ^0.2; accesskit/atspi — zbus ^5; cpal — alsa ^0.11.
+  Дубли image/rav1e, proc-macro и платформенных цепочек требуют миграции upstream;
+  прямых пинов или дополнительных форков ради их удаления нет.
+- lifecycle_probe сохраняет оба исходных Cargo-файла и окружение MIUI-замера
+  android-activity#174; его три прямые версии уже последние stable.
+- Внешние численные эталоны, SwiftF0 0.1.2 и JVM/reference harness сохранены
+  по причинам из инвентаризации; их обновление подменило бы исходное измерение.
+
+Реально выполнено на окончательном графе (cargo с `--locked`):
+
 - `cargo test --all-targets` — 244 lib + 2 UI passed, 0 failed, 36 ignored;
-  пять bin harness собраны, в них 0 тестов. Численные эталоны не изменялись.
+  пять bin harness собраны, в них 0 тестов. Включены egui_kittest pixel-тесты,
+  RON round-trip и чтение layout tiles 0.17.1. Численные эталоны не изменялись;
+  ignored/корпусные замеры не запускались.
 - `cargo clippy --all-targets` — pass с прежним warning
   `chunks_exact_to_as_chunks` в `src/audio/dsp/sieve.rs:907`.
+- `cargo build --bin fretboard-app` — pass.
 - `cargo check --target wasm32-unknown-unknown --lib --bins` — pass.
 - `cargo check --target aarch64-linux-android --lib` — pass для приложения
   и отдельно `--manifest-path probes/lifecycle_probe/Cargo.toml`;
   NDK r27c, CC clang API 26, AR llvm-ar. Probe lockfile не изменился.
-- `cargo metadata --locked`, полный target-all duplicate/egui graph и
-  `git diff --check` — pass.
+- `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps --lib` — pass для desktop,
+  с `--target wasm32-unknown-unknown` и с `--target aarch64-linux-android`.
+- Trunk 0.21.14 `build --locked --public-url /upgrade-s6/` — pass для
+  fretboard-app и dsp_worker, wasm-bindgen CLI 0.2.129. Как и в сессии 4,
+  использован `env -u NO_COLOR` из-за внешнего `NO_COLOR=1`.
+- Отдельный headless Chromium: sub-path, canvas и один DSP worker загрузились;
+  Ready получен, на Init(48000) и 4096 синтетических сэмплов пришёл Snapshot
+  8204 байта. JS-исключений, worker errors и ошибок загрузки бандла нет.
+  Микрофон/getDisplayMedia, физическое аудио, APK/устройство и применение
+  hot-reload patch этим проходом не проверялись; окно Стаса не запускалось.
+- `git diff --check` — pass.
 
-Следующая область — upgrade-validation: итоговые проверки из плана,
-включая rustdoc (на lockfile сессии 5 ещё не выполнялся). Browser/Trunk smoke
-сессии 4 прошёл до последнего транзитивного обновления; в сессии 5 браузер,
-APK/устройство, физическое аудио и hot-reload patch не запускались.
-Smell до завершения upgrade-validation не начинать.
-Чужая untracked `.claude/` не затронута; собственный scratch удалён.
+Остатка по обновлениям нет. Следующая область — smell-baseline в отдельной
+чистой сессии; smell-аудит здесь не начинался. Исходные результаты будущего
+аудита сохранять в `/home/sc/t/scratch/fretboard_deps_codex_autorun`.
+Чужая untracked `.claude/` не затронута; временные браузер/сервер остановлены,
+собственный scratch удалён.
