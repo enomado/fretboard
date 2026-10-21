@@ -292,3 +292,51 @@ pub(super) fn build_pulse_input(
 pub(super) fn pulse_i16_to_f32(bytes: [u8; 2]) -> f32 {
     f32::from(i16::from_le_bytes(bytes)) / 32768.0
 }
+
+#[cfg(test)]
+mod tests {
+    use ringbuf::HeapRb;
+    use ringbuf::traits::{
+        Consumer,
+        Split,
+    };
+
+    use super::InputFanout;
+
+    /// The callback must keep feeding other planes when one falls behind. Small,
+    /// unequal rings force both overflow and index wrap without device timing;
+    /// resuming a consumer must expose free slots to the producer immediately.
+    #[test]
+    fn a_full_plane_does_not_block_other_planes_or_overwrite_unread_samples() {
+        let (analysis, mut analysis_cons) = HeapRb::<f32>::new(3).split();
+        let (resonator, mut resonator_cons) = HeapRb::<f32>::new(2).split();
+        let (monitor, mut monitor_cons) = HeapRb::<f32>::new(4).split();
+        let mut fanout = InputFanout {
+            analysis,
+            resonator,
+            monitor: Some(monitor),
+            recorder: None,
+        };
+
+        for sample in [0.0, 1.0, 2.0, 3.0] {
+            fanout.push(sample);
+        }
+        assert_eq!(analysis_cons.try_pop(), Some(0.0));
+        assert_eq!(analysis_cons.try_pop(), Some(1.0));
+        assert_eq!(resonator_cons.try_pop(), Some(0.0));
+
+        // Analysis can now accept both, the bank only one, and the monitor neither.
+        fanout.push(4.0);
+        fanout.push(5.0);
+        assert_eq!(analysis_cons.pop_iter().collect::<Vec<_>>(), [2.0, 4.0, 5.0]);
+        assert_eq!(resonator_cons.pop_iter().collect::<Vec<_>>(), [1.0, 4.0]);
+        assert_eq!(monitor_cons.pop_iter().collect::<Vec<_>>(), [0.0, 1.0, 2.0, 3.0]);
+
+        // All endpoints have crossed their ring boundary and fetched fresh indices.
+        fanout.push(6.0);
+        for cons in [&mut analysis_cons, &mut resonator_cons, &mut monitor_cons] {
+            assert_eq!(cons.try_pop(), Some(6.0));
+            assert_eq!(cons.try_pop(), None);
+        }
+    }
+}

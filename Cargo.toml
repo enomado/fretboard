@@ -58,7 +58,7 @@ image = "0.25"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "0.18.2"
-ringbuf = "0.5.2"
+ringbuf = "0.5.3"
 # WAV, both directions, and every end is about the same corpus:
 #   - `audio::native::imp::recorder` WRITES takes straight off the capture ring,
 #     which is what makes a take *be* the signal the detector saw rather than a
