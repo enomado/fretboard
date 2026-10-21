@@ -292,13 +292,26 @@ pub fn draw_pitch_roll(
 
     painter.rect_filled(plot, 0.0, color::HEAT_BG);
 
-    // Layer order: grid rows + time ruler (bottom) → spectral heat → melody line.
+    // Layer order: grid rows + ruler lines (bottom) → spectral heat → melody line →
+    // playhead and ruler labels (top). The lines go under the evidence because they are
+    // only something to read it against; the labels and the playhead go over it, because
+    // they are read *themselves* and the heat would otherwise paint them out — a ruler
+    // whose numbers vanish exactly where something sounded is a ruler for the rests.
+    //
+    // The data layers are clipped to the plot. Columns may legitimately lie past its
+    // edges — the take roll keeps a cull margin so the line can enter and leave the
+    // window (`app::take_roll::CULL_MARGIN_S`) — and unclipped, a zoomed-in take painted
+    // that margin over the note names in both gutters: at a one-second window a tenth of a
+    // second is wider than either gutter.
+    let data = painter.with_clip_rect(plot);
     draw_rows(painter, rect, map, view_lo, view_hi, style);
-    draw_time_grid(painter, map);
-    draw_heat(painter, map, columns, bank);
+    draw_time_grid_lines(painter, map);
+    draw_heat(&data, map, columns, bank);
     if show_line {
-        draw_graph(painter, map, columns);
+        draw_graph(&data, map, columns);
     }
+    draw_playhead(painter, map);
+    draw_time_grid_labels(painter, map);
     draw_right_scale(painter, map, view_lo, view_hi, style, columns, bank);
 }
 
@@ -334,16 +347,21 @@ fn tick_step_s(span_s: f32) -> f32 {
     magnitude * snapped
 }
 
-/// The time ruler: a labelled vertical line every [`tick_step_s`] seconds.
+/// The time ruler's ticks: `(x, ruler value in seconds)` every [`tick_step_s`] seconds,
+/// plus how many decimals the labels need.
 ///
-/// It is what makes the axis checkable by eye rather than by argument — the thing this
-/// panel spent its whole life not having. A trill's rate, a note's length and a bow
+/// The ruler is what makes the axis checkable by eye rather than by argument — the thing
+/// this panel spent its whole life not having. A trill's rate, a note's length and a bow
 /// change all become measurable off the screen instead of inferred.
 ///
-/// The lines are placed on round **ruler** values rather than round ages, which is
+/// The ticks are placed on round **ruler** values rather than round ages, which is
 /// what makes them stand still while a frozen take is scrolled under them: you read
 /// 2.0, 2.5, 3.0, not 2.13, 2.63, 3.13 sliding along with the drag.
-fn draw_time_grid(painter: &Painter, map: RollMapping) {
+///
+/// One list for both halves of the ruler — the lines painted under the heat and the
+/// labels painted over it ([`draw_pitch_roll`]) — so a label cannot stand beside a line
+/// computed a second time.
+fn time_ticks(map: RollMapping) -> (Vec<(f32, f32)>, usize) {
     let (plot, time) = (map.plot(), map.time);
     let step = tick_step_s(time.span_s());
     // Ruler value ↔ age is `label = zero_age_s - age`, so walk the labels the window
@@ -360,6 +378,7 @@ fn draw_time_grid(painter: &Painter, map: RollMapping) {
         2
     };
 
+    let mut ticks = Vec::new();
     let mut tick = (label_lo / step).ceil();
     while tick * step <= label_hi {
         let label = tick * step;
@@ -371,16 +390,55 @@ fn draw_time_grid(painter: &Painter, map: RollMapping) {
         if x < plot.left() || x > plot.right() - 1.0 {
             continue;
         }
+        ticks.push((x, label));
+    }
+    (ticks, decimals)
+}
+
+/// The ruler's vertical lines — under the heat, see [`draw_pitch_roll`].
+fn draw_time_grid_lines(painter: &Painter, map: RollMapping) {
+    let plot = map.plot();
+    for (x, _) in time_ticks(map).0 {
         painter.line_segment(
             [pos2(x, plot.top()), pos2(x, plot.bottom())],
             Stroke::new(1.0, TIME_GRID_LINE),
         );
+    }
+}
+
+/// The ruler's numbers — over the heat, see [`draw_pitch_roll`].
+fn draw_time_grid_labels(painter: &Painter, map: RollMapping) {
+    let plot = map.plot();
+    let (ticks, decimals) = time_ticks(map);
+    for (x, label) in ticks {
         painter.text(
             pos2(x + 3.0, plot.bottom() - 3.0),
             Align2::LEFT_BOTTOM,
             format!("{label:.decimals$}s"),
             FontId::proportional(9.0),
             TIME_GRID_LABEL,
+        );
+    }
+}
+
+/// Playhead: a faint vertical marker at the newest instant — age zero, wherever the axis
+/// puts it. On the live roll that is always the right edge (`near_s == 0`); on a take
+/// still playing it walks across the window as the take fills in, and parks where the
+/// take's frames end. Scrolled off, it is simply not drawn: a marker clamped to the edge
+/// would claim the take ends there.
+///
+/// Its own layer, not part of the melody line's. It used to be drawn at the end of the
+/// line, so it vanished whenever the line did — with the line switched off, which is how
+/// a take is *marked* (`app::take_marks`), and on a stretch with no pitch at all. Both are
+/// exactly when the user needs to see where the take has got to: the playhead says
+/// *when*, and says nothing about what the detector decided.
+fn draw_playhead(painter: &Painter, map: RollMapping) {
+    let plot = map.plot();
+    let head_x = map.x_of(0.0);
+    if head_x >= plot.left() && head_x <= plot.right() {
+        painter.line_segment(
+            [pos2(head_x - 0.5, plot.top()), pos2(head_x - 0.5, plot.bottom())],
+            Stroke::new(1.0, PLAYHEAD),
         );
     }
 }
@@ -400,18 +458,20 @@ fn draw_right_scale(
     bank: BankRange,
 ) {
     let plot = map.plot();
-    // "Now" = the newest *non-empty* column, so a one-frame dropout doesn't blink
-    // the whole scale dark.
-    let current = columns.iter().rev().map(|c| c.heat).find(|c| !c.is_empty());
-    let bin_count = current.map_or(0, <[f32]>::len);
-    // Only the column can be too short to map; the bank is never empty (`lo < hi`).
-    let mapped = bin_count >= 2;
-    let bins_per_semitone = if mapped {
-        (bin_count - 1) as f32 / bank.span_f32()
-    } else {
-        1.0
-    };
-    let bank_lo = Midi::from(bank.lo()).0;
+    // "Now" = the newest *non-empty* column at or left of the right edge, so a
+    // one-frame dropout doesn't blink the whole scale dark.
+    //
+    // At or left of the edge, because the caller may hand in columns past it: the take
+    // roll keeps a cull margin beyond the window so its line can leave the edge
+    // (`app::take_roll::CULL_MARGIN_S`). The meter sits at the edge and reads as "what
+    // sounds here"; a column a tenth of a second off screen would light notes the user
+    // cannot see anywhere in the plot. On the live roll the edge is the playhead and
+    // every column qualifies.
+    let current = columns
+        .iter()
+        .rev()
+        .filter(|c| c.age_s >= map.time.near_s)
+        .find_map(|c| heat_grid(c, bank).map(|grid| (c.heat, grid)));
 
     let row_h = map.px_per_semitone();
     let lo = view_lo.floor() as i32;
@@ -426,20 +486,10 @@ fn draw_right_scale(
         };
         let pc = midi.rem_euclid(12);
         // Mirror the left gutter's density: every row when tall enough, else only C.
-        if row_h < 9.0 && pc != 0 {
+        if row_h < LABEL_MIN_ROW_H && pc != 0 {
             continue;
         }
-        // Peak energy within ±½ semitone of this note in the current column.
-        let energy = match current {
-            Some(col) if mapped => {
-                let center = (midi as f32 - bank_lo) * bins_per_semitone;
-                let last = (col.len() - 1) as f32;
-                let b0 = (center - bins_per_semitone * 0.5).clamp(0.0, last) as usize;
-                let b1 = (center + bins_per_semitone * 0.5).clamp(0.0, last) as usize;
-                col[b0..=b1].iter().copied().fold(0.0, f32::max)
-            }
-            _ => 0.0,
-        };
+        let energy = current.map_or(0.0, |(heat, grid)| note_energy(heat, grid, midi));
         let size = if pc == 0 {
             (row_h * 0.72).clamp(9.0, 13.0)
         } else {
@@ -463,6 +513,42 @@ fn label_heat_color(energy: f32) -> Color32 {
     let g = (106.0 + 100.0 * t).round() as u8;
     let b = (116.0 + 124.0 * t).round() as u8;
     Color32::from_rgb(r, g, b)
+}
+
+/// The grid a column's heat is painted on: its own when it carries one (the salience
+/// layer), else the bank's span over the column's own length (the spectrum layer, which
+/// *is* the bank — see [`RollColumn::grid`]). `None` for a column too short to map: an
+/// empty one is a rest, and one bin has no span to divide.
+///
+/// The one place that answer is given, for both readers of a column — the heat field and
+/// the right-hand meter. The meter used to derive the bank's grid on its own and ignore
+/// the column's, so on the salience layer it lit notes the field beside it painted
+/// somewhere else.
+fn heat_grid(column: &RollColumn<'_>, bank: BankRange) -> Option<HeatGrid> {
+    if column.heat.len() < 2 {
+        return None;
+    }
+    Some(column.grid.unwrap_or(HeatGrid {
+        min_midi:          Midi::from(bank.lo()),
+        // The bank is never empty (`lo < hi`), so only the column could fail to map —
+        // and that was ruled out above.
+        bins_per_semitone: (column.heat.len() - 1) as f32 / bank.span_f32(),
+    }))
+}
+
+/// Peak energy within ±½ semitone of note `midi` in one heat column, or 0 for a note the
+/// column's grid does not reach — no bins there means nothing was measured, not that the
+/// nearest edge bin's energy belongs to it.
+fn note_energy(heat: &[f32], grid: HeatGrid, midi: i32) -> f32 {
+    let center = (midi as f32 - grid.min_midi.0) * grid.bins_per_semitone;
+    let half = grid.bins_per_semitone * 0.5;
+    let last = (heat.len() - 1) as f32;
+    if center + half < 0.0 || center - half > last {
+        return 0.0;
+    }
+    let b0 = (center - half).clamp(0.0, last) as usize;
+    let b1 = (center + half).clamp(0.0, last) as usize;
+    heat[b0..=b1].iter().copied().fold(0.0, f32::max)
 }
 
 /// The pitch grid: one horizontal band per semitone. Accidental ("black-key")
@@ -585,20 +671,6 @@ fn mean_gap_s(columns: &[RollColumn<'_>]) -> f32 {
 /// bank columns beside fresh RT-SWIPE ones, two grids in one draw — honest.
 fn draw_heat(painter: &Painter, map: RollMapping, columns: &[RollColumn<'_>], bank: BankRange) {
     let (plot, time) = (map.plot(), map.time);
-    let bin_count = columns
-        .iter()
-        .map(|c| c.heat)
-        .find(|c| !c.is_empty())
-        .map_or(0, <[f32]>::len);
-    // Only the column can be too short to map; the bank is never empty (`lo < hi`).
-    if bin_count < 2 {
-        return;
-    }
-    // The bank fallback, for columns with no grid of their own (the spectrum layer).
-    let bank_grid = HeatGrid {
-        min_midi:          Midi::from(bank.lo()),
-        bins_per_semitone: (bin_count - 1) as f32 / bank.span_f32(),
-    };
     // A cell is one *frame*, so it is as wide as the gap between frames — measured,
     // not assumed: the bank's cadence is a user setting (8..80 ms) and the publish
     // jitters around it anyway. The mean is robust enough here (a dropped frame moves
@@ -611,13 +683,12 @@ fn draw_heat(painter: &Painter, map: RollMapping, columns: &[RollColumn<'_>], ba
     let mut mesh = Mesh::default();
     let uv = egui::epaint::WHITE_UV;
     for column in columns {
-        if column.heat.is_empty() {
-            continue; // silent frame → gap
-        }
         // Each column on its own grid — the spectrum's is the bank's, salience carries
         // its detector's. `cell_h` follows the grid too, so a finer grid draws thinner
         // cells rather than the coarse bank spacing stretched over them.
-        let grid = column.grid.unwrap_or(bank_grid);
+        let Some(grid) = heat_grid(column, bank) else {
+            continue; // silent frame → gap
+        };
         let cell_h = (map.px_per_semitone() / grid.bins_per_semitone + 0.6).max(1.5);
         let cx = map.x_of(column.age_s);
         // Older columns fade toward the far edge — but only where there is a "now" to
@@ -720,19 +791,6 @@ fn draw_graph(painter: &Painter, map: RollMapping, columns: &[RollColumn<'_>]) {
         painter.circle_filled(here, 1.8, color);
         prev = Some((here, column.age_s));
     }
-
-    // Playhead: a faint vertical marker at the newest instant — age zero, wherever the
-    // axis puts it. On the live roll that is always the right edge (`near_s == 0`); on
-    // a take still playing it walks across the window as the line fills in, and parks
-    // where the line ends. Scrolled off, it is simply not drawn: a marker clamped to
-    // the edge would claim the line ends there.
-    let head_x = map.x_of(0.0);
-    if head_x >= plot.left() && head_x <= plot.right() {
-        painter.line_segment(
-            [pos2(head_x - 0.5, plot.top()), pos2(head_x - 0.5, plot.bottom())],
-            Stroke::new(1.0, PLAYHEAD),
-        );
-    }
 }
 
 #[cfg(test)]
@@ -816,5 +874,280 @@ mod tests {
         // One column has no gap to measure, and must not divide by zero to find out.
         assert_eq!(mean_gap_s(&[column(1.0)]), 0.0);
         assert_eq!(mean_gap_s(&[]), 0.0);
+    }
+
+    // ---- Rendered through the real egui/epaint/wgpu stack, like `tests/pill_layout.rs`.
+    //
+    // Layering and visibility are not reachable from the mapping arithmetic: a playhead
+    // that is computed right and never painted, or a label painted right and then painted
+    // over, both pass every test above
+    // (`memory/interaction-needs-kittest-not-state-tests.md`).
+
+    use eframe::egui::Vec2;
+    use egui_kittest::Harness;
+    use image::RgbaImage;
+
+    use crate::core_types::pitch::PNote;
+
+    /// The default bank, 12..=108 — the span the spectrum layer's bins are spread over.
+    fn full_bank() -> BankRange {
+        BankRange::new(PNote::new(12).unwrap(), PNote::new(108).unwrap())
+    }
+
+    const PLOT_SIZE: Vec2 = Vec2::new(700.0, 320.0);
+
+    /// Paint the roll and return the image with the rect the layout **actually** gave it
+    /// — recorded from inside the frame, because kittest's central panel insets it.
+    fn render(
+        columns: Vec<RollColumn<'static>>,
+        view: (f32, f32),
+        time: TimeAxis,
+        show_line: bool,
+    ) -> (RgbaImage, RollMapping) {
+        let mut harness = Harness::builder()
+            .with_pixels_per_point(1.0)
+            .with_size(PLOT_SIZE + Vec2::splat(40.0))
+            .build_ui_state(
+                move |ui, drawn: &mut Rect| {
+                    let (rect, _) = ui.allocate_exact_size(PLOT_SIZE, egui::Sense::hover());
+                    *drawn = rect;
+                    draw_pitch_roll(
+                        &ui.painter_at(rect),
+                        rect,
+                        &columns,
+                        full_bank(),
+                        view.0,
+                        view.1,
+                        time,
+                        AccidentalStyle::Sharps,
+                        show_line,
+                    );
+                },
+                Rect::ZERO,
+            );
+        harness.run_steps(2);
+        let img = harness.render().expect("wgpu render failed");
+        let map = RollMapping::new(*harness.state(), view.0, view.1, time);
+        (img, map)
+    }
+
+    fn px(img: &RgbaImage, x: f32, y: f32) -> [u8; 4] {
+        img.get_pixel(x.round() as u32, y.round() as u32).0
+    }
+
+    /// A frozen 10 s take, the window on all of it, the playhead `playhead_t` into it.
+    fn frozen(playhead_t: f32) -> TimeAxis {
+        TimeAxis {
+            near_s:     playhead_t - 10.0,
+            far_s:      playhead_t,
+            zero_age_s: playhead_t,
+            mode:       RollMode::Frozen,
+        }
+    }
+
+    /// REGRESSION: the playhead is drawn with the line **off**, and over a rest.
+    ///
+    /// It used to be the tail end of the melody line's painter, so it went wherever the
+    /// line went — off while a take is being marked (the line is hidden by design then,
+    /// `app::take_marks`), and off over any stretch without a single pitch. Both are when
+    /// the user most needs to see how far the take has got.
+    #[test]
+    fn the_playhead_is_drawn_without_the_line_and_over_a_rest() {
+        // 5 s of a still-playing take, all of it a rest: no pitch, no heat. Odd on purpose:
+        // the ruler steps by 2 s here, and a playhead on one of its lines would let the
+        // test watch the line instead.
+        let columns: Vec<RollColumn<'static>> = (0..313).map(|i| column((312 - i) as f32 * 0.016)).collect();
+        let (img, map) = render(columns, (53.0, 79.0), frozen(5.0), false);
+        let plot = map.plot();
+        let head_x = map.x_of(0.0);
+        assert!(
+            plot.left() < head_x && head_x < plot.right(),
+            "playhead off the plot"
+        );
+        assert!(
+            time_ticks(map).0.iter().all(|(x, _)| (x - head_x).abs() > 20.0),
+            "a ruler line sits on the playhead"
+        );
+
+        // The column 15 px to the right is the not-yet-played future: the same rows, the
+        // same grid, nothing else — so any row that differs at the playhead is the playhead.
+        let rows = (plot.top() as u32 + 2)..(plot.bottom() as u32 - 2);
+        let marked = |x: f32| {
+            rows.clone()
+                .filter(|&y| px(&img, x, y as f32) != px(&img, head_x + 15.0, y as f32))
+                .count()
+        };
+        let best = [-1.5f32, -1.0, -0.5, 0.0, 0.5]
+            .iter()
+            .map(|dx| marked(head_x + dx))
+            .max()
+            .unwrap();
+        assert!(
+            best as f32 > 0.9 * rows.len() as f32,
+            "the playhead at x={head_x:.1} marks {best} of {} rows — it is not drawn with the \
+             line off",
+            rows.len()
+        );
+    }
+
+    /// The ruler's numbers are painted **over** the heat, not under it.
+    ///
+    /// Under it, a label vanishes wherever something sounded in the bottom rows — the
+    /// ruler then reads only across the rests, which is where nobody needs it.
+    #[test]
+    fn the_ruler_labels_read_over_the_heat() {
+        // A plot drowned in heat: every bin at full scale, every column of a whole take,
+        // oldest → newest as the renderer takes them.
+        static LOUD: [f32; 97] = [1.0; 97];
+        let columns: Vec<RollColumn<'static>> = (0..625)
+            .map(|i| {
+                RollColumn {
+                    heat: &LOUD,
+                    ..column((624 - i) as f32 * 0.016)
+                }
+            })
+            .collect();
+        let (img, map) = render(columns, (53.0, 79.0), frozen(10.0), false);
+        let plot = map.plot();
+
+        let (ticks, _) = time_ticks(map);
+        assert!(ticks.len() >= 3, "a 10 s window has a ruler");
+        for (x, label) in ticks {
+            // The label's box, as `draw_time_grid_labels` places it: right of the line,
+            // sitting on the plot's bottom edge. The heat there is a bright blue; the
+            // label is a dim grey — so dark ink inside the box is the label showing.
+            let ink = (0..14)
+                .flat_map(|dx| (3..12).map(move |dy| (x + 3.0 + dx as f32, plot.bottom() - dy as f32)))
+                .filter(|&(x, y)| px(&img, x, y)[1] < 140)
+                .count();
+            assert!(
+                ink >= 4,
+                "the ruler's \"{label}s\" is painted out by the heat ({ink} px of ink)"
+            );
+        }
+    }
+
+    /// REGRESSION: columns past the window's edges stay out of the label gutters.
+    ///
+    /// The take roll hands in a cull margin either side of its window so the line can
+    /// enter and leave it. Unclipped, that margin was painted over the note names — at a
+    /// one-second window a tenth of a second is wider than either gutter.
+    #[test]
+    fn columns_past_the_edges_stay_out_of_the_gutters() {
+        static LOUD: [f32; 97] = [1.0; 97];
+        // One second on screen (4..5 s of a take), columns from 3.9 to 5.1 s — the margin.
+        let time = TimeAxis {
+            near_s:     5.0,
+            far_s:      6.0,
+            zero_age_s: 10.0,
+            mode:       RollMode::Frozen,
+        };
+        let columns: Vec<RollColumn<'static>> = (0..76)
+            .map(|i| {
+                RollColumn {
+                    heat: &LOUD,
+                    pitch: Some(PitchPoint {
+                        midi:  Midi(66.0),
+                        level: 1.0,
+                    }),
+                    ..column(6.1 - i as f32 * 0.016)
+                }
+            })
+            .collect();
+        let (img, map) = render(columns, (53.0, 79.0), time, true);
+        let plot = map.plot();
+
+        // Heat is blue well above red; nothing else in a gutter is — the left names are
+        // grey, and the right meter's text starts 6 px past the plot.
+        let heat_like = |x: f32, y: f32| {
+            let p = px(&img, x, y);
+            p[2] as i32 - p[0] as i32 > 80
+        };
+        let rows = (plot.top() as i32 + 1)..(plot.bottom() as i32 - 1);
+        let left = (plot.left() as i32 - 40..plot.left() as i32 - 1)
+            .flat_map(|x| rows.clone().map(move |y| (x as f32, y as f32)))
+            .filter(|&(x, y)| heat_like(x, y))
+            .count();
+        let right = (plot.right() as i32 + 1..plot.right() as i32 + 5)
+            .flat_map(|x| rows.clone().map(move |y| (x as f32, y as f32)))
+            .filter(|&(x, y)| heat_like(x, y))
+            .count();
+        assert_eq!(
+            (left, right),
+            (0, 0),
+            "heat painted into the gutters (left, right) — over the note names"
+        );
+    }
+
+    /// The right-hand meter reads a column **on screen**, on **that column's own grid**.
+    ///
+    /// Two old faults, one test, because they are the same question — "which energy is
+    /// this label coloured by":
+    ///
+    /// - the take roll hands in columns a cull margin past the window's right edge, and
+    ///   the meter took the newest of all of them — lighting a note from a moment that is
+    ///   nowhere on the plot;
+    /// - the meter mapped bins with the bank's span and ignored [`RollColumn::grid`], so on
+    ///   the salience layer (a grid of its own) it lit some other note than the heat
+    ///   beside it showed.
+    #[test]
+    fn the_meter_reads_the_column_on_screen_on_its_own_grid() {
+        // Salience-style grid: C1 (24) up, 10 bins a semitone, a single peak at A4.
+        static SALIENCE: std::sync::LazyLock<Vec<f32>> = std::sync::LazyLock::new(|| {
+            let mut data = vec![0.0; 700];
+            data[(69 - 24) * 10] = 1.0;
+            data
+        });
+        // Bank-grid column (97 bins = 1 per semitone over 12..=108) peaking at E5.
+        static OFF_SCREEN: std::sync::LazyLock<Vec<f32>> = std::sync::LazyLock::new(|| {
+            let mut data = vec![0.0; 97];
+            data[76 - 12] = 1.0;
+            data
+        });
+        // Window ends one second before the playhead; the E5 column sits just past that
+        // edge, in the cull margin, and is the newest column handed in.
+        let time = TimeAxis {
+            near_s:     1.0,
+            far_s:      9.0,
+            zero_age_s: 9.0,
+            mode:       RollMode::Frozen,
+        };
+        let columns = vec![
+            RollColumn {
+                heat: SALIENCE.as_slice(),
+                grid: Some(HeatGrid {
+                    min_midi:          Midi(24.0),
+                    bins_per_semitone: 10.0,
+                }),
+                ..column(1.2)
+            },
+            RollColumn {
+                heat: OFF_SCREEN.as_slice(),
+                ..column(0.95)
+            },
+        ];
+        let (img, map) = render(columns, (62.0, 80.0), time, false);
+        let plot = map.plot();
+
+        // Bright cyan ink in a row's right-hand label = the meter lit that note.
+        let lit = |midi: f32| {
+            let y = map.y_of(midi);
+            (0..30)
+                .flat_map(|dx| (-4..=4).map(move |dy| (plot.right() + 6.0 + dx as f32, y + dy as f32)))
+                .filter(|&(x, y)| {
+                    let p = px(&img, x, y);
+                    p[1] > 170 && p[2] > 200
+                })
+                .count()
+        };
+        assert!(
+            lit(69.0) > 0,
+            "A4 is what the on-screen column holds, on its own grid — the meter left it dark"
+        );
+        assert_eq!(
+            lit(76.0),
+            0,
+            "E5 lives only in a column past the window's edge — the meter lit it anyway"
+        );
     }
 }

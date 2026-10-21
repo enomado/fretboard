@@ -14,7 +14,9 @@
 //!
 //! ## Both axes move, one at a time, and the wheel is not ours
 //!
-//! Drag pans time and pitch together; zoom takes them one axis at a time, about the
+//! Drag pans time and pitch together — pitch only once the drag has travelled a few
+//! pixels vertically, so a sideways sweep does not hand the pitch framing to the user by
+//! accident ([`PITCH_PAN_SLOP_PX`]); zoom takes them one axis at a time, about the
 //! cursor — **ctrl+wheel = time, shift+wheel = pitch** (a pinch does both at once,
 //! because two fingers say so). Double-click fits the take back into view. The plain
 //! wheel belongs to the pane's `ScrollArea` — this panel is taller than most panes, so it
@@ -237,6 +239,51 @@ enum PitchFraming {
     Manual,
 }
 
+/// Vertical travel (px) a drag must make before it starts moving the pitch window.
+///
+/// Drag pans both axes, and the pitch half of it also hands the framing to the user
+/// ([`PitchFraming::Manual`]) — which switches off the auto framing that keeps the slip on
+/// screen. A sideways sweep to scroll time is never perfectly level: a hand drifts a few
+/// pixels over it, a finger more. Without a threshold the first pixel of that drift was
+/// enough to make the window manual, so scrolling *time* quietly cost the user the framing
+/// on *pitch*. The same idea as a touch slop: a gesture has to mean the axis before it
+/// moves it. Twelve pixels is about one row at the default framing — a deliberate pull
+/// clears it at once, a wobble on a long drag does not.
+const PITCH_PAN_SLOP_PX: f32 = 12.0;
+
+/// The vertical half of one drag gesture — see [`PITCH_PAN_SLOP_PX`].
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PitchDrag {
+    /// The drag has not yet travelled the slop vertically. Carries the net signed travel
+    /// so far, in px: signed, so a wobble down and back up cancels rather than adding up
+    /// to an intent nobody had.
+    Holding(f32),
+    /// Past the slop: every further pixel moves the pitch window.
+    Engaged,
+}
+
+impl PitchDrag {
+    /// Feed one frame's vertical drag; returns the part that should move the pitch window.
+    ///
+    /// On engaging, only the travel *beyond* the slop is passed on, so the rows do not jump
+    /// by the slop the moment it is crossed — they start following the hand from there.
+    fn take(&mut self, dy: f32) -> f32 {
+        match *self {
+            PitchDrag::Engaged => dy,
+            PitchDrag::Holding(travel) => {
+                let travel = travel + dy;
+                if travel.abs() <= PITCH_PAN_SLOP_PX {
+                    *self = PitchDrag::Holding(travel);
+                    0.0
+                } else {
+                    *self = PitchDrag::Engaged;
+                    travel - PITCH_PAN_SLOP_PX.copysign(travel)
+                }
+            }
+        }
+    }
+}
+
 /// Everything a click needs to become a mark: what was declared, and what was on screen
 /// while the user was deciding.
 ///
@@ -316,6 +363,9 @@ struct LoadedTake {
     /// Which axis the wheel's zoom is aimed at, latched at the notch — see
     /// [`Self::interact`], which is also the only thing that writes it.
     zoom_axis:  ZoomAxis,
+    /// The vertical half of the drag in progress — see [`PITCH_PAN_SLOP_PX`]. Reset at
+    /// the start of every drag by [`Self::interact`], its only writer.
+    pitch_drag: PitchDrag,
     /// How the marks file on disk relates to the marks on screen. See [`MarksFile`].
     marks_file: MarksFile,
 }
@@ -352,6 +402,7 @@ impl LoadedTake {
             marks,
             draft: None,
             zoom_axis: ZoomAxis::default(),
+            pitch_drag: PitchDrag::Holding(0.0),
             marks_file,
             path,
             seconds,
@@ -755,6 +806,9 @@ impl LoadedTake {
 
         let px_per_second = plot.width() / self.span_s();
         let px_per_semitone = plot.height() / self.pitch_span();
+        if resp.drag_started() {
+            self.pitch_drag = PitchDrag::Holding(0.0);
+        }
         if resp.dragged() {
             let drag = resp.drag_delta();
             // Drag moves the *take*, not the window: pull right and the take goes right,
@@ -762,8 +816,11 @@ impl LoadedTake {
             // with the sign the other way because screen y grows downward while pitch
             // grows upward — drag the take down and you are looking higher.
             self.pan(-drag.x / px_per_second);
-            if drag.y != 0.0 {
-                self.pan_pitch(drag.y / px_per_semitone, bank);
+            // Time follows the hand at once; pitch only once the gesture has meant it —
+            // see `PITCH_PAN_SLOP_PX` for what a wobble used to cost.
+            let dy = self.pitch_drag.take(drag.y);
+            if dy != 0.0 {
+                self.pan_pitch(dy / px_per_semitone, bank);
             }
         }
 
@@ -1110,8 +1167,8 @@ impl App {
         ui.add_space(6.0);
         ui.label(
             RichText::new(format!(
-                "{} · {:.2}–{:.2} s of {:.1} · {:.0}–{:.0} midi{} · drag to pan, ctrl+wheel to \
-                 zoom, double-click to fit{}",
+                "{} · {:.2}–{:.2} s of {:.1} · {:.0}–{:.0} midi{} · drag to pan, ctrl+wheel \
+                 zooms time, shift+wheel pitch, double-click to fit{}",
                 loaded.path.file_name().unwrap().to_string_lossy(),
                 loaded.window.start,
                 loaded.window.end,
@@ -1537,6 +1594,67 @@ mod tests {
         assert!(
             take.framing == PitchFraming::Manual,
             "a hand-aimed window is manual — otherwise the next frame reframes it away"
+        );
+    }
+
+    /// A horizontal drag with the hand's ordinary wobble scrolls **time**, and leaves the
+    /// pitch window — and with it the auto framing — alone.
+    ///
+    /// The auto framing is what keeps the slip on screen (see [`PitchFraming`]), and the
+    /// type says a manual window is something "you get by asking". A few pixels of
+    /// vertical drift on a long sideways sweep is not asking: it is how a hand moves a
+    /// mouse, and a finger moves worse. Every frame of such a drag used to carry a
+    /// non-zero `drag_delta().y`, so the very first one flipped the framing to manual and
+    /// the take went on streaming into a window that no longer grew to hold it.
+    #[test]
+    fn a_sideways_drag_with_a_wobble_scrolls_time_and_keeps_the_auto_framing() {
+        let mut loaded = take(10.0);
+        play(&mut loaded, 300, Some(69.0));
+        loaded.zoom_about(0.25, 5.0); // zoomed in, so there is time to scroll through
+        let mut harness = rig(loaded);
+        harness.run_steps(3);
+        let plot = harness.state().plot;
+        let (window_before, lo_before, hi_before) = {
+            let take = &harness.state().take;
+            (take.window.clone(), take.view_lo, take.view_hi)
+        };
+
+        // 160 px to the right with the hand drifting 4 px down on the way: a wobble.
+        let from = on_screen(plot);
+        harness.drag_at(from);
+        harness.run_steps(2);
+        for step in 1..=8 {
+            let k = step as f32 / 8.0;
+            harness.hover_at(from + egui::Vec2::new(160.0 * k, 4.0 * k));
+            harness.run_steps(1);
+        }
+        harness.drop_at(from + egui::Vec2::new(160.0, 4.0));
+        harness.run_steps(2);
+
+        let take = &harness.state().take;
+        assert!(
+            take.window.start < window_before.start - 0.1,
+            "dragging the take right must walk the window into the past: {window_before:?} → {:?}",
+            take.window
+        );
+        assert!(
+            take.framing == PitchFraming::Auto,
+            "a 4 px wobble on a 160 px sideways drag turned the pitch window manual — the \
+             auto framing that shows the slip is gone without being asked for"
+        );
+        assert_eq!(
+            (take.view_lo, take.view_hi),
+            (lo_before, hi_before),
+            "the wobble moved the pitch window"
+        );
+
+        // And the next frames of the take still frame the slip.
+        let loaded = &mut harness.state_mut().take;
+        play(loaded, 1, Some(81.0));
+        assert!(
+            loaded.view_hi > 81.0,
+            "after a sideways drag the slip at 81 is outside a view topping out at {:.1}",
+            loaded.view_hi
         );
     }
 
