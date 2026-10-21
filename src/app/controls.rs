@@ -830,26 +830,10 @@ impl App {
             // Which frontend decides the played note. The bank keeps running either way (it
             // draws the waterfall, the spiral and the salience heat); this only redirects the
             // note decision. See `audio::types::PitchFrontend`.
-            for (label, frontend) in [
-                ("Resonators", PitchFrontend::ResonatorBank),
-                ("RT-SWIPE", PitchFrontend::RtSwipe),
-            ] {
+            for frontend in PitchFrontend::ALL {
                 let selected = settings.resonator.frontend == frontend;
-                let button = SegmentedButton::new(label, selected).min_width(82.0);
-                if ui
-                    .add(button)
-                    .on_hover_text(match frontend {
-                        PitchFrontend::ResonatorBank => {
-                            "Per-sample IIR resonator bank: flat 8–29 ms delay, finest \
-                             intonation. The shipped detector."
-                        }
-                        PitchFrontend::RtSwipe => {
-                            "SWIPE′ over windowed FFTs: halves octave errors, cheaper to run, \
-                             at a pitch-dependent delay (≈4 periods). Same kernel as the bank."
-                        }
-                        PitchFrontend::Sieve => "Experimental harmonic sieve (H6).",
-                    })
-                    .clicked()
+                let button = SegmentedButton::new(frontend.label(), selected).min_width(82.0);
+                if ui.add(button).on_hover_text(frontend.description()).clicked()
                     && settings.resonator.frontend != frontend
                 {
                     settings.resonator.frontend = frontend;
@@ -857,6 +841,12 @@ impl App {
                 }
             }
         });
+
+        ui.label(
+            RichText::new(settings.resonator.frontend.description())
+                .small()
+                .color(color::TEXT_CAPTION),
+        );
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {

@@ -83,17 +83,18 @@ const WORKER_URL: &str = "./dsp_worker_loader.js";
 /// Latest analysis state pushed up from the worker; the UI getters read this.
 #[derive(Default)]
 struct Latest {
-    status:    Option<AudioStatus>,
-    reading:   Option<TunerReading>,
-    resonator: Option<ResonatorReading>,
-    level:     f32,
-    waveform:  Vec<f32>,
+    requested_frontend: crate::audio::types::PitchFrontend,
+    status:             Option<AudioStatus>,
+    reading:            Option<TunerReading>,
+    resonator:          Option<ResonatorReading>,
+    level:              f32,
+    waveform:           Vec<f32>,
     /// The melody line's history, rebuilt on this side from the deltas each snapshot
     /// carries. Everything else in `Latest` is *replaced* by each snapshot; this one
     /// accumulates, because it is a history and the worker only ever sends what is
     /// new. Same [`MelodyHistory`] rules as the worker's own ring, so the two agree on
     /// what is kept and for how long.
-    melody:    MelodyHistory,
+    melody:             MelodyHistory,
 }
 
 /// Live capture objects. Dropping this stops the tracks, closes the context, and
@@ -160,6 +161,11 @@ impl AudioEngine {
                 let bytes = js_sys::Uint8Array::new(&event.data()).to_vec();
                 if let Some(FromWorker::Snapshot(snapshot)) = decode::<FromWorker>(&bytes) {
                     let mut latest = latest_for_cb.borrow_mut();
+                    // A snapshot already in flight before Settings cannot restore
+                    // the previous source's notes after a live detector switch.
+                    if snapshot.frontend != latest.requested_frontend {
+                        return;
+                    }
                     latest.status = Some(snapshot.status);
                     latest.reading = snapshot.reading;
                     latest.resonator = snapshot.resonator;
@@ -223,6 +229,16 @@ impl AudioEngine {
 
     pub fn set_analysis_settings(&self, settings: AnalysisSettings) {
         let sanitized = settings.sanitized();
+        {
+            let mut latest = self.inner.latest.borrow_mut();
+            if latest.requested_frontend != sanitized.resonator.frontend {
+                latest.requested_frontend = sanitized.resonator.frontend;
+                latest.melody.clear();
+                if let Some(reading) = latest.reading.as_mut() {
+                    reading.note_line = Default::default();
+                }
+            }
+        }
         *self.inner.settings.borrow_mut() = sanitized.clone();
         post_to(&self.inner, &ToWorker::Settings(Box::new(sanitized)));
     }

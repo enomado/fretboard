@@ -191,10 +191,11 @@ Two things about the output are easy to miss and both are deliberate:
   scalar cannot express a tie. So `ResonatorSnapshot::salience` carries the whole curve
   (plus the raw column it was scored from, since the fine pitch is read off the winning
   series' loudest partial and continuity may pick a different series than the argmax did).
-- **The argmax is not published.** It used to ride out as `TunerReading::fast_pitch`,
+- **The argmax is diagnostic.** It used to ride out as `TunerReading::fast_pitch`,
   the frame's own raw opinion, but no panel ever read it and it was removed (refactor
   follow-ups, 2026-09-22). `SalienceFrame::argmax` survives as the tests' probe and the
-  honest baseline the Viterbi is measured against.
+  honest baseline the Viterbi is measured against. R4 carries it separately in
+  `MelodyFrame::raw_pitch` for WAV diagnostics; panels keep reading `pitch`.
 
 ### Stage 2 — the decode (`dsp::melody::MelodyTracker`)
 
@@ -202,12 +203,40 @@ H6 also wires an **experimental harmonic-sieve frontend** (`PitchFrontend::Sieve
 into this same decoder: 361 candidate scores on C2..C8 at 5 bins/semitone, with
 each bin's harmonic least-squares pitch fit. Its independently swept β is 80 per
 16 ms, scaled by the actual audio-clock `dt`. It has no second trellis or octave
-filter. It is not exposed in Controls and does not replace the bank default:
+filter. R4 exposes it in Controls as experimental and keeps the bank default:
 the unchanged end-to-end A4→E5 budget fails (72 ms against 60), and the live
 vocal takes are still missing. See [`harmonic_sieve.md`, H6](harmonic_sieve.md#h6-кривая-решета-под-общим-треллисом-2026-10-20)
 for both β sweeps and the range/window limitations. An absent frame from a
 selected FFT frontend now remains absent; it cannot fall back to the bank at
 another frontend's emission scale.
+
+R4 extends the existing **Detector** choice to all six methods, persisted in the
+same `ResonatorSettings::frontend` field (old settings still default to the bank).
+The flowchart above describes the default path. The selected source determines
+`MelodyFrame::pitch` on capture and WAV replay; tuner `frequency_hz` remains the
+independent slow pYIN output. Every frame also carries its `frontend`, `raw_pitch`
+and, for peak comb, `reference_pitch` for diagnostics. Panels draw the finished
+line. A method change clears the decoder, segmenter and history; delivery sequence
+numbers keep increasing. Web snapshots identify the source so an in-flight old
+snapshot cannot restore the previous method's notes.
+
+The new window sources use fixed **sample-clock hops**, independent of the display
+slider: pYIN 40 ms / the configured analysis window (6144 by default), peak comb
+8 ms / 4096 samples, YINFFT 16 ms / 2048 samples. Each gets a complete window after
+selection. pYIN supplies its **hypothesis probabilities**, including unvoiced mass,
+directly to the shared `SalienceDecoder`/`PitchTrellis`; its already-decoded tuner
+output is never decoded again and cannot serve as its own octave anchor. The
+existing repair layer remains on the other paths. Comb and YINFFT each supply one
+raw hypothesis as a 20-cent Gaussian on a 10-cent grid, with the measured fine pitch
+resolved only within 40 cents of that hypothesis. This representation adds no
+invented octave alternatives. Their emission scales and the pYIN temperature are
+measured by the R4 accuracy and latency sweeps in `pitch_benchmark.md`.
+
+The comb's original jump rejection and six-frame mean advance exactly once per
+8 ms frame into `reference_pitch`; that value never enters the melody trellis.
+This is a comparison output, independent of the H7 display-smoothing question.
+`pitch_wav` runs the same two pipelines offline, writing raw/line/reference CSVs
+and the full settings; see `pitch_benchmark.md` for the command and format.
 
 Runs at **plane B's cadence** and is the **only** place the melody line's octave is
 decided. Two stages, and only the first has a model of time:

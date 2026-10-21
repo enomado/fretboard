@@ -7,7 +7,7 @@
 //! what `dsp::sieve` or `dsp::rtswipe` do, yet detectors of exactly this shape are what
 //! commercial vocal monitors are built from, and on a scrolling piano roll they look *calm*.
 //! Running it through `pitch_bench` puts a number on that and says which of its few decisions
-//! carry it — `docs/peak_comb.md`. It is a yardstick, not a candidate for shipping.
+//! carry it — `docs/peak_comb.md`. It remains a yardstick when selected in the app.
 //!
 //! Its constants are fixed reference settings, not tuned on the benchmark corpus: the point
 //! is to measure a design, and a design re-tuned to the ruler measures the ruler.
@@ -217,9 +217,16 @@ impl PeakComb {
     ///
     /// MIDI rather than Hz because the smoothing averages in semitones: the answer is a mean
     /// of pitches, and there is no Hz it was computed in.
+    #[cfg(test)]
     pub(crate) fn pitch(&mut self) -> Option<Midi> {
-        let raw = self.raw_pitch().map(SemitonesAboveA0::from_hz);
-        self.smooth(raw).map(|st| Midi(st.midi()))
+        let raw = self.raw_pitch();
+        self.smooth_pitch(raw)
+    }
+
+    /// Advance the reference mean from the very same raw estimate used by the trellis.
+    pub(crate) fn smooth_pitch(&mut self, raw: Option<Hz>) -> Option<Midi> {
+        self.smooth(raw.map(SemitonesAboveA0::from_hz))
+            .map(|st| Midi(st.midi()))
     }
 
     /// The frame on its own, no smoothing.

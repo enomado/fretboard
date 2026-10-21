@@ -1152,12 +1152,15 @@ mod tests {
         let frames = (0..count)
             .map(|i| {
                 MelodyFrame {
-                    seq:      first + i as u64,
-                    t:        start_t + (i + 1) as f64 * CADENCE_S,
-                    pitch:    pitch.map(Midi),
-                    level:    0.5,
-                    heat:     Vec::new(),
-                    salience: None,
+                    seq:             first + i as u64,
+                    t:               start_t + (i + 1) as f64 * CADENCE_S,
+                    pitch:           pitch.map(Midi),
+                    frontend:        Default::default(),
+                    raw_pitch:       None,
+                    reference_pitch: None,
+                    level:           0.5,
+                    heat:            Vec::new(),
+                    salience:        None,
                 }
             })
             .collect();

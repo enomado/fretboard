@@ -1,6 +1,6 @@
 //! The engine as the platform layers wire it, driven off a sample count instead of a device.
 //!
-//! One rig for every test that needs the *shipped* chain rather than a DSP module alone:
+//! One rig for tests and WAV diagnostics that need the *shipped* chain rather than a DSP module alone:
 //! `core`'s wiring tests and `dsp::pitch_bench`'s melody-line benchmark. It lived inside
 //! `core::tests` until the benchmark needed it too; a second copy there would be a second
 //! engine that could drift from the first, which is exactly what a benchmark of "what ships"
@@ -26,7 +26,6 @@ use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     AnalysisSettings,
     MelodyFrame,
-    NoteLine,
 };
 
 /// Both pipelines, the shared state between them, the level atomic one writes and the
@@ -111,7 +110,8 @@ impl Rig {
         self.shared.lock().unwrap().melody_since(after)
     }
 
-    pub(crate) fn note_line(&self) -> NoteLine {
+    #[cfg(test)]
+    pub(crate) fn note_line(&self) -> crate::audio::types::NoteLine {
         self.shared
             .lock()
             .unwrap()

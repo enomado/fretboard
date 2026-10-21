@@ -514,6 +514,9 @@ mod tests {
                 seq: self.seq,
                 t: self.t,
                 pitch: pitch.map(Midi),
+                frontend: Default::default(),
+                raw_pitch: None,
+                reference_pitch: None,
                 level,
                 heat: Vec::new(),
                 salience: None,
@@ -550,6 +553,9 @@ mod tests {
                 seq: 1,
                 t: 0.0,
                 pitch: Some(Midi(69.0)),
+                frontend: Default::default(),
+                raw_pitch: None,
+                reference_pitch: None,
                 level: 0.5, // over HEAT_LEVEL_GATE
                 heat: vec![1.0, 0.0],
                 salience,
@@ -588,12 +594,15 @@ mod tests {
             ..PitchRoll::default()
         };
         quiet.update(vec![MelodyFrame {
-            seq:      1,
-            t:        0.0,
-            pitch:    None,
-            level:    HEAT_LEVEL_GATE * 0.5,
-            heat:     vec![1.0, 0.0],
-            salience: Some(sh(vec![0.0, 1.0])),
+            seq:             1,
+            t:               0.0,
+            pitch:           None,
+            frontend:        Default::default(),
+            raw_pitch:       None,
+            reference_pitch: None,
+            level:           HEAT_LEVEL_GATE * 0.5,
+            heat:            vec![1.0, 0.0],
+            salience:        Some(sh(vec![0.0, 1.0])),
         }]);
         assert!(
             quiet.columns(0.0)[0].heat.is_empty(),
@@ -680,12 +689,15 @@ mod tests {
         // The engine reset: same monotonic `seq` (a panel's cursor survives a device
         // switch), but the sample clock starts over.
         roll.update(vec![MelodyFrame {
-            seq:      bank.seq + 1,
-            t:        0.0,
-            pitch:    Some(Midi(60.0)),
-            level:    0.5,
-            heat:     Vec::new(),
-            salience: None,
+            seq:             bank.seq + 1,
+            t:               0.0,
+            pitch:           Some(Midi(60.0)),
+            frontend:        Default::default(),
+            raw_pitch:       None,
+            reference_pitch: None,
+            level:           0.5,
+            heat:            Vec::new(),
+            salience:        None,
         }]);
         assert_eq!(
             roll.frames.len(),

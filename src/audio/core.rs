@@ -49,6 +49,7 @@ use crate::audio::dsp::segmenter::NoteSegmenter;
 use crate::audio::dsp::sieve::HarmonicSieve;
 use crate::audio::dsp::spectrum::spectrum_bars_for_window;
 use crate::audio::dsp::swipe::SalienceFrame;
+use crate::audio::dsp::window_frontend::WindowFrontend;
 use crate::audio::sample_rate::SampleRate;
 use crate::audio::types::{
     AnalysisSettings,
@@ -215,19 +216,19 @@ pub(crate) fn set_shared_error(shared: &Arc<Mutex<SharedState>>, msg: &str) {
 // Pipelines: чистые функции, ничего аудио-специфичного.
 // ------------------------------------------------------------------
 pub(crate) struct ResonatorPipeline {
-    analyzer:     ResonatorAnalyzer,
+    analyzer:          ResonatorAnalyzer,
     /// The alternative note frontend (`PitchFrontend::RtSwipe`). Fed the **same** samples as
     /// the bank on every push so its rolling history stays warm and a switch is instant, but
     /// only *scored* (`frame()` runs eight FFTs) at publish time when it is the active
     /// frontend — so the parallel run costs a memcpy per push while the bank is selected.
-    rtswipe:      RtSwipe,
+    rtswipe:           RtSwipe,
     /// H6 curve frontend. Like RT-SWIPE, fed continuously and scored only when selected.
-    sieve:        HarmonicSieve,
+    sieve:             HarmonicSieve,
     /// The A4 `rtswipe` was built against. Its ladder and grid are cut from the concert
     /// pitch, so a retune has to rebuild it — see [`Self::sync_settings`], which mirrors the
     /// bank's own rebuild-on-settings-change.
-    rtswipe_ref:  Hz,
-    last_publish: Instant,
+    rtswipe_ref:       Hz,
+    last_publish:      Instant,
     /// The **audio clock**: samples this pipeline has actually processed, and the rate
     /// to read them at. `samples_seen / sample_rate` is the timestamp handed to the
     /// melody segmenter, and it is the reason a note's duration is now a musical
@@ -237,8 +238,12 @@ pub(crate) struct ResonatorPipeline {
     /// asking) — deliberately: while parked nothing downstream of it runs either, and
     /// a clock that ran on regardless would expire the held note of whatever phrase
     /// was playing when the panel was closed. It is monotonic whenever it is read.
-    sample_rate:  SampleRate,
-    samples_seen: u64,
+    sample_rate:       SampleRate,
+    samples_seen:      u64,
+    window_frontend:   WindowFrontend,
+    selected_frontend: PitchFrontend,
+    /// Samples until the next fixed-hop frame of the selected window detector.
+    until_frame:       usize,
 }
 
 pub(crate) struct AnalysisPipeline {
@@ -293,6 +298,9 @@ impl ResonatorPipeline {
             last_publish: Instant::now() - Duration::from_millis(16),
             sample_rate,
             samples_seen: 0,
+            window_frontend: WindowFrontend::new(sample_rate),
+            selected_frontend: PitchFrontend::default(),
+            until_frame: 0,
         }
     }
 
@@ -326,16 +334,67 @@ impl ResonatorPipeline {
         let analysis_settings = settings.lock().unwrap().clone().sanitized();
         self.sync_settings(&analysis_settings, shared);
 
+        let frontend = analysis_settings.resonator.frontend;
+        if self.selected_frontend != frontend {
+            self.selected_frontend = frontend;
+            self.until_frame = 0;
+            self.window_frontend = WindowFrontend::new(self.sample_rate);
+            let mut state = shared.lock().unwrap();
+            // A detector switch is a phrase boundary even when two methods happen
+            // to share β/grid. No old decision, note or history crosses it.
+            state.melody = MelodyTracker::default();
+            state.segmenter = NoteSegmenter::default();
+            state.note_line = NoteLine::default();
+            state.melody_history.clear();
+            if let Some(reading) = state.reading.as_mut() {
+                reading.note_line = NoteLine::default();
+            }
+        }
+
         let gain = f32::from_bits(input_gain.load(Ordering::Relaxed));
         let samples: Vec<f32> = samples.into_iter().map(|sample| sample * gain).collect();
-        self.samples_seen += samples.len() as u64;
-        self.analyzer
-            .process_samples(&samples, analysis_settings.resonator.reassign);
+        if let Some(hop_ms) = frontend.hop_ms() {
+            let hop = self.sample_rate.samples_in(Duration::from_millis(hop_ms));
+            let mut remaining = samples.as_slice();
+            while !remaining.is_empty() {
+                if self.until_frame == 0 {
+                    self.until_frame = hop;
+                }
+                let count = self.until_frame.min(remaining.len());
+                let (block, rest) = remaining.split_at(count);
+                self.process_samples(block, analysis_settings.resonator.reassign);
+                self.until_frame -= count;
+                remaining = rest;
+                if self.until_frame != 0 {
+                    continue;
+                }
+                let evidence = self.window_frontend.frame(
+                    frontend,
+                    analysis_settings.window_size,
+                    analysis_settings.concert_pitch_hz,
+                );
+                publish_resonator_snapshot(
+                    shared,
+                    self.analyzer
+                        .snapshot(analysis_settings.resonator.reassign, analysis_settings.accidental),
+                    FrontendFrame {
+                        source: evidence.frame,
+                        frontend,
+                        gamma: analysis_settings.resonator.gamma,
+                        raw: evidence.raw,
+                        reference: evidence.reference,
+                    },
+                    analysis_settings.resonator.history,
+                    f32::from_bits(input_level.load(Ordering::Relaxed)),
+                    self.samples_seen as f64 / self.sample_rate.0 as f64,
+                );
+            }
+            return;
+        }
+        self.process_samples(&samples, analysis_settings.resonator.reassign);
         // Keep RT-SWIPE's rolling history warm on every push, whichever frontend is active:
         // a switch must be able to score the very next frame, and this is only a memcpy. The
         // eight FFTs of `frame()` are deferred to publish, and only when it is the frontend.
-        self.rtswipe.process_samples(&samples);
-        self.sieve.process_samples(&samples);
 
         let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
         if now.duration_since(self.last_publish) < publish_interval {
@@ -349,6 +408,9 @@ impl ResonatorPipeline {
             PitchFrontend::ResonatorBank => None,
             PitchFrontend::RtSwipe => self.rtswipe.frame(),
             PitchFrontend::Sieve => self.sieve.frame(analysis_settings.concert_pitch_hz),
+            PitchFrontend::Pyin | PitchFrontend::PeakComb | PitchFrontend::YinFft => {
+                unreachable!("fixed-hop source handled above")
+            }
         };
         // The level the 40 ms analysis plane last measured. Up to one analysis hop
         // stale, which is exactly what the panels' own gate read before it moved here
@@ -362,11 +424,21 @@ impl ResonatorPipeline {
                 source,
                 frontend,
                 gamma: analysis_settings.resonator.gamma,
+                raw: None,
+                reference: None,
             },
             analysis_settings.resonator.history,
             level,
             self.samples_seen as f64 / self.sample_rate.0 as f64,
         );
+    }
+
+    fn process_samples(&mut self, samples: &[f32], reassign: bool) {
+        self.samples_seen += samples.len() as u64;
+        self.analyzer.process_samples(samples, reassign);
+        self.rtswipe.process_samples(samples);
+        self.sieve.process_samples(samples);
+        self.window_frontend.process_samples(samples);
     }
 
     fn sync_settings(&mut self, settings: &AnalysisSettings, shared: &Arc<Mutex<SharedState>>) {
@@ -657,13 +729,15 @@ fn publish_analysis_reading(shared: &Arc<Mutex<SharedState>>, frame: AnalysisFra
 struct FrontendFrame {
     /// The alternative frontend's frame. `None` means it found no evidence; it never
     /// authorizes substituting another detector's curve at this frontend's β.
-    source:   Option<SalienceFrame>,
+    source:    Option<SalienceFrame>,
     /// Which detector `source` is — it selects the β (`melody::salience_beta`), not inferable
     /// from the frame, because the two frontends' curves are on different scales (see
     /// `dsp::rtswipe`).
-    frontend: PitchFrontend,
+    frontend:  PitchFrontend,
     /// Display contrast for the salience layer, the same knob the spectrum column gets.
-    gamma:    f32,
+    gamma:     f32,
+    raw:       Option<Midi>,
+    reference: Option<Midi>,
 }
 
 fn publish_resonator_snapshot(
@@ -678,6 +752,8 @@ fn publish_resonator_snapshot(
         source: melody_override,
         frontend,
         gamma,
+        raw,
+        reference,
     } = front;
     let mut state = shared.lock().unwrap();
     state.resonator_spectrum = snapshot.spectrum;
@@ -695,7 +771,7 @@ fn publish_resonator_snapshot(
     // Never substitute the bank when the selected alternative has no evidence.
     let melody_source = match frontend {
         PitchFrontend::ResonatorBank => snapshot.salience.as_ref(),
-        PitchFrontend::RtSwipe | PitchFrontend::Sieve => melody_override.as_ref(),
+        _ => melody_override.as_ref(),
     };
     // The roll's salience layer, from the frame that actually decided the note — so it
     // mirrors the *chosen* detector, not always the bank. Built here rather than in the
@@ -712,6 +788,13 @@ fn publish_resonator_snapshot(
         }
     });
     let bank = (level >= MELODY_LEVEL_GATE).then_some(melody_source).flatten();
+    let raw_pitch = if frontend.hop_ms().is_some() {
+        raw
+    } else {
+        melody_source
+            .and_then(SalienceFrame::argmax)
+            .map(|(m, _)| Midi(m))
+    };
     // The melody line's whole latency win happens here: the bank publishes every
     // ~16 ms, so the played note is refreshed at the bank's cadence instead of
     // waiting for the 40 ms pYIN rebuild (which is itself ~128 ms behind). This
@@ -742,6 +825,9 @@ fn publish_resonator_snapshot(
         seq,
         t: now_seconds,
         pitch: melody_pitch.map(|(midi, _)| Midi(midi)),
+        frontend,
+        raw_pitch,
+        reference_pitch: reference,
         level,
         heat: resonator_spectrum.clone(),
         // The scorer's own view of this same column, for the roll's debug layer. Taken
@@ -792,6 +878,174 @@ mod tests {
                     / 3.0
             })
             .collect()
+    }
+
+    #[test]
+    fn detector_switches_start_fresh_phrases_and_keep_the_delivery_cursor() {
+        let sr = SampleRate(48_000);
+        let mut rig = Rig::new(sr);
+        let tone = violin_tone(440.0, sr, 24_000);
+        let mut cursor = None;
+        for frontend in PitchFrontend::ALL
+            .into_iter()
+            .chain([PitchFrontend::PeakComb, PitchFrontend::ResonatorBank])
+        {
+            rig.settings.lock().unwrap().resonator.frontend = frontend;
+            rig.feed(&tone, sr);
+            let frames = rig.melody_since(None);
+            assert!(!frames.is_empty());
+            assert!(
+                frames
+                    .iter()
+                    .all(|f| f.frontend == frontend && cursor.is_none_or(|seq| f.seq > seq))
+            );
+            assert!(
+                frames
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .all(|f| f.pitch.is_some_and(|m| (m.0 - 69.0).abs() < 0.5)),
+                "{frontend:?}"
+            );
+            if frontend.hop_ms().is_some() {
+                assert!(
+                    frames[0].pitch.is_none(),
+                    "window detector must not inherit the previous decoded pitch"
+                );
+            }
+            cursor = frames.last().map(|f| f.seq);
+            assert!(rig.melody_since(cursor).is_empty());
+        }
+    }
+
+    #[test]
+    fn fixed_hop_frontends_keep_the_same_frames_across_display_cadences() {
+        let sr = SampleRate(44_100);
+        let tone = violin_tone(440.0, sr, 22_050);
+        for frontend in [
+            PitchFrontend::Pyin,
+            PitchFrontend::PeakComb,
+            PitchFrontend::YinFft,
+        ] {
+            let mut outputs = Vec::new();
+            for display_ms in [8, 80] {
+                let mut rig = Rig::new(sr);
+                {
+                    let mut s = rig.settings.lock().unwrap();
+                    s.resonator.frontend = frontend;
+                    s.resonator.update_ms = display_ms;
+                }
+                rig.feed(&tone, sr);
+                outputs.push(rig.melody_since(None));
+            }
+            assert_eq!(outputs[0].len(), outputs[1].len());
+            for (a, b) in outputs[0].iter().zip(&outputs[1]) {
+                assert_eq!(a.t, b.t);
+                assert_eq!(a.raw_pitch, b.raw_pitch);
+                assert_eq!(a.pitch, b.pitch);
+                assert_eq!(a.reference_pitch, b.reference_pitch);
+            }
+        }
+    }
+
+    /// A numeric wiring oracle: every published raw FFT estimate must be the
+    /// corresponding standalone detector's exact window, not the bank with a label.
+    #[test]
+    fn window_frontends_publish_the_actual_raw_and_reference_estimates() {
+        use crate::audio::dsp::{
+            peak_comb,
+            yinfft,
+        };
+        for sr in [SampleRate(44_100), SampleRate(48_000)] {
+            let tone = violin_tone(440.0, sr, sr.samples_in(Duration::from_millis(400)));
+            for frontend in [PitchFrontend::PeakComb, PitchFrontend::YinFft] {
+                let mut rig = Rig::new(sr);
+                rig.settings.lock().unwrap().resonator.frontend = frontend;
+                rig.feed(&tone, sr);
+                let mut comb = peak_comb::PeakComb::new(sr, peak_comb::DEFAULT_GATE_DBFS);
+                let mut yin = yinfft::YinFft::new(sr);
+                let mut previous = 0;
+                let mut checked = 0;
+                for frame in rig.melody_since(None) {
+                    let end = (frame.t * sr.hz() as f64).round() as usize;
+                    comb.process_samples(&tone[previous..end]);
+                    previous = end;
+                    let expected = match frontend {
+                        PitchFrontend::PeakComb if end >= peak_comb::WINDOW => comb.raw_pitch(),
+                        PitchFrontend::YinFft if end >= yinfft::WINDOW_SAMPLES => {
+                            yin.estimate(&tone[end - yinfft::WINDOW_SAMPLES..end])
+                                .map(|e| e.hz)
+                        }
+                        _ => None,
+                    };
+                    assert_eq!(frame.raw_pitch, expected.map(|f| f.to_midi(Hz::A4_STANDARD)));
+                    if frontend == PitchFrontend::PeakComb {
+                        assert_eq!(frame.reference_pitch, comb.smooth_pitch(expected));
+                    }
+                    checked += usize::from(expected.is_some());
+                }
+                assert!(
+                    checked >= 10,
+                    "{frontend:?} sr={sr:?}: {checked} voiced oracle frames"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "R4 end-to-end latency measurement for the new selectable methods"]
+    fn window_engine_latency_probe() {
+        for sr in [SampleRate(44_100), SampleRate(48_000)] {
+            for frontend in [
+                PitchFrontend::Pyin,
+                PitchFrontend::PeakComb,
+                PitchFrontend::YinFft,
+            ] {
+                for (from, to) in [(440.0, 493.88), (440.0, 659.25), (440.0, 880.0), (196.0, 293.66)] {
+                    let mut raw_times = Vec::new();
+                    let mut line_times = Vec::new();
+                    let mut reference_times = Vec::new();
+                    for phase in [0, frontend.hop_ms().unwrap() - 1] {
+                        let hold = sr.samples_in(Duration::from_millis(600 + phase));
+                        let mut signal = violin_tone(from, sr, hold);
+                        signal.extend(violin_tone(to, sr, sr.samples_in(Duration::from_millis(600))));
+                        let mut rig = Rig::new(sr);
+                        rig.settings.lock().unwrap().resonator.frontend = frontend;
+                        rig.feed(&signal, sr);
+                        let frames = rig.melody_since(None);
+                        let step = hold as f64 / sr.hz() as f64;
+                        let target = Hz(to).to_midi(Hz::A4_STANDARD).0;
+                        let first = |get: fn(&MelodyFrame) -> Option<Midi>| {
+                            frames
+                                .iter()
+                                .find(|f| f.t > step && get(f).is_some_and(|m| (m.0 - target).abs() < 0.5))
+                                .map_or(f64::INFINITY, |f| (f.t - step) * 1000.0)
+                        };
+                        raw_times.push(first(|f| f.raw_pitch));
+                        line_times.push(first(|f| f.pitch));
+                        reference_times.push(first(|f| f.reference_pitch));
+                    }
+                    assert!(
+                        line_times.iter().all(|ms| ms.is_finite()),
+                        "{frontend:?} {from}->{to} did not arrive"
+                    );
+                    let range = |v: &[f64]| {
+                        format!(
+                            "{:.2}..{:.2}",
+                            v.iter().copied().fold(f64::INFINITY, f64::min),
+                            v.iter().copied().fold(0.0, f64::max)
+                        )
+                    };
+                    println!(
+                        "{frontend:?} sr={} {from:.0}->{to:.0} raw={} line={} reference={}",
+                        sr.0,
+                        range(&raw_times),
+                        range(&line_times),
+                        range(&reference_times)
+                    );
+                }
+            }
+        }
     }
 
     /// REGRESSION: a poisoned settings lock is a panic, not a silent fall-back to defaults.
@@ -964,7 +1218,7 @@ mod tests {
     /// a user who picked RT-SWIPE — the staff would stay empty while the spectrum still moved.
     #[test]
     fn engine_decodes_with_the_fft_frontends() {
-        for frontend in [PitchFrontend::RtSwipe, PitchFrontend::Sieve] {
+        for frontend in PitchFrontend::ALL {
             let sr = SampleRate(48_000);
             let mut rig = Rig::new(sr);
             rig.settings.lock().unwrap().resonator.frontend = frontend;
@@ -1002,7 +1256,10 @@ mod tests {
         let sr = SampleRate(48_000);
         let mut analyzer = ResonatorAnalyzer::new(sr);
         analyzer.process_samples(&violin_tone(440.0, sr, 24_000), true);
-        for frontend in [PitchFrontend::RtSwipe, PitchFrontend::Sieve] {
+        for frontend in PitchFrontend::ALL
+            .into_iter()
+            .filter(|f| *f != PitchFrontend::ResonatorBank)
+        {
             let snapshot = analyzer.snapshot(true, AccidentalStyle::Sharps);
             assert!(
                 snapshot.salience.is_some(),
@@ -1016,6 +1273,8 @@ mod tests {
                     source: None,
                     frontend,
                     gamma: 0.72,
+                    raw: None,
+                    reference: None,
                 },
                 52,
                 1.0,

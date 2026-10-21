@@ -826,6 +826,8 @@ fn bench_melody(
             let estimate = match stage {
                 MelodyStage::Line => frame.pitch.map(|midi| (midi.0, 1.0)),
                 MelodyStage::Salience => frame.salience.as_ref().and_then(salience_argmax),
+                MelodyStage::Raw => frame.raw_pitch.map(|m| (m.0, 1.0)),
+                MelodyStage::Reference => frame.reference_pitch.map(|m| (m.0, 1.0)),
             };
             for (tally, scoring) in tallies.iter_mut().zip(scorings) {
                 score_frame(tally, seconds, annotation, scoring, estimate);
@@ -917,6 +919,8 @@ enum MelodyStage {
     /// coarse read: bin centres, no partial refinement — fine for a 50 ¢ verdict, not for
     /// jitter.
     Salience,
+    Raw,
+    Reference,
 }
 
 /// The highest bin of a salience layer inside the tracked domain (C1..C8, as the decoder
@@ -1599,18 +1603,20 @@ fn peak_comb_raw_rpa_on_corpus() {
 #[test]
 #[ignore = "needs datasets/MDB-stem-synth (~5 GB) — run with --ignored --nocapture"]
 fn melody_rpa_on_corpus() {
-    let frontend = match std::env::var("PITCH_BENCH_FRONTEND").as_deref() {
-        Err(_) | Ok("bank") => PitchFrontend::ResonatorBank,
-        Ok("rtswipe") => PitchFrontend::RtSwipe,
-        Ok("sieve") => PitchFrontend::Sieve,
-        Ok(other) => panic!("PITCH_BENCH_FRONTEND={other:?} — expected `bank`, `rtswipe` or `sieve`"),
-    };
+    let frontend =
+        PitchFrontend::from_key(&std::env::var("PITCH_BENCH_FRONTEND").unwrap_or_else(|_| "bank".into()))
+            .unwrap();
     // `PITCH_BENCH_MELODY_STAGE=salience` scores the trellis's input instead of its output —
     // the decomposition, see `MelodyStage`.
     let stage = match std::env::var("PITCH_BENCH_MELODY_STAGE").as_deref() {
         Err(_) | Ok("line") => MelodyStage::Line,
         Ok("salience") => MelodyStage::Salience,
-        Ok(other) => panic!("PITCH_BENCH_MELODY_STAGE={other:?} — expected `line` or `salience`"),
+        Ok("raw") => MelodyStage::Raw,
+        Ok("reference") => {
+            assert_eq!(frontend, PitchFrontend::PeakComb);
+            MelodyStage::Reference
+        }
+        Ok(other) => panic!("PITCH_BENCH_MELODY_STAGE={other:?} — expected line, salience, raw or reference"),
     };
     println!(
         "Frontend beta: {}",

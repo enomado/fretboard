@@ -156,6 +156,10 @@ pub(crate) fn salience_beta(frontend: PitchFrontend) -> f32 {
         PitchFrontend::ResonatorBank => SALIENCE_BETA_BANK,
         PitchFrontend::RtSwipe => SALIENCE_BETA_RTSWIPE,
         PitchFrontend::Sieve => SALIENCE_BETA_SIEVE,
+        // Independent evidence scales; measured by the R4 accuracy/latency sweeps.
+        PitchFrontend::Pyin => 1.0,
+        PitchFrontend::PeakComb => 20.0,
+        PitchFrontend::YinFft => 20.0,
     }
 }
 
@@ -320,7 +324,7 @@ impl SalienceDecoder {
         for state in 0..trellis.grid().n_pitch() {
             max_salience = max_salience.max(frame.salience_at(offset + state));
         }
-        if max_salience <= 0.0 {
+        if max_salience <= 0.0 && frame.unvoiced_likelihood().is_none() {
             // Nothing in C1..C8 looks like a harmonic series at all.
             return None;
         }
@@ -330,14 +334,25 @@ impl SalienceDecoder {
             let salience = frame.salience_at(offset + state);
             emissions.set_state(
                 PitchState(state),
-                ((salience - max_salience) * nats_per_salience).exp(),
+                if frame.unvoiced_likelihood().is_some() {
+                    // pYIN already emits probabilities. Temperature 1 at 40 ms
+                    // preserves its likelihood ratios; do not Gibbs-link them again.
+                    salience.max(1e-9).powf(self.beta * dt / 0.040)
+                } else {
+                    ((salience - max_salience) * nats_per_salience).exp()
+                },
             );
         }
         // Voicing is the *level gate's* job, upstream (`core::MELODY_LEVEL_GATE`) — SWIPE′'s
         // absolute scale is not a confidence and must never be thresholded as one (design
-        // §1.4). So this channel never votes itself unvoiced; the unvoiced state stays a
-        // route the trellis offers and this caller declines.
-        emissions.set_unvoiced(0.0);
+        // §1.4). Salience frontends decline the unvoiced route; probability frontends
+        // explicitly supply it (pYIN's mass divided over its pitch grid).
+        emissions.set_unvoiced(
+            frame
+                .unvoiced_likelihood()
+                .map(|p| p.max(1e-9).powf(self.beta * dt / 0.040))
+                .unwrap_or(0.0),
+        );
 
         let state = trellis.step(&emissions, dt)?;
         // The decoded bin names the harmonic series; the partials say exactly where it is.
@@ -506,7 +521,14 @@ impl MelodyTracker {
             return self.pin_and_gate(None, anchor);
         };
         let bank = self.decoder.decode(frame, now_seconds);
-        self.pin_and_gate(bank, anchor)
+        if frontend == PitchFrontend::Pyin {
+            // This path has already decoded pYIN's hypotheses once. Its tuner
+            // output is the same evidence, not an independent octave witness;
+            // neither anchor snapping nor another temporal gate belongs here.
+            bank
+        } else {
+            self.pin_and_gate(bank, anchor)
+        }
     }
 
     /// The **repair layer**: layers 2 and 3, on an already-decoded note.
@@ -601,6 +623,173 @@ mod beta_sweep {
     /// prior on this number was "nobody knows" — pYIN's implied rate (its emissions are
     /// deltas) is effectively infinite, and the linear link is β = 1.
     const CANDIDATES: [f32; 7] = [1.0, 5.0, 10.0, 20.0, 40.0, 80.0, 200.0];
+
+    fn window_betas(frontend: PitchFrontend) -> Vec<f32> {
+        if frontend == PitchFrontend::Pyin {
+            vec![0.25, 0.5, 1.0, 2.0, 4.0]
+        } else {
+            CANDIDATES.to_vec()
+        }
+    }
+
+    #[test]
+    fn pyin_hypotheses_use_one_decoder_and_never_their_own_anchor() {
+        use crate::audio::dsp::pyin::{
+            PitchTracker,
+            PyinFrontend,
+        };
+        for sr in [SampleRate(44_100), SampleRate(48_000)] {
+            let source = PyinFrontend::new();
+            let mut original = PitchTracker::new();
+            let mut melody = MelodyTracker::default();
+            let mut checked = 0;
+            for (i, hz) in [440.0, 440.0, 440.0, 880.0, 880.0, 880.0, 493.88, 493.88, 493.88]
+                .into_iter()
+                .enumerate()
+            {
+                let window = violin_tone(hz, sr, 6144);
+                let expected = original
+                    .process(&window, sr)
+                    .map(|p| Hz(p.0).to_midi(Hz::A4_STANDARD).0);
+                let frame = source.frame(&window, sr, Hz::A4_STANDARD);
+                // Deliberately contradictory and maximally confident. Self-evidence
+                // cannot corroborate an octave, even when the tuner disagrees.
+                let result = melody
+                    .update(
+                        frame.as_ref(),
+                        Some((57.0, 1.0)),
+                        (i + 1) as f64 * 0.04,
+                        PitchFrontend::Pyin,
+                    )
+                    .map(|p| p.0);
+                assert_eq!(
+                    result, expected,
+                    "pYIN changed under the common decoder at {sr:?}, frame {i}"
+                );
+                checked += usize::from(result.is_some());
+            }
+            assert_eq!(checked, 9);
+        }
+    }
+
+    /// R4: independently measure the accuracy edge for every new emission scale.
+    /// All βs see identical evidence; no constants are fitted to an individual take.
+    #[test]
+    #[ignore = "measurement on the five real violin WAVs"]
+    fn window_beta_accuracy_sweep() {
+        use crate::audio::dsp::window_frontend::WindowFrontend;
+        for frontend in [
+            PitchFrontend::Pyin,
+            PitchFrontend::PeakComb,
+            PitchFrontend::YinFft,
+        ] {
+            let betas = window_betas(frontend);
+            for Take {
+                name,
+                lo,
+                hi,
+                must_remain,
+            } in TAKES
+            {
+                let path = format!("{}/testdata/{name}.wav", env!("CARGO_MANIFEST_DIR"));
+                let mut reader = hound::WavReader::open(path).unwrap();
+                let sr = SampleRate(reader.spec().sample_rate);
+                let samples: Vec<f32> = reader
+                    .samples::<i16>()
+                    .map(|s| s.unwrap() as f32 / 32768.0)
+                    .collect();
+                let mut source = WindowFrontend::new(sr);
+                let mut decoders: Vec<_> = betas.iter().map(|b| SalienceDecoder::with_beta(*b)).collect();
+                let mut outputs = vec![Vec::new(); betas.len()];
+                let hop = sr.samples_in(std::time::Duration::from_millis(frontend.hop_ms().unwrap()));
+                for (index, chunk) in samples.chunks_exact(hop).enumerate() {
+                    source.process_samples(chunk);
+                    let now = ((index + 1) * hop) as f64 / sr.hz() as f64;
+                    let evidence = source.frame(frontend, 6144, Hz::A4_STANDARD);
+                    for (decoder, output) in decoders.iter_mut().zip(&mut outputs) {
+                        let pitch = evidence.frame.as_ref().and_then(|f| decoder.decode(f, now));
+                        if evidence.frame.is_none() {
+                            decoder.reset();
+                        }
+                        if now >= 1.0 {
+                            output.push(pitch.map(|p| p.0));
+                        }
+                    }
+                }
+                println!("\n{frontend:?} {name} truth={lo}..={hi}");
+                for (beta, output) in betas.iter().zip(&outputs) {
+                    assert!(!output.is_empty());
+                    let (inside, octave) = tally(output, lo..=hi);
+                    print!(
+                        "beta {beta:<5} in {inside:.4}% octave {octave:.4}% voiced={}/{}",
+                        output.iter().flatten().count(),
+                        output.len()
+                    );
+                    for MustRemain { label, midi } in must_remain {
+                        print!(" {label} {:.4}%", on_note(output, *midi));
+                    }
+                    println!();
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "R4 emission latency sweep, both device rates and all hop phases"]
+    fn window_beta_latency_sweep() {
+        use crate::audio::dsp::window_frontend::WindowFrontend;
+        for frontend in [
+            PitchFrontend::Pyin,
+            PitchFrontend::PeakComb,
+            PitchFrontend::YinFft,
+        ] {
+            let hop_ms = frontend.hop_ms().unwrap();
+            for sr in [SampleRate(44_100), SampleRate(48_000)] {
+                let hop = sr.samples_in(std::time::Duration::from_millis(hop_ms));
+                println!("\n{frontend:?} sr={} hop={hop_ms}ms, latency min..max ms", sr.0);
+                for beta in window_betas(frontend) {
+                    print!("beta {beta:<5}");
+                    for (from, to) in [(440.0, 493.88), (440.0, 659.25), (440.0, 880.0), (196.0, 293.66)] {
+                        let mut times = Vec::new();
+                        for phase in 0..hop_ms {
+                            let hold = sr.samples_in(std::time::Duration::from_millis(600 + phase));
+                            let mut signal = violin_tone(from, sr, hold);
+                            signal.extend(violin_tone(
+                                to,
+                                sr,
+                                sr.samples_in(std::time::Duration::from_millis(600)),
+                            ));
+                            let mut source = WindowFrontend::new(sr);
+                            let mut decoder = SalienceDecoder::with_beta(beta);
+                            let target = Hz(to).to_midi(Hz::A4_STANDARD).0;
+                            let mut latency = f32::INFINITY;
+                            for (i, chunk) in signal.chunks_exact(hop).enumerate() {
+                                source.process_samples(chunk);
+                                let fed = (i + 1) * hop;
+                                let now = fed as f64 / sr.hz() as f64;
+                                let evidence = source.frame(frontend, 6144, Hz::A4_STANDARD);
+                                let pitch = evidence.frame.as_ref().and_then(|f| decoder.decode(f, now));
+                                if evidence.frame.is_none() {
+                                    decoder.reset();
+                                }
+                                if fed > hold && pitch.is_some_and(|p| (p.0 - target).abs() < 0.5) {
+                                    latency = (fed - hold) as f32 / sr.hz() * 1000.0;
+                                    break;
+                                }
+                            }
+                            times.push(latency);
+                        }
+                        print!(
+                            " {from:.0}->{to:.0} {:.2}..{:.2}",
+                            times.iter().copied().fold(f32::INFINITY, f32::min),
+                            times.iter().copied().fold(0.0, f32::max)
+                        );
+                    }
+                    println!();
+                }
+            }
+        }
+    }
 
     /// H6 accuracy edge, using the same takes/truth and β grid as the other frontends.
     /// All decoders see the very same frame; only the evidence exchange rate differs.

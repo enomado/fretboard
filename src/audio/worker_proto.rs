@@ -41,6 +41,7 @@ pub(crate) enum FromWorker {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct WorkerSnapshot {
+    pub(crate) frontend:  crate::audio::types::PitchFrontend,
     pub(crate) status:    AudioStatus,
     pub(crate) reading:   Option<TunerReading>,
     pub(crate) resonator: Option<ResonatorReading>,

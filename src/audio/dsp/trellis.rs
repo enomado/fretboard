@@ -235,6 +235,10 @@ impl Emissions {
     pub(crate) fn set_unvoiced(&mut self, likelihood: f32) {
         self.unvoiced = likelihood;
     }
+
+    pub(crate) fn pitch_likelihoods(&self) -> &[f32] {
+        &self.pitch
+    }
 }
 
 /// A stateful online Viterbi: one per pitch channel, carrying its forward trellis frame to

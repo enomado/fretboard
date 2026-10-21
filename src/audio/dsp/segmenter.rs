@@ -288,7 +288,7 @@ mod tests {
                     let frame = match frontend {
                         crate::audio::types::PitchFrontend::ResonatorBank => snapshot.salience.as_ref(),
                         crate::audio::types::PitchFrontend::Sieve => sieve_frame.as_ref(),
-                        crate::audio::types::PitchFrontend::RtSwipe => unreachable!("not part of this probe"),
+                        _ => unreachable!("not part of this probe"),
                     };
                     let melody_pitch = melody.update(frame, anchor, now, frontend);
                     let line = segmenter.update(melody_pitch.map(|(m, _)| m), NO_ONSET, now);

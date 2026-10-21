@@ -174,6 +174,7 @@ fn snapshot(state: &mut WorkerState) -> FromWorker {
         state.melody_posted = Some(last.seq);
     }
     FromWorker::Snapshot(Box::new(WorkerSnapshot {
+        frontend: state.settings.lock().unwrap().resonator.frontend,
         status,
         reading,
         resonator,

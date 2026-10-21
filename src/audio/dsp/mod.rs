@@ -9,10 +9,10 @@ pub(crate) mod analysis_math;
 pub(crate) mod melody;
 pub(crate) mod octave_gate;
 pub(crate) mod onset;
-// A simple FFT peak comb kept as a yardstick, not a candidate for shipping
-// (`pitch_bench::peak_comb_rpa_on_corpus`). Plain comment for the same reason as `rtswipe`'s.
-#[cfg(test)]
-mod peak_comb;
+// A simple FFT peak comb kept as a selectable yardstick. Its reference mean stays
+// separate from the melody decoder. Plain comment for the same reason as `rtswipe`'s.
+pub(crate) mod peak_comb;
+pub(crate) mod window_frontend;
 pub(crate) mod pitch;
 /// RPA of the shipped scorer against a corpus with a perfect f0 annotation — the
 /// baseline any detector change is argued against. Test-only, and needs the git-ignored
@@ -34,5 +34,5 @@ pub(crate) mod sieve;
 pub(crate) mod spectrum;
 pub(crate) mod swipe;
 pub(crate) mod trellis;
-// Spectral YIN's shared native/web calculation; line integration follows in R4.
+// Spectral YIN's shared native/web calculation, selected through window_frontend.
 pub(crate) mod yinfft;

@@ -291,6 +291,9 @@ pub(crate) struct SalienceFrame {
     bins_per_semitone: f32,
     /// `‖√|X|‖₂`, the per-frame constant that turns a salience into a 0..1 confidence.
     norm:              f32,
+    /// Probability frontends carry an explicit unvoiced likelihood. Salience frontends
+    /// use the engine's absolute level gate instead.
+    unvoiced:          Option<f32>,
 }
 
 /// Fine pitch belongs to the frontend that measured the evidence. Spectral peaks already
@@ -322,6 +325,7 @@ impl SalienceFrame {
             min_midi,
             bins_per_semitone,
             norm,
+            unvoiced: None,
         })
     }
 
@@ -366,6 +370,7 @@ impl SalienceFrame {
             min_midi,
             bins_per_semitone,
             norm: 1.0,
+            unvoiced: None,
         }
     }
 
@@ -388,7 +393,24 @@ impl SalienceFrame {
             min_midi,
             bins_per_semitone,
             norm: 1.0,
+            unvoiced: None,
         }
+    }
+
+    pub(crate) fn from_probabilities(
+        curve: Vec<f32>,
+        fits: Vec<f32>,
+        min: f32,
+        bps: f32,
+        unvoiced: f32,
+    ) -> Self {
+        let mut frame = Self::from_fitted_curve(curve, fits, min, bps);
+        frame.unvoiced = Some(unvoiced);
+        frame
+    }
+
+    pub(crate) fn unvoiced_likelihood(&self) -> Option<f32> {
+        self.unvoiced
     }
 
     pub(crate) fn bins_per_semitone(&self) -> f32 {
@@ -502,9 +524,9 @@ impl SalienceFrame {
     /// This frame's own best guess, weighing nothing but this frame — the per-frame argmax
     /// over the pitch domain, as `(fractional_midi, pitch_strength)`.
     ///
-    /// Kept as the honest baseline the Viterbi is measured against, and as the tests'
-    /// single-frame probe. Test-only: production decodes a *path* over the whole curve
-    /// (`dsp::melody`), and the one production reader this had —
+    /// Kept as the honest baseline the Viterbi is measured against, as the tests'
+    /// single-frame probe and as R4's `MelodyFrame::raw_pitch` diagnostic. Panels
+    /// read the decoded *path* (`dsp::melody`); the old instant reader —
     /// `TunerReading::fast_pitch` — had no reader of its own and was removed.
     ///
     /// This is what replaced `analysis_math::resonator_fundamental`, and the differences are
@@ -526,7 +548,6 @@ impl SalienceFrame {
     /// series at all. Silence is **not** decided here — the engine gates the melody on
     /// `level` upstream (`core::MELODY_LEVEL_GATE`), and a second opinion here would just be
     /// a magic number in a new place.
-    #[cfg(test)]
     pub(crate) fn argmax(&self) -> Option<(f32, f32)> {
         let (peak_bin, &peak) = self.curve[self.tracked_bins()?]
             .iter()

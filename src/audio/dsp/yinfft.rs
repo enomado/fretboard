@@ -30,6 +30,7 @@ const SILENCE_DBFS: f32 = -50.0;
 pub(crate) struct YinFftEstimate {
     pub(crate) hz:          Hz,
     /// 1 − CMNDF at the selected lag; a periodicity measure, not a probability.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) periodicity: f32,
 }
 

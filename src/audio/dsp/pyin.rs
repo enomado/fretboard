@@ -30,8 +30,10 @@
 //! window), because the HMM will not leave a note while the window still holds any
 //! trace of it. That is fine, even desirable, for a tuner.
 //!
-//! The staff and pitch roll must **not** read this — see [`super::melody`], which
-//! rides the resonator bank (8–29 ms) and borrows only the octave from here.
+//! The staff and pitch roll read [`super::melody`]. Its default rides the bank
+//! (8–29 ms) and borrows only the octave from here. When pYIN is explicitly selected,
+//! [`PyinFrontend`] supplies hypotheses directly to that shared decoder; this
+//! tracker's already-decoded tuner output is never fed through another decoder.
 
 use super::analysis_math::parabolic_tau;
 #[cfg(test)]
@@ -182,6 +184,60 @@ const FRAME_DT: f32 = 0.040;
 /// потребителем. Камертон 442 сдвинул бы только края сетки на 8¢, что для диапазона
 /// C1..C8 не значит ничего.
 const GRID_A4: Hz = Hz::A4_STANDARD;
+
+/// Candidate extraction only: no path decoder, no anchor, no temporal state.
+/// The selected pYIN melody feeds these hypotheses directly to `dsp::melody`.
+pub(crate) struct PyinFrontend {
+    prior: ThresholdPrior,
+}
+
+impl PyinFrontend {
+    pub(crate) fn new() -> Self {
+        Self {
+            prior: ThresholdPrior::new(),
+        }
+    }
+
+    pub(crate) fn frame(
+        &self,
+        window: &[f32],
+        sample_rate: SampleRate,
+        reference: Hz,
+    ) -> Option<super::swipe::SalienceFrame> {
+        let c = cmndf(window, sample_rate)?;
+        let (candidates, voiced) = pyin_candidates(&c, &self.prior, sample_rate);
+        let grid = PitchGrid::new(MIN_MIDI, MAX_MIDI, BINS_PER_SEMITONE);
+        let mut emissions = Emissions::zeroed(&grid);
+        let mut fits: Vec<f32> = (0..grid.n_pitch())
+            .map(|i| grid.midi_of_state(super::trellis::PitchState(i)))
+            .collect();
+        let mut best = vec![0.0; grid.n_pitch()];
+        for candidate in candidates {
+            let midi = Hz(candidate.frequency_hz).to_midi(reference).0;
+            let bin = grid.bin_of_midi(midi);
+            emissions.add_at_bin(bin, candidate.probability);
+            for offset in -2..=2 {
+                let i = bin.round() as isize + offset;
+                if i >= 0 && (i as usize) < fits.len() && candidate.probability > best[i as usize] {
+                    fits[i as usize] = midi;
+                    best[i as usize] = candidate.probability;
+                }
+            }
+        }
+        // Salience grids include their upper endpoint; PitchGrid's upper bound is
+        // exclusive. A sentinel preserves all 840 original pYIN states downstream.
+        let mut curve = emissions.pitch_likelihoods().to_vec();
+        curve.push(0.0);
+        fits.push(MAX_MIDI);
+        Some(super::swipe::SalienceFrame::from_probabilities(
+            curve,
+            fits,
+            MIN_MIDI,
+            BINS_PER_SEMITONE,
+            (1.0 - voiced) / grid.n_pitch() as f32,
+        ))
+    }
+}
 
 /// Stateful probabilistic-YIN pitch tracker: one per audio stream. Feeds on
 /// analysis windows and carries its trellis frame to frame.

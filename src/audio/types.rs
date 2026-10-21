@@ -88,7 +88,7 @@ pub struct MelodyFrame {
     /// stream — a consumer holding a cursor across a device switch must never be
     /// handed a number it has already seen, or it would silently skip the new
     /// stream's first frames.
-    pub seq:      u64,
+    pub seq:             u64,
     /// When it was played: seconds on the **sample clock** (`samples_seen /
     /// sample_rate`), the same clock the note segmenter's durations ride.
     ///
@@ -98,18 +98,23 @@ pub struct MelodyFrame {
     /// **with jitter** — `seq × update_ms` would be just another wrong ruler, in the
     /// same family as counting UI frames. Unlike `seq` it restarts with the stream,
     /// because it describes the audio rather than the delivery.
-    pub t:        f64,
+    pub t:               f64,
     /// The melody line's note, or `None` for silence *or* a rejected octave slip —
     /// decided in `dsp::melody`, and deliberately the same `None` for both (see
     /// `dsp::segmenter` for why a rejected frame must read as a gap, not a change).
-    pub pitch:    Option<Midi>,
+    pub pitch:           Option<Midi>,
+    /// Selected source and its unsmoothed frame estimate, before the shared decoder.
+    pub frontend:        PitchFrontend,
+    pub raw_pitch:       Option<Midi>,
+    /// Peak comb's reference six-frame mean, never fed back into the melody decoder.
+    pub reference_pitch: Option<Midi>,
     /// The absolute input level the engine gated **this** frame on. Carried rather
     /// than read live so a panel fades a point by the level of the moment it is
     /// drawing, not of the moment it happens to be drawing at.
-    pub level:    f32,
+    pub level:           f32,
     /// The bank's heat column for this instant, raw: normalized to its own max, no
     /// octave decision, no silence gate. The ground truth, passed through untouched.
-    pub heat:     Vec<f32>,
+    pub heat:            Vec<f32>,
     /// What SWIPE′ *scored* the note from, per bin — the evidence [`Self::pitch`] was decoded
     /// from, on **its own** grid ([`SalienceHeat`]). `None` for a column with no energy at all.
     ///
@@ -130,7 +135,7 @@ pub struct MelodyFrame {
     /// partials. That is SWIPE′ being honest rather than the layer being broken: the h=1
     /// lobe alone spans 71 bins (~9 semitones at 8 bins/semitone), which is the same
     /// low-contrast curve that made `melody::SALIENCE_BETA` necessary in the first place.
-    pub salience: Option<SalienceHeat>,
+    pub salience:        Option<SalienceHeat>,
 }
 
 /// The salience display layer of one [`MelodyFrame`]: the curve plus the grid it lives on.
@@ -200,6 +205,13 @@ impl MelodyHistory {
 
     /// Append one frame, keeping both invariants.
     pub fn push(&mut self, frame: MelodyFrame) {
+        if self
+            .frames
+            .back()
+            .is_some_and(|old| old.frontend != frame.frontend)
+        {
+            self.frames.clear();
+        }
         // INVARIANT: strictly increasing in `t`. A new stream builds a fresh pipeline,
         // so its sample clock restarts at zero; dropping every frame not older than
         // the incoming one therefore clears a stale stream out **by construction**,
@@ -446,9 +458,8 @@ pub struct AnalysisSettings {
     pub accidental:         AccidentalStyle,
 }
 
-/// Which frontend produces the salience the melody line is decoded from — the same
-/// `SalienceFrame` either way, so `dsp::melody` cannot tell them apart (that is the whole
-/// point of `dsp::rtswipe` being a *frontend*, not a second detector).
+/// Which frontend supplies evidence to the melody's shared decoder. The frontend owns
+/// its scores/probabilities and fine pitch; `dsp::melody` owns the continuity model.
 ///
 /// A user choice, not an internal one: both are honest, and which is better depends on the
 /// instrument and register — the resonator bank has a flat 8–29 ms delay and reads intonation
@@ -468,8 +479,78 @@ pub enum PitchFrontend {
     /// SWIPE′ over windowed FFTs (`dsp::rtswipe`).
     RtSwipe,
     /// Experimental harmonic sieve on C2..C8; shares the melody trellis.
-    /// Not exposed in the controls pending the H6 decision.
     Sieve,
+    Pyin,
+    PeakComb,
+    YinFft,
+}
+
+impl PitchFrontend {
+    pub const ALL: [Self; 6] = [
+        Self::ResonatorBank,
+        Self::RtSwipe,
+        Self::Pyin,
+        Self::Sieve,
+        Self::PeakComb,
+        Self::YinFft,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::ResonatorBank => "bank",
+            Self::RtSwipe => "rtswipe",
+            Self::Pyin => "pyin",
+            Self::Sieve => "sieve",
+            Self::PeakComb => "comb",
+            Self::YinFft => "yinfft",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Result<Self, String> {
+        Self::ALL.into_iter().find(|f| f.key() == key).ok_or_else(|| {
+            format!("unknown detector {key:?}; expected bank, rtswipe, pyin, sieve, comb or yinfft")
+        })
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ResonatorBank => "Resonators",
+            Self::RtSwipe => "RT-SWIPE",
+            Self::Pyin => "pYIN",
+            Self::Sieve => "Sieve",
+            Self::PeakComb => "Peak comb",
+            Self::YinFft => "YINFFT",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::ResonatorBank => "Default · C1–C8, limited by the bank range. Per-sample bank + SWIPE′.",
+            Self::RtSwipe => "Available · C1–C8. SWIPE′ over FFT windows; delay depends on pitch.",
+            Self::Pyin => {
+                "Experimental melody · C1–C8, limited by the analysis window. Stable on sustained notes; slow on note changes."
+            }
+            Self::Sieve => {
+                "Experimental · C2–C8. Accurate on clean input; sensitive to noise and slower note changes."
+            }
+            Self::PeakComb => {
+                "Reference · 55–4200 Hz within C1–C8. Fixed 4096-sample window / 8 ms hop. Raw and reference mean available in WAV diagnostics."
+            }
+            Self::YinFft => {
+                "Experimental · about 43 Hz at 44.1 kHz input to C8. Fixed 2048-sample window / 16 ms hop. Less reliable on clean violin and pure tones."
+            }
+        }
+    }
+
+    /// New window detectors have a DSP cadence independent of the display slider.
+    pub(crate) fn hop_ms(self) -> Option<u64> {
+        match self {
+            Self::Pyin => Some(40),
+            Self::PeakComb => Some((crate::audio::dsp::peak_comb::HOP_SECONDS * 1000.0).round() as u64),
+            Self::YinFft => Some(crate::audio::dsp::yinfft::HOP.as_millis() as u64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -966,5 +1047,22 @@ mod tests {
 
         let restored: AnalysisSettings = ron::from_str(&legacy).unwrap();
         assert_eq!(restored.concert_pitch_hz, Hz::A4_STANDARD);
+    }
+
+    #[test]
+    fn all_detector_settings_survive_ron_and_legacy_defaults_stay_the_bank() {
+        for frontend in PitchFrontend::ALL {
+            let mut settings = AnalysisSettings::default();
+            settings.resonator.frontend = frontend;
+            let saved = ron::to_string(&settings).unwrap();
+            let loaded: AnalysisSettings = ron::from_str(&saved).unwrap();
+            assert_eq!(loaded.resonator.frontend, frontend);
+            if frontend == PitchFrontend::ResonatorBank {
+                let legacy = saved.replace(",frontend:ResonatorBank", "");
+                assert!(!legacy.contains("frontend"));
+                let loaded: AnalysisSettings = ron::from_str(&legacy).unwrap();
+                assert_eq!(loaded.resonator.frontend, PitchFrontend::ResonatorBank);
+            }
+        }
     }
 }
