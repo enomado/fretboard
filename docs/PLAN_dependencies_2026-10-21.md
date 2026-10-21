@@ -16,7 +16,7 @@
 - [x] egui-upgrade — согласованно обновить eframe/egui, egui_tiles, egui_kittest и граф рендеринга до свежих совместимых версий, мигрировать используемые API, проверить desktop и UI-тесты.
 - [x] audio-upgrade — обновить cpal, ringbuf, rustfft, realfft, resonators и остальные аудиозависимости; сохранить расчётные контракты, проверить затронутый DSP и нативное аудио.
 - [x] platform-upgrade — обновить wasm-bindgen/js-sys/web-sys, Android/JNI и hot-reload зависимости, восстановить web/Android/desktop пути при изменении API.
-- [ ] remaining-dependencies — обновить остальные прямые и транзитивные зависимости и Cargo.lock; повторно проверить свежесть и отсутствие ненужных дублей egui; разобрать standalone probe с учётом его назначения.
+- [x] remaining-dependencies — обновить остальные прямые и транзитивные зависимости и Cargo.lock; повторно проверить свежесть и отсутствие ненужных дублей egui; разобрать standalone probe с учётом его назначения.
 - [ ] upgrade-validation — проверить итоговый граф на desktop, wasm и Android, прогнать подходящие тесты и rustdoc; исправить регрессии, записать итоговые версии, реальные исключения и остаток.
 - [ ] smell-baseline — после завершения upgrade-validation выполнить MCP-аудиты, clippy и code_smell stats/каталог/применимые детекторы, собрать адресный backlog с приоритетами и известными FP.
 - [ ] domain-types — разобрать primitive obsession, голые индексы/единицы и половинчатые миграции; использовать существующие канонические типы и проводить тип через внутренние вызовы.
@@ -193,47 +193,60 @@ Node builtins и сохранённый aubio WASM; Python имеет PEP 723-з
 
 ## Текущее состояние
 
-Сессия 4: platform-upgrade завершён; блокеров нет. Live crates.io API 2026-10-21
-повторно проверен для 14 платформенных пакетов. Обновлены требования манифеста
-и lockfile: wasm-bindgen и macro/shared 0.2.128 → 0.2.129,
-wasm-bindgen-futures 0.4.78 → 0.4.79, js-sys/web-sys 0.3.105 → 0.3.106.
-Прочитаны [release notes 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/releases/tag/0.2.129)
-и затронутые main/Web Audio/worker API: миграция исходников не потребовалась.
-Новый tokio 1.54.0 в lockfile — target-зависимость futures только для
-экспериментального Emscripten; `cargo tree --target wasm32-unknown-unknown -i tokio`
-подтвердил отсутствие Tokio в нашем браузерном графе.
+Сессия 5: remaining-dependencies завершён; блокеров нет. На 2026-10-21
+повторно проверены live crates.io API всех 26 прямых registry-зависимостей
+(включая три имени standalone probe), дополнительно egui, wgpu и winit.
+Все прямые registry-зависимости основного приложения теперь на последних stable.
+Требование serde_json и lockfile обновлены 1.0.151 → 1.0.154;
+[release notes](https://github.com/serde-rs/json/releases/tag/v1.0.154)
+и используемые JSON API просмотрены, миграция исходников не потребовалась.
+subsecond/dioxus-cli-config 0.8.0-alpha.3 и winit 0.31.0-beta.3 — prerelease,
+сохраняются stable 0.7.10 и 0.30.13 соответственно.
 
-Android/JNI уже последние stable: android-activity 0.6.1, jni 0.22.4,
-ndk-context 0.1.1, ndk 0.9.0, ndk-sys 0.6.0+11769913, jni-sys 0.3.1/0.4.1.
-Обе версии jni-sys нужны текущим ndk/JNI; прямых пинов для удаления дубля нет.
-Desktop hot reload: subsecond/subsecond-types/dioxus-cli-config 0.7.10 и
-tungstenite 0.30.0 — последние stable; [Dioxus 0.8.0-alpha.3](https://github.com/DioxusLabs/dioxus/releases/tag/v0.8.0-alpha.3)
-остаётся prerelease. Адресный `cargo update` Android/hot-reload пакетов
-не изменил их версии. Сохраняются один egui 0.37.0, egui_tiles 0.18.0,
-eframe/egui_kittest 0.37.0; dockyard в графе отсутствует.
-Fork resonators `67152aa9` и оба Cargo-файла lifecycle_probe сохранены.
-Аудиообновление сессии 3 остаётся: ringbuf 0.5.3, 161 audio-тест passed;
-alsa/alsa-sys/mach2 удерживаются требованиями cpal (см. инвентаризацию).
+Полный `cargo update --verbose` обновил 35 записей, включая serde_json:
+в частности arboard 3.7.0, cc 1.9.0, libc 0.2.191, smallvec 1.16.3,
+syn 3.0.9, thiserror 2.0.21, uuid 1.28.0 и TOML/zbus support-пакеты.
+Удалён windows-sys 0.60.2 с windows-targets 0.53 и восемью target-пакетами;
+граф уменьшился с 512 до 502 записей. Повторный `cargo update --dry-run --verbose`
+с обновлением registry/git показал 0 изменений.
 
-Реально выполнено на новом графе (cargo с `--locked`):
+По свежему registry index и resolved-рёбрам metadata проверены оставшиеся
+118 записей ниже latest stable: новую несовместимую версию исключает требование
+родительского crate. Например, eframe/egui_glow/wgpu удерживают glow ^0.17,
+epaint — harfrust ^0.12, skrifa ^0.44 и vello_cpu ^0.2;
+eframe/epaint/wgpu — parking_lot ^0.12, accesskit/atspi — zbus ^5,
+winit/arboard — x11rb ^0.13, cpal — alsa ^0.11.
+Остальные — image/rav1e, proc-macro и платформенные цепочки (objc2,
+smithay/rustix, Windows/WASI и т.д.). Их несовместимые major требуют миграции
+upstream; прямые пины/форки ради удаления дублей не добавлялись.
+`cargo tree --locked --target all --duplicates` и обратное дерево egui
+подтвердили один egui 0.37.0, eframe/egui_kittest 0.37.0,
+egui_tiles 0.18.0, wgpu 30.0.1; dockyard в полном графе отсутствует.
+
+`git ls-remote` подтвердил прежний HEAD onepole-bank `67152aa9`;
+намеренный resonators fork и его locked commit сохранены.
+README, исходник и оба Cargo-файла lifecycle_probe рассмотрены:
+это самостоятельное воспроизведение android-activity#174 с сохранённым
+MIUI-замером, а не runtime-зависимость приложения. Все три прямые версии
+уже latest stable; probe Cargo.toml/Cargo.lock оставлены без изменений,
+чтобы транзитивное обновление не подменило окружение исходного наблюдения.
+Исключения Python/JVM/reference harness из инвентаризации остаются в силе.
+
+Реально выполнено на итоговом lockfile этой сессии (cargo с `--locked`):
+- `cargo test --all-targets` — 244 lib + 2 UI passed, 0 failed, 36 ignored;
+  пять bin harness собраны, в них 0 тестов. Численные эталоны не изменялись.
+- `cargo clippy --all-targets` — pass с прежним warning
+  `chunks_exact_to_as_chunks` в `src/audio/dsp/sieve.rs:907`.
 - `cargo check --target wasm32-unknown-unknown --lib --bins` — pass.
-- Trunk 0.21.14 build с `--locked --public-url /platform-s4/` — pass для
-  fretboard-app и dsp_worker; CLI wasm-bindgen 0.2.129 выбран автоматически.
-  Для запуска Trunk убран несовместимый внешний `NO_COLOR=1` (`env -u NO_COLOR`).
-- Отдельный headless Chromium: приложение загружено под этим sub-path,
-  canvas и один worker созданы, получен Ready; на Init(48000) и 4096
-  синтетических сэмплов worker вернул Snapshot (8204 байта), без worker errors
-  и JS-исключений. Микрофон/getDisplayMedia и UI-ввод этим smoke не проверены.
-- `cargo check --target aarch64-linux-android --lib` — pass, NDK r27c,
-  CC clang API 26 и AR llvm-ar. APK/устройство не запускались.
-- `cargo build --bin fretboard-app` и `cargo clippy --all-targets` — pass;
-  только прежний `chunks_exact_to_as_chunks` в `src/audio/dsp/sieve.rs:907`.
-  Desktop окно и применение hot-reload patch не запускались.
-- `RUSTDOCFLAGS='-D warnings' cargo doc --target wasm32-unknown-unknown --no-deps --lib`
-  — pass. Адресный `cargo tree --target all` подтвердил граф выше.
+- `cargo check --target aarch64-linux-android --lib` — pass для приложения
+  и отдельно `--manifest-path probes/lifecycle_probe/Cargo.toml`;
+  NDK r27c, CC clang API 26, AR llvm-ar. Probe lockfile не изменился.
+- `cargo metadata --locked`, полный target-all duplicate/egui graph и
+  `git diff --check` — pass.
 
-Следующая область — remaining-dependencies (включая serde_json и оставшиеся
-совместимые транзитивные обновления), затем upgrade-validation с полным итоговым
-охватом из плана. Smell до завершения всех обновлений не начинать.
-Чужая untracked `.claude/` не затронута; временный браузер/сервер остановлены,
-собственный scratch удалён.
+Следующая область — upgrade-validation: итоговые проверки из плана,
+включая rustdoc (на lockfile сессии 5 ещё не выполнялся). Browser/Trunk smoke
+сессии 4 прошёл до последнего транзитивного обновления; в сессии 5 браузер,
+APK/устройство, физическое аудио и hot-reload patch не запускались.
+Smell до завершения upgrade-validation не начинать.
+Чужая untracked `.claude/` не затронута; собственный scratch удалён.
