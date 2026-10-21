@@ -263,7 +263,12 @@ impl App {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
 
-                let mut workspace_tree = self.workspace_tree.take().unwrap_or_else(default_workspace_tree);
+                // The tree is taken only while rendering and restored before returning.
+                // App::new and persistence both supply it; absence is a broken invariant.
+                let mut workspace_tree = self
+                    .workspace_tree
+                    .take()
+                    .expect("workspace tree exists before render");
                 workspace_tree.ui(&mut WorkspaceBehavior { app: self }, ui);
                 self.workspace_tree = Some(workspace_tree);
             });

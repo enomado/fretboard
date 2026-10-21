@@ -54,8 +54,8 @@ impl Rig {
             settings: Arc::new(Mutex::new(AnalysisSettings::default())),
             gain: Arc::new(AtomicU32::new(1.0f32.to_bits())),
             level: Arc::new(AtomicU32::new(0.0f32.to_bits())),
-            // After the pipelines are built: each starts its gate one interval in the
-            // past, so the first chunk is analysed, as it is live.
+            // After the pipelines are built: the initial analysis is due immediately;
+            // the bank keeps its 16 ms head start, as it does live.
             start: Instant::now(),
             fed: 0,
         }

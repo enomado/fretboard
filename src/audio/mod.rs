@@ -30,7 +30,7 @@ mod wasm;
 // `worker_entry` is the entry point of the worker binary (`src/bin/dsp_worker.rs`).
 #[cfg(target_arch = "wasm32")]
 pub mod worker;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(test, target_arch = "wasm32"))]
 mod worker_proto;
 
 // Kept on purpose: one name, two platform engines — a cfg fork, not a hidden origin.

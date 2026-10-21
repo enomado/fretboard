@@ -49,7 +49,9 @@ unsafe extern "C" {
 
 /// Write one line to logcat under tag "snail" (visible via `adb logcat -s snail`).
 pub fn alog(msg: &str) {
-    let text = CString::new(msg).unwrap_or_default();
+    // External error messages can contain NUL. Escape it rather than losing the
+    // whole diagnostic when crossing liblog's C-string boundary.
+    let text = CString::new(msg.replace('\0', "\\0")).unwrap();
     unsafe { __android_log_write(6, c"snail".as_ptr(), text.as_ptr()) };
 }
 

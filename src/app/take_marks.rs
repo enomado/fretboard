@@ -97,7 +97,13 @@ impl Declaration {
         // A trailing tail means the text is not *a note* — "F5x" must not quietly
         // declare F5. `parse_anote` is happy to stop early, so this is the check that
         // makes the declaration exact.
-        rest.is_empty().then_some(Self { note })
+        if !rest.is_empty() {
+            return None;
+        }
+        // Once armed, every caller may convert this private, immutable note without
+        // revalidating it. Reject unsupported spellings and octaves before that point.
+        note.try_to_pitch()?;
+        Some(Self { note })
     }
 
     /// The declared pitch as a MIDI number — what every mark made under it records.
@@ -258,6 +264,18 @@ mod tests {
         }
         assert!(Declaration::parse("G999").is_none());
         assert!(Declaration::parse("F256").is_none(), "256 is not a u8 octave");
+    }
+
+    #[test]
+    fn a_declaration_must_have_a_supported_midi_pitch() {
+        for text in ["Cb4", "E#4", "Fb4", "B#4", "C10", "C21", "G255", "G#9", "Ab9"] {
+            assert!(Declaration::parse(text).is_none(), "{text} must not arm marking");
+        }
+        for (text, midi) in [("C0", 12), ("G9", 127), ("F#9", 126), ("Gb9", 126)] {
+            let declared = Declaration::parse(text).unwrap();
+            assert_eq!(declared.midi(), midi, "{text}");
+            assert_eq!(declared.name(), text);
+        }
     }
 
     /// Clicks come in the order the user makes them, which is not always forwards.

@@ -87,20 +87,26 @@ pub fn worker_entry() {
     let handler_scope = scope.clone();
     let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
         let bytes = js_sys::Uint8Array::new(&event.data()).to_vec();
-        let Some(message) = decode::<ToWorker>(&bytes) else {
-            return;
-        };
-        handle(&mut state.borrow_mut(), &handler_scope, message);
+        let message = decode::<ToWorker>(&bytes)
+            .unwrap_or_else(|e| wasm_bindgen::throw_str(&format!("decode main → DSP worker: {e}")));
+        let result = handle(&mut state.borrow_mut(), &handler_scope, message);
+        // JS exceptions do not run Rust destructors. Drop the RefMut guard at the
+        // statement above before throwing, so the next message can borrow state.
+        result.unwrap_or_else(|e| wasm_bindgen::throw_str(&e));
     });
     scope.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     // The closure must outlive this function (it fires for every message); the
     // worker lives for the whole session, so leaking it is correct here.
     onmessage.forget();
 
-    post(&scope, &FromWorker::Ready);
+    post(&scope, &FromWorker::Ready).unwrap_or_else(|e| wasm_bindgen::throw_str(&e));
 }
 
-fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: ToWorker) {
+fn handle(
+    state: &mut WorkerState,
+    scope: &DedicatedWorkerGlobalScope,
+    message: ToWorker,
+) -> Result<(), String> {
     match message {
         ToWorker::Init { sample_rate } => {
             state.pipelines = Some((
@@ -111,7 +117,7 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
         }
         ToWorker::Samples(samples) => {
             let Some((analysis, resonator)) = state.pipelines.as_mut() else {
-                return;
+                return Ok(());
             };
             analysis.push_samples(
                 samples.iter().copied(),
@@ -131,7 +137,14 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
                 );
             }
             let snapshot = snapshot(state);
-            post(scope, &snapshot);
+            post(scope, &snapshot)?;
+            // Only a successful post delivers a delta. A serialization/JS exception
+            // above must leave this cursor available to the next snapshot.
+            if let FromWorker::Snapshot(snapshot) = snapshot
+                && let Some(last) = snapshot.melody.last()
+            {
+                state.melody_posted = Some(last.seq);
+            }
         }
         ToWorker::Settings(settings) => {
             *state.settings.lock().unwrap() = (*settings).sanitized();
@@ -147,9 +160,10 @@ fn handle(state: &mut WorkerState, scope: &DedicatedWorkerGlobalScope, message: 
             };
         }
     }
+    Ok(())
 }
 
-fn snapshot(state: &mut WorkerState) -> FromWorker {
+fn snapshot(state: &WorkerState) -> FromWorker {
     let level = f32::from_bits(state.input_level.load(Ordering::Relaxed));
     let (status, reading, resonator, waveform, melody) = {
         let shared = state.shared.lock().unwrap();
@@ -167,12 +181,6 @@ fn snapshot(state: &mut WorkerState) -> FromWorker {
             shared.melody_since(state.melody_posted),
         )
     };
-    // Advance the cursor only over what is actually going on the wire, so a snapshot
-    // that found nothing new (the usual case — posts are per sample block, publishes
-    // are per ~16 ms) leaves it alone rather than skipping a frame.
-    if let Some(last) = melody.last() {
-        state.melody_posted = Some(last.seq);
-    }
     FromWorker::Snapshot(Box::new(WorkerSnapshot {
         frontend: state.settings.lock().unwrap().resonator.frontend,
         status,
@@ -184,8 +192,12 @@ fn snapshot(state: &mut WorkerState) -> FromWorker {
     }))
 }
 
-fn post(scope: &DedicatedWorkerGlobalScope, message: &FromWorker) {
-    let bytes = encode(message);
+fn post(scope: &DedicatedWorkerGlobalScope, message: &FromWorker) -> Result<(), String> {
+    // A failed post cannot be treated as a delivered melody delta. Throw into the
+    // worker's error channel; the main thread reports it through AudioStatus::Error.
+    let bytes = encode(message).map_err(|e| format!("encode DSP worker → main: {e}"))?;
     let array = js_sys::Uint8Array::from(&bytes[..]);
-    let _ = scope.post_message(array.as_ref());
+    scope
+        .post_message(array.as_ref())
+        .map_err(|e| format!("post DSP worker → main: {e:?}"))
 }

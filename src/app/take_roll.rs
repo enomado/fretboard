@@ -888,7 +888,9 @@ impl App {
             ctx.request_repaint();
         }
     }
+}
 
+impl TakeRoll {
     /// The declaration row: what you played, said before you mark when.
     ///
     /// This row **is** the defence against the mirror, so it comes before the roll and
@@ -896,20 +898,20 @@ impl App {
     /// mark. The field is small because the claim is small — a note name, the same one
     /// already in the take's file name.
     fn draw_declaration(&mut self, ui: &mut Ui) {
-        let armed = self.take_roll.armed();
+        let armed = self.armed();
         // Arming is the moment marking begins, and the moment the line stops being a
         // help and starts being an answer sheet. Flip it off *once*, here, rather than
         // hold it off: the user may turn it back on (their stated workflow), and the
         // mark records that they did.
-        if armed.is_some() && !self.take_roll.was_armed {
-            self.take_roll.show_line = false;
+        if armed.is_some() && !self.was_armed {
+            self.show_line = false;
         }
-        self.take_roll.was_armed = armed.is_some();
+        self.was_armed = armed.is_some();
 
         ui.horizontal(|ui| {
             ui.add(RowCaption::new("Played"));
             ui.add(
-                egui::TextEdit::singleline(&mut self.take_roll.declared)
+                egui::TextEdit::singleline(&mut self.declared)
                     .desired_width(80.0)
                     .hint_text("F5"),
             );
@@ -927,7 +929,7 @@ impl App {
                 }
                 // Not an error — the resting state. Marking is armed by a declaration
                 // and by nothing else, so with the field empty a click is just a click.
-                None if self.take_roll.declared.trim().is_empty() => {
+                None if self.declared.trim().is_empty() => {
                     (
                         "Say what you played (e.g. F5) — then mark only *when* it sounded".to_owned(),
                         color::TEXT_HINT,
@@ -935,7 +937,7 @@ impl App {
                 }
                 None => {
                     (
-                        format!("\"{}\" is not a note name", self.take_roll.declared.trim()),
+                        format!("\"{}\" is not a note name", self.declared.trim()),
                         color::STATUS_ERROR,
                     )
                 }
@@ -943,7 +945,7 @@ impl App {
             ui.label(RichText::new(text).color(tint).size(12.0));
         });
 
-        let Some(loaded) = self.take_roll.loaded.as_mut() else {
+        let Some(loaded) = self.loaded.as_mut() else {
             return;
         };
         ui.add_space(4.0);
@@ -986,7 +988,9 @@ impl App {
             }
         });
     }
+}
 
+impl App {
     /// The frozen roll: the take, with the window the user put on it.
     pub(super) fn draw_take_roll(&mut self, ui: &mut Ui) {
         let settings = self.audio.analysis_settings();
@@ -1011,7 +1015,7 @@ impl App {
             });
         });
         ui.add_space(6.0);
-        self.draw_declaration(ui);
+        self.take_roll.draw_declaration(ui);
         ui.add_space(6.0);
 
         let layer = self.take_roll.layer;
@@ -1126,6 +1130,37 @@ mod tests {
     use crate::audio::AudioEngine;
     use crate::core_types::note::AccidentalStyle;
     use crate::core_types::pitch::PNote;
+
+    /// Exercise the actual declaration field, including the next frame that reads
+    /// its parsed value to render the caption and arm marking.
+    #[test]
+    fn typing_an_unsupported_declaration_does_not_arm_the_roll() {
+        use egui_kittest::kittest::Queryable;
+
+        for text in ["Cb4", "E#4", "Fb4", "B#4", "C10", "C21", "G255", "F5", "G9"] {
+            let mut harness = Harness::builder().with_size(vec2(900.0, 120.0)).build_ui_state(
+                |ui, roll: &mut TakeRoll| roll.draw_declaration(ui),
+                TakeRoll::default(),
+            );
+            harness.get_by_role(egui::accesskit::Role::TextInput).focus();
+            harness.run();
+            harness
+                .get_by_role(egui::accesskit::Role::TextInput)
+                .type_text(text);
+            harness.run();
+
+            let roll = harness.state();
+            assert_eq!(roll.declared, text);
+            let valid = matches!(text, "F5" | "G9");
+            assert_eq!(roll.was_armed, valid, "{text}");
+            assert_eq!(roll.show_line, !valid, "{text}");
+            if valid {
+                assert_eq!(roll.armed().unwrap().midi(), if text == "F5" { 77 } else { 127 });
+            } else {
+                assert!(roll.armed().is_none(), "{text}");
+            }
+        }
+    }
 
     /// A take: `seconds` long, replayed at the bank's cadence.
     const CADENCE_S: f64 = 0.016;

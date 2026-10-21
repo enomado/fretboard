@@ -134,9 +134,11 @@ struct Inner {
     // Состояние дрона держим, чтобы UI на wasm работал и персистился; синтеза
     // нет (Web Audio output-граф дрона ещё не реализован) — методы инертны.
     drone:               RefCell<DroneState>,
-    last_resonator_post: Cell<Instant>,
+    // None until the first keep-alive, which is immediately due.
+    last_resonator_post: Cell<Option<Instant>>,
     // Kept alive for as long as the engine lives so the worker callback fires.
     _on_message:         Closure<dyn FnMut(web_sys::MessageEvent)>,
+    _on_error:           Closure<dyn FnMut(web_sys::ErrorEvent)>,
 }
 
 pub struct AudioEngine {
@@ -159,14 +161,26 @@ impl AudioEngine {
         let on_message =
             Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
                 let bytes = js_sys::Uint8Array::new(&event.data()).to_vec();
-                if let Some(FromWorker::Snapshot(snapshot)) = decode::<FromWorker>(&bytes) {
+                let message = match decode::<FromWorker>(&bytes) {
+                    Ok(message) => message,
+                    Err(e) => {
+                        latest_for_cb.borrow_mut().status =
+                            Some(AudioStatus::Error(format!("decode DSP worker → main: {e}")));
+                        return;
+                    }
+                };
+                if let FromWorker::Snapshot(snapshot) = message {
                     let mut latest = latest_for_cb.borrow_mut();
                     // A snapshot already in flight before Settings cannot restore
                     // the previous source's notes after a live detector switch.
                     if snapshot.frontend != latest.requested_frontend {
                         return;
                     }
-                    latest.status = Some(snapshot.status);
+                    // A protocol/worker error stays visible until capture is restarted;
+                    // a later in-flight snapshot must not erase its diagnostic.
+                    if !matches!(latest.status, Some(AudioStatus::Error(_))) {
+                        latest.status = Some(snapshot.status);
+                    }
                     latest.reading = snapshot.reading;
                     latest.resonator = snapshot.resonator;
                     latest.level = snapshot.level;
@@ -179,8 +193,19 @@ impl AudioEngine {
                     }
                 }
             });
+        let latest_for_error = latest.clone();
+        let on_error = Closure::<dyn FnMut(web_sys::ErrorEvent)>::new(move |event: web_sys::ErrorEvent| {
+            latest_for_error.borrow_mut().status = Some(AudioStatus::Error(format!(
+                "audio worker error at {}:{}:{}: {}",
+                event.filename(),
+                event.lineno(),
+                event.colno(),
+                event.message()
+            )));
+        });
         if let Some(worker) = worker.as_ref() {
             worker.set_onmessage(Some(on_message.as_ref().unchecked_ref()));
+            worker.set_onerror(Some(on_error.as_ref().unchecked_ref()));
         }
 
         let inner = Rc::new(Inner {
@@ -193,8 +218,9 @@ impl AudioEngine {
             capture: RefCell::new(None),
             sample_rate: Cell::new(None),
             drone: RefCell::new(DroneState::default()),
-            last_resonator_post: Cell::new(Instant::now() - RESONATOR_POST_INTERVAL),
+            last_resonator_post: Cell::new(None),
             _on_message: on_message,
+            _on_error: on_error,
         });
         refresh_devices(inner.clone());
         Self { inner }
@@ -337,8 +363,13 @@ impl AudioEngine {
         // Re-assert the gate at most every RESONATOR_POST_INTERVAL; the UI calls
         // this every frame, but the worker's grace window is far longer.
         let now = Instant::now();
-        if now.saturating_duration_since(self.inner.last_resonator_post.get()) >= RESONATOR_POST_INTERVAL {
-            self.inner.last_resonator_post.set(now);
+        if self
+            .inner
+            .last_resonator_post
+            .get()
+            .is_none_or(|last| now.saturating_duration_since(last) >= RESONATOR_POST_INTERVAL)
+        {
+            self.inner.last_resonator_post.set(Some(now));
             post_to(&self.inner, &ToWorker::ResonatorWanted(true));
         }
     }
@@ -396,15 +427,19 @@ fn create_worker(latest: &Rc<RefCell<Latest>>) -> Option<web_sys::Worker> {
     }
 }
 
-fn post_msg(worker: &web_sys::Worker, message: &ToWorker) {
-    let bytes = encode(message);
+fn post_msg(worker: &web_sys::Worker, message: &ToWorker) -> Result<(), String> {
+    let bytes = encode(message).map_err(|e| format!("encode main → DSP worker: {e}"))?;
     let array = js_sys::Uint8Array::from(&bytes[..]);
-    let _ = worker.post_message(array.as_ref());
+    worker
+        .post_message(array.as_ref())
+        .map_err(|e| format!("post main → DSP worker: {}", err_text(&e)))
 }
 
 fn post_to(inner: &Inner, message: &ToWorker) {
     if let Some(worker) = inner.worker.as_ref() {
-        post_msg(worker, message);
+        if let Err(message) = post_msg(worker, message) {
+            set_error(inner, message);
+        }
     }
 }
 
@@ -488,7 +523,7 @@ fn refresh_devices(inner: Rc<Inner>) {
 /// them (denied permission, no device, unsupported getDisplayMedia, …).
 fn start_capture(inner: Rc<Inner>, id: Option<String>) {
     let Some(worker) = inner.worker.clone() else {
-        set_error(&inner, "audio worker unavailable".to_owned());
+        // create_worker already recorded the actual startup error in latest.
         return;
     };
     spawn_local(async move {
@@ -556,6 +591,7 @@ async fn run_capture(inner: Rc<Inner>, worker: web_sys::Worker, id: Option<Strin
 
     // Audio callback: forward each block to the worker; the DSP runs there.
     let worker_for_cb = worker.clone();
+    let latest_for_cb = inner.latest.clone();
     let on_audio = Closure::<dyn FnMut(web_sys::AudioProcessingEvent)>::new(
         move |event: web_sys::AudioProcessingEvent| {
             let Ok(input_buffer) = event.input_buffer() else {
@@ -564,7 +600,9 @@ async fn run_capture(inner: Rc<Inner>, worker: web_sys::Worker, id: Option<Strin
             let Ok(samples) = input_buffer.get_channel_data(0) else {
                 return;
             };
-            post_msg(&worker_for_cb, &ToWorker::Samples(samples));
+            if let Err(message) = post_msg(&worker_for_cb, &ToWorker::Samples(samples)) {
+                latest_for_cb.borrow_mut().status = Some(AudioStatus::Error(message));
+            }
 
             // Silence the node's output so the mic isn't routed to the speakers
             // (the node still needs a destination connection to keep firing).
@@ -584,12 +622,12 @@ async fn run_capture(inner: Rc<Inner>, worker: web_sys::Worker, id: Option<Strin
         .map_err(|e| format!("connect(script→dest) failed: {}", err_text(&e)))?;
 
     // Spin the worker pipelines up for this rate and hand it current settings.
-    post_msg(&worker, &ToWorker::Init { sample_rate });
+    post_msg(&worker, &ToWorker::Init { sample_rate })?;
     post_msg(
         &worker,
         &ToWorker::Settings(Box::new(inner.settings.borrow().clone())),
-    );
-    post_msg(&worker, &ToWorker::Gain(inner.input_gain.get()));
+    )?;
+    post_msg(&worker, &ToWorker::Gain(inner.input_gain.get()))?;
 
     inner.sample_rate.set(Some(sample_rate));
     inner.latest.borrow_mut().status = Some(AudioStatus::Listening);

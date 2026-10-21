@@ -264,25 +264,27 @@ mod native {
             }
         };
 
-        let Some(mut stdout) = child.stdout.take() else {
-            return ProbeResult {
-                candidate,
-                status: "no-stdout".to_owned(),
-                stats: LevelStats::default(),
-                rate: Some(PULSE_RATE),
-            };
-        };
+        let mut stdout = child.stdout.take().expect("parec was spawned with piped stdout");
 
         let reader = thread::spawn(move || {
             let mut data = Vec::new();
-            let _ = stdout.read_to_end(&mut data);
-            data
+            stdout.read_to_end(&mut data).map(|_| data)
         });
 
         thread::sleep(duration);
         let _ = child.kill();
         let _ = child.wait();
-        let data = reader.join().unwrap_or_default();
+        let data = match reader.join().expect("parec stdout reader panicked") {
+            Ok(data) => data,
+            Err(err) => {
+                return ProbeResult {
+                    candidate,
+                    status: format!("read:{err}"),
+                    stats: LevelStats::default(),
+                    rate: Some(PULSE_RATE),
+                };
+            }
+        };
         let stats = stats_from_i16le(&data);
         let status = if stats.samples == 0 { "silent" } else { "ok" }.to_owned();
 

@@ -228,7 +228,10 @@ pub(crate) struct ResonatorPipeline {
     /// pitch, so a retune has to rebuild it — see [`Self::sync_settings`], which mirrors the
     /// bank's own rebuild-on-settings-change.
     rtswipe_ref:       Hz,
-    last_publish:      Instant,
+    /// No publication yet is a real state. Backdating an Instant by 16 ms panics
+    /// in a freshly started web worker whose performance clock is younger than that.
+    last_publish:      Option<Instant>,
+    created_at:        Instant,
     /// The **audio clock**: samples this pipeline has actually processed, and the rate
     /// to read them at. `samples_seen / sample_rate` is the timestamp handed to the
     /// melody segmenter, and it is the reason a note's duration is now a musical
@@ -248,7 +251,8 @@ pub(crate) struct ResonatorPipeline {
 
 pub(crate) struct AnalysisPipeline {
     buffer:        VecDeque<f32>,
-    last_analysis: Instant,
+    /// None until the first complete window is analysed, which is immediately due.
+    last_analysis: Option<Instant>,
     planner:       FftPlanner<f32>,
     sample_rate:   SampleRate,
     // Probabilistic-YIN tracker: the octave-robust, HMM-smoothed pitch source that
@@ -295,7 +299,8 @@ impl ResonatorPipeline {
             rtswipe: RtSwipe::new(sample_rate, rtswipe_ref),
             sieve: HarmonicSieve::frontend(sample_rate, rtswipe_ref),
             rtswipe_ref,
-            last_publish: Instant::now() - Duration::from_millis(16),
+            last_publish: None,
+            created_at: Instant::now(),
             sample_rate,
             samples_seen: 0,
             window_frontend: WindowFrontend::new(sample_rate),
@@ -397,10 +402,16 @@ impl ResonatorPipeline {
         // eight FFTs of `frame()` are deferred to publish, and only when it is the frontend.
 
         let publish_interval = Duration::from_millis(analysis_settings.resonator.update_ms);
-        if now.duration_since(self.last_publish) < publish_interval {
+        // Preserve the original 16 ms head start, including when update_ms > 16,
+        // without inventing a timestamp before the worker's clock epoch.
+        let elapsed = match self.last_publish {
+            Some(last) => now.duration_since(last),
+            None => now.duration_since(self.created_at) + Duration::from_millis(16),
+        };
+        if elapsed < publish_interval {
             return;
         }
-        self.last_publish = now;
+        self.last_publish = Some(now);
         let frontend = analysis_settings.resonator.frontend;
         // Score only the selected alternative. The bank's snapshot still drives the
         // spectrum display regardless of which frontend supplies the note evidence.
@@ -486,7 +497,7 @@ impl AnalysisPipeline {
     pub(crate) fn new(sample_rate: SampleRate) -> Self {
         Self {
             buffer: VecDeque::with_capacity(MAX_WINDOW_SIZE * 2),
-            last_analysis: Instant::now() - ANALYSIS_INTERVAL,
+            last_analysis: None,
             planner: FftPlanner::new(),
             sample_rate,
             pitch_tracker: PitchTracker::new(),
@@ -536,11 +547,13 @@ impl AnalysisPipeline {
         }
 
         if self.buffer.len() < analysis_settings.window_size
-            || now.duration_since(self.last_analysis) < ANALYSIS_INTERVAL
+            || self
+                .last_analysis
+                .is_some_and(|last| now.duration_since(last) < ANALYSIS_INTERVAL)
         {
             return;
         }
-        self.last_analysis = now;
+        self.last_analysis = Some(now);
 
         let start = self.buffer.len().saturating_sub(analysis_settings.window_size);
         let window: Vec<f32> = self.buffer.iter().skip(start).copied().collect();

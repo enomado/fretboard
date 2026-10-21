@@ -230,8 +230,16 @@ pub struct ANote {
 
 impl ANote {
     pub fn to_pitch(&self) -> PNote {
-        let note = (self.octave.0 as i32 + 1) * 12 + self.simple().0 as i32;
-        PNote::new(note as u8).unwrap()
+        self.try_to_pitch()
+            .expect("note must have a supported spelling and MIDI pitch in 0..=127")
+    }
+
+    /// Validate a parsed note at an input boundary. Parsing accepts any u8 octave
+    /// and accidental; neither guarantees a pitch supported by the MIDI model.
+    pub fn try_to_pitch(&self) -> Option<PNote> {
+        let pc = PCNote::try_from_note(self.note, self.ass)?;
+        let note = (i32::from(self.octave.0) + 1) * 12 + i32::from(pc.0);
+        PNote::try_from(note).ok()
     }
 
     pub fn from_pitch(pitch: &PNote) -> ANote {
@@ -267,10 +275,6 @@ impl ANote {
     /// display surfaces that honour the global sharps/flats toggle.
     pub fn name_styled(&self, style: AccidentalStyle) -> String {
         style.midi_name(self.to_pitch())
-    }
-
-    fn simple(&self) -> PCNote {
-        PCNote::from_note(self.note, self.ass)
     }
 }
 

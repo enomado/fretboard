@@ -60,12 +60,75 @@ pub(crate) struct WorkerSnapshot {
     pub(crate) melody:    Vec<MelodyFrame>,
 }
 
-pub(crate) fn encode<T: serde::Serialize>(value: &T) -> Vec<u8> {
-    // Infallible for our plain data types; fall back to empty on the impossible
-    // error so a hiccup never panics an audio callback.
-    postcard::to_allocvec(value).unwrap_or_default()
+pub(crate) fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, postcard::Error> {
+    postcard::to_allocvec(value)
 }
 
-pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
-    postcard::from_bytes(bytes).ok()
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, postcard::Error> {
+    postcard::from_bytes(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        FromWorker,
+        ToWorker,
+        WorkerSnapshot,
+        decode,
+        encode,
+    };
+    use crate::audio::types::{
+        AudioStatus,
+        PitchFrontend,
+    };
+
+    #[test]
+    fn sample_message_round_trips_without_changing_the_wire() {
+        let bytes = encode(&ToWorker::Samples(vec![0.25, -0.5])).unwrap();
+        // Variant index, vector length, then two little-endian f32 samples.
+        assert_eq!(bytes, [1, 2, 0, 0, 128, 62, 0, 0, 0, 191]);
+        let ToWorker::Samples(samples) = decode(&bytes).unwrap() else {
+            panic!("decoded a different message");
+        };
+        assert_eq!(samples, [0.25, -0.5]);
+    }
+
+    #[test]
+    fn protocol_errors_are_returned_instead_of_empty_data() {
+        struct Refused;
+        impl serde::Serialize for Refused {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("refused by serializer"))
+            }
+        }
+        assert!(encode(&Refused).is_err());
+        assert!(decode::<ToWorker>(&[]).is_err());
+        assert!(decode::<ToWorker>(&[255]).is_err());
+    }
+
+    #[test]
+    fn worker_replies_preserve_readiness_and_absent_readings() {
+        let ready = encode(&FromWorker::Ready).unwrap();
+        assert_eq!(ready, [0]);
+        assert!(matches!(decode::<FromWorker>(&ready).unwrap(), FromWorker::Ready));
+        let snapshot = FromWorker::Snapshot(Box::new(WorkerSnapshot {
+            frontend:  PitchFrontend::default(),
+            status:    AudioStatus::Listening,
+            reading:   None,
+            resonator: None,
+            level:     0.25,
+            waveform:  vec![-0.5, 0.25],
+            melody:    Vec::new(),
+        }));
+        let bytes = encode(&snapshot).unwrap();
+        let FromWorker::Snapshot(back) = decode(&bytes).unwrap() else {
+            panic!("decoded a different reply");
+        };
+        assert!(matches!(back.status, AudioStatus::Listening));
+        assert!(back.reading.is_none());
+        assert!(back.resonator.is_none());
+        assert!(back.melody.is_empty());
+        assert_eq!(back.waveform, [-0.5, 0.25]);
+        assert_eq!(back.level, 0.25);
+    }
 }

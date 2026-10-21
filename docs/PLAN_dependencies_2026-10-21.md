@@ -260,47 +260,58 @@ registry-зависимостей (три имени standalone probe входя
 
 Остатка по обновлениям нет. Smell-аудит в сессии 6 не начинался.
 
-## Текущее состояние — хендоф сессии 8
+## Текущее состояние — хендоф сессии 9, DRAIN → Claude
 
-`domain-types` завершён. Следующая область — **error-contracts**, начиная с
-P1 в `Declaration`; её исправление здесь не начиналось. Блокеров нет.
-Исходный baseline сохранён в `s7-baseline/`, результаты этой сессии —
-`/home/sc/t/scratch/fretboard_deps_codex_autorun/s8-domain-types/`.
+По прямому поручению Стаса серия передаётся из Codex в Claude через Fleet.
+DRAIN соблюдён; STOP не нужен, реальных блокеров нет. **error-contracts пока
+не закрыт**: следующий исполнитель продолжает два кандидата этой области
+из backlog ниже, затем переходит к reuse-and-boundaries. Новые области здесь
+не начинались. Domain-types и все обновления остаются завершёнными.
+Baseline: `s7-baseline/`; текущие выводы и воспроизводимый браузерный стенд —
+`/home/sc/t/scratch/fretboard_deps_codex_autorun/s9-error-contracts/`.
 
-Проведены существующие типы: `Hz` от выхода pYIN через `PitchEstimate`, held
-frequency, `TunerReading` и `frequency_to_note` до `TunerTarget`; `Midi` через
-`PitchGrid`, начала salience-сеток всех фронтендов, `SalienceHeat` и `HeatGrid`.
-Границы виолончельных позиций теперь сразу `Fret`. `PitchState` и `BankRange`
-сохранены; второй grid не введён. Формулы, интервалы, порядок операций,
-sample clock и DSP-эталоны прежние. Числовые serde-поля сохранены transparent
-типами; добавлен тест чтения и записи прежней формы snapshot.
+Исправлены все три прежние строки error-contracts: Declaration проверяет
+поддерживаемое написание и MIDI до взвода, без расширения энгармоники;
+сохранённый test_note_midi десериализуется сразу в PNote, старый числовой RON
+читается, 128/256/переполнения отвергаются по прежней fail-soft политике;
+worker encode/decode возвращают Result, postMessage и worker errors сохраняют
+диагностику, melody-курсор продвигается после успешной отправки. В mic_probe
+ошибка чтения явно отражается в status, panic reader больше не означает тишину.
+Также убраны мёртвый fallback workspace и потеря Android-лога при NUL.
 
-Аудит: scoped MCP healthy/fresh, census 158 типов и pub-use audit 0;
-clippy до и после чистый. `stats`: 95 src-файлов, 1222 fn, 162 struct,
-1381 параметр, parse ERROR 0. `prim --mode all`: объявления примитивов
-858→836, parameter leaks 8→7; dup-arity 43→46 — новые пары `Hz`/`Midi`/`Fret`
-обозначают эталон/измерение и границы диапазонов, не требуют роль-типов.
-Численные индексы одного буфера, fractional-bin арифметика, плотность сетки,
-FFT-шаг и численные массивы внутри ядра не равны высоте/абсолютной частоте;
-`input_kind` с уровнем, chroma с максимумом и диагностические tuple-sort keys
-не подтверждают утечку одного домена. Allowlist не добавлялся.
+Браузер нашёл раннюю панику `Instant::now() - interval`: часы нового worker
+могут быть моложе 16/40 мс. Начальное отсутствие публикации/анализа/keep-alive
+теперь выражено явно; сохранены 16 мс начального допуска банка и все последующие
+интервалы. DSP-формулы, численные эталоны, sample clock, locked §7, H3/H7 и
+ремонтный слой не менялись. Строка декларации перенесена к TakeRoll только
+для проверки её реального ввода без запуска аппаратного AudioEngine.
 
-Повторены egui Dylint range-order (45 Known, 2 OutsideCompiler test-only) и
-range-flow (86 src + main, 58 HIR fn/104 sinks, 0 кандидатов, 4 outside-compiler,
-0 params-unresolved). Semantic-сборка на отдельной копии без `.claude/`:
-range-flow — 98 VFS-файлов, те же 58/104, 0 кандидатов/unresolved;
-repack-flow high-signal — 95 файлов/273 constructions/0 source-target pairs.
-Это узкие классы, не общий pass типов. `half-migration` снова exit 2:
-библиотек алгебры нет, класс неприменим. Полный каталог — в разделе Smell-baseline.
+Аудит в порядке skill: scoped MCP после repair четырёх stale-skips — healthy/fresh;
+fn_body_audit 107 кандидатов, без усечения; clippy до и после чистый.
+Stats: 95 src-файлов, 1222→1228 fn, 162→163 struct, 1381→1382 параметра,
+parse ERROR 0. Каталог, в том числе egui, сохранён. Option syntax:
+34→33 fallback = четыре убраны, три новых `unwrap_or_else(throw_str)` имеют
+расходящийся тип `!`, а не подстановку данных; 3 error-кандидата прежние.
+Option-полей 60→62: два новых таймера имеют законное состояние «ещё не было».
+Semantic на копии без `.claude/`: calls 57 ret/49 param, единственный firm
+`oldest` — прежний FP пустой истории; fields 62 поля, 105/2765 доступов и
+69/908 полей литералов разрешены, **643 unresolved**, не общий pass.
+Compiler nan-clamp: 87 файлов, 4 domain/19 fold; nan-swallow: 86 src-файлов,
+4/4 предиката, 0 swallow/order. DSP-кандидаты остаются аудиообласти.
+Egui range-order: 45 Known/2 OutsideCompiler test-only. Allowlist не добавлялся.
 
-Реально проверено на итоговом коде: `cargo test --locked --all-targets` —
-**245 lib + 2 UI passed**, 36 ignored, пять пустых bin harness;
-`cargo clippy --locked --all-targets`, wasm `--lib --bins`, Android `--lib`
-(NDK 27.0.12077973, API 26) и desktop rustdoc с `-D warnings` — pass.
-`policy-check` — 3 пути/96 файлов, 0 находок; `git diff --check` — pass.
-UI-интеракция не менялась. Физическое аудио/Android-устройство, ignored probes
-и браузерный runtime здесь не проверялись; общий финальный проход остаётся
-за smell-validation. Locked §7, H3/H7 и ремонтный слой сохранены.
+На итоговом коде: `cargo test --locked --all-targets` — **250 lib + 2 UI passed**,
+36 ignored, пять пустых bin harness; clippy all-targets, wasm lib/bins,
+Android lib (NDK 27.0.12077973/API 26), rustdoc lib с `-D warnings` — pass.
+Есть egui_kittest реального ввода Cb4/E#4/Fb4/B#4/C10/C21/G255 и F5/G9,
+RON-проверки прежних чисел и postcard round-trip/error tests.
+Trunk и отдельный headless Chromium: canvas/Ready; при clock=1 мс Init(48000)
+и 4096 samples работают, искусственный postMessage failure диагностируется,
+повторный snapshot **20879 байт побайтово совпадает**, после malformed пакета
+worker продолжает обработку; ошибка настоящего worker достигает error event.
+Ожидаемые искусственные ошибки не выданы за отсутствие ошибок.
+Policy-check 3 пути/96 файлов и diff-check — pass. Физическое аудио,
+Android-устройство, ignored probes, mic/getDisplayMedia не проверялись.
 
 ## Smell-baseline: охват, backlog и FP
 
@@ -372,9 +383,8 @@ P1 — подтверждённая ошибка внешнего ввода; P2
 
 | Область / приоритет | Адрес и следующий конкретный разбор |
 |---|---|
-| error-contracts / **P1** | `app/take_marks.rs:88,104` → `note.rs:232` → `pitch.rs:15`: Declaration принимает `Cb4/E#4/Fb4/B#4/C10`, затем `.midi()` паникует; `C21/G255` молча дают MIDI **8/7** из-за `as u8`. Подтверждено исполняемым `declaration-boundary-probe.log` на неизменённом коде. Нужна валидация пользовательской границы до создания Declaration; расширение поддерживаемой энгармоники не решать попутно. |
-| error-contracts / P2 | `audio/worker_proto.rs:63–70`: generic encode гасит ошибку сериализации пустым пакетом; комментарий про callback не доказывает контракт всех callers. Проверить worker/main обработку и сохранить причину ошибки. `bin/mic_probe.rs:285`: join panic превращён в пустые данные. |
-| error-contracts / P2 | `app/persist.rs:40,84`: wire `test_note_midi: usize` сужается через `as u8` до проверки `PNote::new`; 256 становится законным MIDI 0 вопреки комментарию fail-fast. Проверить загрузку повреждённого/старого RON, сохраняя действующую политику восстановления настроек. |
+| error-contracts / P2, остаток DRAIN | `app/take_marks.rs:191–201`, `take_roll.rs:LoadedTake::new`: load_marks считает любой File::open error отсутствием файла, а map_while(Result::ok) обрывает чтение на I/O/UTF-8 ошибке. Проверить передачу ошибки вместо «пустых/частичных marks», исключить последующую перезапись нечитаемой разметки. Законную политику skip malformed JSON-line сохранить; неполный файл не объявлять полным. Кандидат найден чтением, отказный сценарий ещё не запускался. |
+| error-contracts / P2, остаток DRAIN | `audio/dsp/pitch_bench.rs:1335–1338`: PITCH_BENCH_LIMIT с неверным числом через ok/and_then становится usize::MAX. Проверить контракт внешнего параметра, различить отсутствие и ошибку ввода, не менять DSP/корпус/эталоны. Остальные разобранные env defaults означают отсутствие фильтра/переопределения; instrument_filter None при unset законен. |
 | reuse-and-boundaries / P2 | `app.rs:365,401,407,413`, `app/controls.rs:59,63,111`: 7 повторных поисков `AudioInputOption` по id/kind, 2 группы обоих движков. Общая навигация должна сохранять приоритет preferred/fallback и реальное отсутствие устройства. |
 | reuse-and-boundaries / P3 | `audio/core.rs:307,498`: идентичные push_samples-обёртки; `native/imp/devices.rs:324` и `bin/mic_probe.rs:403`: повтор device label. Обёртки разных pipeline не требуют объединения DSP; оценить только полезный общий контракт. Local cycle `core_types::note ↔ pitch` низкоприоритетный, ожидаем для представлений одной ноты. |
 | audio-code-smells / P2 | `native/imp.rs:239,361–480`: unbounded очередь команд при медленном открытии устройства; проверить поток UI→control thread и способ ограничения/коалесцирования без блокирования UI. `core.rs:307,498`/arg-clump AudioContext — учитывать владение/порядок остановки. |
@@ -387,8 +397,9 @@ P1 — подтверждённая ошибка внешнего ввода; P2
 
 - `MelodyHistory::oldest` (`audio/types.rs:258`) **не ужесточать** по единственному
   unwrap caller: пустая/очищенная история законна, `.front()` действительно None.
-  `Declaration::parse(...).ok()` законен как «ещё не нота», но это не оправдание
-  P1 отсутствия проверки переводимости принятой ноты в MIDI.
+  `Declaration::parse` возвращает None для ещё не принятой/неподдерживаемой ноты;
+  проверка переводимости в MIDI добавлена в сессии 9. Новые checked-конверсии
+  также имеют реальный отказ предусловия, не требуют снятия Option.
 - `workers.rs:145` — **полный** `batch.drain(..)`, хвоста для сдвига нет;
   это не MidCut O(N²). Поиск pYIN ограничен `N_THRESHOLDS`, что видно в коде,
   а не доказывается эвристикой «Vec::new ⇒ константа». Строковые contains

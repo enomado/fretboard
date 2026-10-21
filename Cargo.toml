@@ -55,6 +55,8 @@ ron = "0.12.2"
 # text centring can be asserted on actual pixels instead of on font metrics.
 egui_kittest = { version = "0.37", features = ["wgpu"] }
 image = "0.25"
+# Exercise the wasm wire contract and error propagation in native unit tests too.
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 cpal = "0.18.2"
@@ -128,6 +130,7 @@ web-sys = { version = "0.3.106", features = [
     "AudioNode",
     "AudioDestinationNode",
     "Event",
+    "ErrorEvent",
     "Worker",
     "WorkerOptions",
     "WorkerType",

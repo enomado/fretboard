@@ -37,7 +37,9 @@ pub(super) struct PersistentState {
     scale_kind:        ScaleKind,
     root_note:         Note,
     live_chart:        LiveChartKind,
-    test_note_midi:    usize,
+    // PNote serializes as the same raw integer as the old usize field, but rejects
+    // corrupt values during RON parsing, where the existing fail-soft policy applies.
+    test_note_midi:    PNote,
     #[serde(default)]
     scale_finder:      ScaleFinderConfig,
     analysis_settings: AnalysisSettings,
@@ -79,9 +81,7 @@ impl App {
         self.root_note = state.root_note;
         self.live_chart = state.live_chart;
         self.scale_finder = state.scale_finder;
-        // Wire format stays a raw MIDI number; rebuild the newtype at the boundary.
-        // A corrupt out-of-range value can't survive the contract — fail fast.
-        self.test_note_midi = PNote::new(state.test_note_midi as u8).unwrap();
+        self.test_note_midi = state.test_note_midi;
         self.workspace_tree = Some(state.workspace_tree);
         self.mobile_panel = state.mobile_panel;
 
@@ -107,7 +107,7 @@ impl App {
             scale_kind:        self.scale_kind,
             root_note:         self.root_note,
             live_chart:        self.live_chart,
-            test_note_midi:    self.test_note_midi.as_u8() as usize,
+            test_note_midi:    self.test_note_midi,
             scale_finder:      self.scale_finder,
             analysis_settings: self.audio.analysis_settings(),
             input_gain:        self.audio.input_gain(),
@@ -127,6 +127,7 @@ mod tests {
     use crate::app::workspace::default_workspace_tree;
     use crate::audio::types::AnalysisSettings;
     use crate::core_types::note::Note;
+    use crate::core_types::pitch::PNote;
     use crate::core_types::scale_detect::ensemble::ScaleFinderConfig;
 
     // Guards the RON wire contract: every persisted field (incl. the
@@ -139,7 +140,7 @@ mod tests {
             scale_kind:        super::ScaleKind::Dorian,
             root_note:         Note::G,
             live_chart:        super::LiveChartKind::Fft,
-            test_note_midi:    37,
+            test_note_midi:    PNote::new(37).unwrap(),
             scale_finder:      ScaleFinderConfig::default(),
             analysis_settings: AnalysisSettings::default(),
             input_gain:        1.5,
@@ -154,7 +155,19 @@ mod tests {
         let ron = ron::ser::to_string(&state).unwrap();
         let back: PersistentState = ron::from_str(&ron).unwrap();
 
-        assert_eq!(back.test_note_midi, 37);
+        assert_eq!(back.test_note_midi, PNote::new(37).unwrap());
+        // Legacy usize RON is an unadorned integer. Keep reading that shape while
+        // rejecting both invalid MIDI and values that used to wrap through `as u8`.
+        assert!(ron.contains("test_note_midi:37"));
+        for midi in [0, 127] {
+            let old = ron.replace("test_note_midi:37", &format!("test_note_midi:{midi}"));
+            let loaded: PersistentState = ron::from_str(&old).unwrap();
+            assert_eq!(loaded.test_note_midi.as_u8(), midi);
+        }
+        for midi in [128, 255, 256, 293, 65536, usize::MAX] {
+            let corrupt = ron.replace("test_note_midi:37", &format!("test_note_midi:{midi}"));
+            assert!(ron::from_str::<PersistentState>(&corrupt).is_err(), "MIDI {midi}");
+        }
         assert_eq!(back.root_note, Note::G);
         assert_eq!(back.selected_input_id.as_deref(), Some("pulse::@DEFAULT_SOURCE@"));
         assert!(back.monitor_enabled);

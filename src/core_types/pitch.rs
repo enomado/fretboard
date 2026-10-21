@@ -12,7 +12,8 @@ use crate::core_types::note::{
 pub struct PCNote(pub u8);
 
 impl PCNote {
-    fn pitch_class(note: Note, ass: Accidental) -> PCNote {
+    /// Supported spellings only; Cb/E#/Fb/B# are outside this model.
+    pub fn try_from_note(note: Note, ass: Accidental) -> Option<Self> {
         let f = match (note, ass) {
             (Note::C, Accidental::Natural) => 0,
             (Note::C, Accidental::Sharp) | (Note::D, Accidental::Flat) => 1,
@@ -26,11 +27,11 @@ impl PCNote {
             (Note::A, Accidental::Natural) => 9,
             (Note::A, Accidental::Sharp) | (Note::B, Accidental::Flat) => 10,
             (Note::B, Accidental::Natural) => 11,
-            // Ass::Natural on enharmonic weird cases covered above
-            _ => panic!("Unsupported accidental combination"),
+            // These enharmonic spellings are not supported by this model.
+            _ => return None,
         };
 
-        PCNote(f)
+        Some(PCNote(f))
     }
 
     pub fn to_note(&self) -> (Note, Accidental) {
@@ -56,11 +57,11 @@ impl PCNote {
     }
 
     pub fn from_note(note: Note, ass: Accidental) -> Self {
-        Self::pitch_class(note, ass)
+        Self::try_from_note(note, ass).expect("Unsupported accidental combination")
     }
 
     pub fn from_natural(note: Note) -> Self {
-        Self::pitch_class(note, Accidental::Natural)
+        Self::from_note(note, Accidental::Natural)
     }
 
     pub fn add(&self, i: &Interval) -> PCNote {
