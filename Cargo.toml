@@ -91,9 +91,9 @@ ndk-context = "0.1.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 eframe = { workspace = true, features = ["glow", "persistence"] }
-wasm-bindgen = "0.2.128"
-wasm-bindgen-futures = "0.4.78"
-js-sys = "0.3.105"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+js-sys = "0.3.106"
 # Wire format for main-thread ↔ DSP-worker messages (samples / settings out,
 # readings back). Compact binary, much cheaper than JSON for the f32 spectra.
 # Compact binary serde format for the wire protocol. postcard keeps payloads
@@ -105,7 +105,7 @@ postcard = { version = "1", default-features = false, features = ["alloc"] }
 # Web Audio capture (mic via getUserMedia, system via getDisplayMedia) + the
 # audio graph (MediaStreamSource → ScriptProcessor) that ships samples to the
 # DSP web worker.
-web-sys = { version = "0.3.105", features = [
+web-sys = { version = "0.3.106", features = [
     "Document",
     "Window",
     "Element",

@@ -15,7 +15,7 @@
 - [x] dependency-inventory — проверить все прямые, целевые, dev- и git-зависимости, доступные релизы и совместимость; снять исходные проверки и записать короткий список обновлений/осознанных исключений.
 - [x] egui-upgrade — согласованно обновить eframe/egui, egui_tiles, egui_kittest и граф рендеринга до свежих совместимых версий, мигрировать используемые API, проверить desktop и UI-тесты.
 - [x] audio-upgrade — обновить cpal, ringbuf, rustfft, realfft, resonators и остальные аудиозависимости; сохранить расчётные контракты, проверить затронутый DSP и нативное аудио.
-- [ ] platform-upgrade — обновить wasm-bindgen/js-sys/web-sys, Android/JNI и hot-reload зависимости, восстановить web/Android/desktop пути при изменении API.
+- [x] platform-upgrade — обновить wasm-bindgen/js-sys/web-sys, Android/JNI и hot-reload зависимости, восстановить web/Android/desktop пути при изменении API.
 - [ ] remaining-dependencies — обновить остальные прямые и транзитивные зависимости и Cargo.lock; повторно проверить свежесть и отсутствие ненужных дублей egui; разобрать standalone probe с учётом его назначения.
 - [ ] upgrade-validation — проверить итоговый граф на desktop, wasm и Android, прогнать подходящие тесты и rustdoc; исправить регрессии, записать итоговые версии, реальные исключения и остаток.
 - [ ] smell-baseline — после завершения upgrade-validation выполнить MCP-аудиты, clippy и code_smell stats/каталог/применимые детекторы, собрать адресный backlog с приоритетами и известными FP.
@@ -193,48 +193,47 @@ Node builtins и сохранённый aubio WASM; Python имеет PEP 723-з
 
 ## Текущее состояние
 
-Сессия 3: audio-upgrade завершён; блокеров нет. Свежесть шести прямых
-аудиозависимостей и 13 DSP/native-транзитивных пакетов повторно проверена
-через live crates.io API 2026-10-21. [ringbuf](https://crates.io/api/v1/crates/ringbuf)
-обновлён 0.5.2 → 0.5.3 в манифесте и lockfile. cpal 0.18.2, rustfft 6.4.1,
-realfft 3.5.0, hound 3.5.1 уже последние stable. Адресный `cargo update`
-этих пакетов, resonators, alsa, alsa-sys и mach2 изменил только ringbuf.
+Сессия 4: platform-upgrade завершён; блокеров нет. Live crates.io API 2026-10-21
+повторно проверен для 14 платформенных пакетов. Обновлены требования манифеста
+и lockfile: wasm-bindgen и macro/shared 0.2.128 → 0.2.129,
+wasm-bindgen-futures 0.4.78 → 0.4.79, js-sys/web-sys 0.3.105 → 0.3.106.
+Прочитаны [release notes 0.2.129](https://github.com/wasm-bindgen/wasm-bindgen/releases/tag/0.2.129)
+и затронутые main/Web Audio/worker API: миграция исходников не потребовалась.
+Новый tokio 1.54.0 в lockfile — target-зависимость futures только для
+экспериментального Emscripten; `cargo tree --target wasm32-unknown-unknown -i tokio`
+подтвердил отсутствие Tokio в нашем браузерном графе.
 
-Исключения: актуальный cpal требует alsa ^0.11 и mach2 ^0.6, а alsa 0.11
-требует alsa-sys ^0.4; свежие 0.12.1/0.7.0/0.6.1 соответственно несовместимы
-с этими требованиями. Оставлены совместимые 0.11.0/0.6.0/0.4.0 без форка cpal
-и прямых пинов транзитивных пакетов. `git ls-remote` подтвердил прежний HEAD
-onepole-bank `67152aa9`; [PR #6](https://github.com/jhartquist/resonators/pull/6)
-остаётся open/unmerged. Намеренный fork и оба Cargo-файла lifecycle_probe сохранены.
-Граф сохраняет один num-complex 0.4.6 для rustfft/realfft/resonators;
-egui-связка сессии 2 не менялась.
-
-Прочитан diff исходников ringbuf 0.5.2/0.5.3: меняются кэширующие концы очереди
-и публикация deprecated Frozen API. Приложение использует HeapRb/Split,
-try_push/try_pop и не использует Frozen. Миграция production API не нужна.
-Новый тест `capture::tests::a_full_plane_does_not_block_other_planes_or_overwrite_unread_samples`
-проверяет независимое переполнение трёх колец, сохранность непрочитанного,
-возобновление записи после чтения и переход индексов через границу кольца.
-DSP-алгоритмы, эталоны и существующие ожидания не менялись.
+Android/JNI уже последние stable: android-activity 0.6.1, jni 0.22.4,
+ndk-context 0.1.1, ndk 0.9.0, ndk-sys 0.6.0+11769913, jni-sys 0.3.1/0.4.1.
+Обе версии jni-sys нужны текущим ndk/JNI; прямых пинов для удаления дубля нет.
+Desktop hot reload: subsecond/subsecond-types/dioxus-cli-config 0.7.10 и
+tungstenite 0.30.0 — последние stable; [Dioxus 0.8.0-alpha.3](https://github.com/DioxusLabs/dioxus/releases/tag/v0.8.0-alpha.3)
+остаётся prerelease. Адресный `cargo update` Android/hot-reload пакетов
+не изменил их версии. Сохраняются один egui 0.37.0, egui_tiles 0.18.0,
+eframe/egui_kittest 0.37.0; dockyard в графе отсутствует.
+Fork resonators `67152aa9` и оба Cargo-файла lifecycle_probe сохранены.
+Аудиообновление сессии 3 остаётся: ringbuf 0.5.3, 161 audio-тест passed;
+alsa/alsa-sys/mach2 удерживаются требованиями cpal (см. инвентаризацию).
 
 Реально выполнено на новом графе (cargo с `--locked`):
-- `cargo test --lib audio::`: 161 passed, 34 ignored; охвачены DSP, real/complex
-  FFT equivalence, расчётные пайплайны, WAV round-trip, recorder/replay и fanout.
-- `cargo clippy --all-targets`: pass; только прежний
-  `chunks_exact_to_as_chunks` в `src/audio/dsp/sieve.rs:907`.
-- Android `cargo check --target aarch64-linux-android --lib`: pass,
-  NDK r27c, CC clang API 26 и AR llvm-ar.
-- `cargo build --bin mic_probe` и `timeout 30s target/debug/mic_probe --duration-ms 250`:
-  завершились успешно. Ненулевой сигнал: Pulse default — 10 944 сэмпла,
-  FIFINE через Pulse — 23 760; cpal/ALSA default и PulseAudio — по 11 776
-  сэмплов, 48 kHz. Прямой USB/FIFINE занят другим потоком; у необязательных
-  ALSA-маршрутов есть unavailable/permission/unsupported I32, JACK/OSS отсутствуют.
-  Это короткий smoke захвата, не проверка качества/задержки или вывода звука.
-- `cargo metadata --locked --no-deps` и адресный `cargo tree --target all`:
-  pass, ringbuf 0.5.3 и единственный num-complex 0.4.6.
+- `cargo check --target wasm32-unknown-unknown --lib --bins` — pass.
+- Trunk 0.21.14 build с `--locked --public-url /platform-s4/` — pass для
+  fretboard-app и dsp_worker; CLI wasm-bindgen 0.2.129 выбран автоматически.
+  Для запуска Trunk убран несовместимый внешний `NO_COLOR=1` (`env -u NO_COLOR`).
+- Отдельный headless Chromium: приложение загружено под этим sub-path,
+  canvas и один worker созданы, получен Ready; на Init(48000) и 4096
+  синтетических сэмплов worker вернул Snapshot (8204 байта), без worker errors
+  и JS-исключений. Микрофон/getDisplayMedia и UI-ввод этим smoke не проверены.
+- `cargo check --target aarch64-linux-android --lib` — pass, NDK r27c,
+  CC clang API 26 и AR llvm-ar. APK/устройство не запускались.
+- `cargo build --bin fretboard-app` и `cargo clippy --all-targets` — pass;
+  только прежний `chunks_exact_to_as_chunks` в `src/audio/dsp/sieve.rs:907`.
+  Desktop окно и применение hot-reload patch не запускались.
+- `RUSTDOCFLAGS='-D warnings' cargo doc --target wasm32-unknown-unknown --no-deps --lib`
+  — pass. Адресный `cargo tree --target all` подтвердил граф выше.
 
-Следующая область — platform-upgrade, затем remaining-dependencies и итоговый
-upgrade-validation. Smell до завершения всех обновлений не начинать. Wasm,
-rustdoc и UI в этой сессии не повторялись: их код/граф не менялся; итоговые
-проверки остаются в upgrade-validation. APK и браузер не запускались.
-Чужая untracked `.claude/` не затронута.
+Следующая область — remaining-dependencies (включая serde_json и оставшиеся
+совместимые транзитивные обновления), затем upgrade-validation с полным итоговым
+охватом из плана. Smell до завершения всех обновлений не начинать.
+Чужая untracked `.claude/` не затронута; временный браузер/сервер остановлены,
+собственный scratch удалён.
