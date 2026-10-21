@@ -31,6 +31,19 @@ ANDROID_NDK_ROOT=/opt/android-sdk/android-ndk-r27c ANDROID_HOME=/opt/android-sdk
 Пакет `com.fretboard.lifecycleprobe` — **отдельный** от `com.fretboard.snail`, ставится
 рядом и на пермишены основного приложения не влияет.
 
+При копировании пробы сохранять её `Cargo.lock`: версии в `Cargo.toml` — диапазоны,
+а окружение исходного замера закреплено на `android-activity 0.6.1`, `jni 0.22.4` и
+`ndk-context 0.1.1` из lockfile. `cargo update` здесь меняет окружение замера;
+обновление основного fretboard не требует обновления пробы. Проверить закреплённый
+граф без запуска на устройстве можно из каталога пробы:
+
+```sh
+ANDROID_NDK_ROOT=/opt/android-sdk/android-ndk-r27c \
+CC_aarch64_linux_android=/opt/android-sdk/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android26-clang \
+AR_aarch64_linux_android=/opt/android-sdk/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar \
+    cargo check --locked --target aarch64-linux-android --lib
+```
+
 Смотреть лог:
 
 ```sh
