@@ -107,24 +107,12 @@ pub fn draw_spiral_chart_sized(
     );
 
     let Some(spectrum) = chart.spectrum else {
-        painter.text(
-            viz_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            chart.waiting_message,
-            FontId::proportional(13.0),
-            color::TEXT_HINT,
-        );
+        draw_hint(&painter, viz_rect, chart.waiting_message);
         return;
     };
 
     if spectrum.is_empty() || chart.note_labels.is_empty() {
-        painter.text(
-            viz_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            chart.empty_message,
-            FontId::proportional(13.0),
-            color::TEXT_HINT,
-        );
+        draw_hint(&painter, viz_rect, chart.empty_message);
         return;
     }
 
@@ -323,6 +311,23 @@ pub(crate) fn pitch_class_angle(pitch_class: usize) -> f32 {
 
 /// Map a note label like "G#4"/"Bb5"/"C" to its pitch class 0..=11. Trailing
 /// octave digits (and a leading-octave minus) are stripped before matching.
+/// A hint in place of the chart, centred in `rect` and wrapped to its width. On one line
+/// it is ≈300 dp wide — wider than a phone's spiral in landscape (≈200 dp), and both its
+/// ends were cut off by the chart.
+fn draw_hint(painter: &egui::Painter, rect: Rect, text: &str) {
+    let mut job = egui::text::LayoutJob::simple(
+        text.to_owned(),
+        FontId::proportional(13.0),
+        color::TEXT_HINT,
+        rect.width(),
+    );
+    job.halign = egui::Align::Center;
+    let galley = painter.layout_job(job);
+    // Centred rows lie around the galley's origin, so place it by its own centre.
+    let pos = rect.center() - galley.rect.center().to_vec2();
+    painter.galley(pos, galley, color::TEXT_HINT);
+}
+
 fn note_label_pitch_class(label: &str) -> Option<usize> {
     let note = label.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-');
     match note {

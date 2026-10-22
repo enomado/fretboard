@@ -13,6 +13,9 @@ use eframe::egui::{
     vec2,
 };
 
+#[cfg(any(target_os = "android", test))]
+use super::mobile_split::Part;
+use super::resonator_panel::draw_mobile_spiral;
 use super::{
     App,
     LiveChartKind,
@@ -37,7 +40,10 @@ use crate::ui::snail::{
     self,
     SpiralChart,
 };
+use crate::ui::theme;
 use crate::ui::tokens::color;
+#[cfg(any(target_os = "android", test))]
+use crate::ui::tokens::space;
 
 /// The tuner's centre tick — the pitch you are aiming at. Warm, unlike the cool
 /// `color::GRID_LINE_STRONG` graticule around it: this line is the target, not
@@ -92,6 +98,35 @@ impl App {
     }
 
     pub(super) fn draw_tuner_card(&mut self, ui: &mut Ui) {
+        self.draw_tuner_card_inner(ui, false);
+    }
+
+    /// The phone's Live analysis, a split panel (`mobile_split`): the screen is the card
+    /// — status, input level, the chart — and the config is the choice of chart, which on
+    /// the desktop sits in the card's header.
+    #[cfg(any(target_os = "android", test))]
+    pub(super) fn draw_tuner_part(&mut self, ui: &mut Ui, part: Part) {
+        match part {
+            Part::Screen => self.draw_tuner_card_inner(ui, true),
+            Part::Config => {
+                ui.horizontal(|ui| {
+                    for chart in [LiveChartKind::Tuner, LiveChartKind::Fft, LiveChartKind::Spiral] {
+                        let button = SegmentedButton::new(chart.label(), self.live_chart == chart)
+                            .min_width(72.0)
+                            .height(space::TOUCH_H);
+                        if ui.add(button).clicked() {
+                            self.live_chart = chart;
+                        }
+                    }
+                });
+            }
+        }
+    }
+
+    /// The Live analysis card; `mobile` = the phone's screen part: no chart picker in the
+    /// header (it is the split's config), card margins for a phone, the spiral sized to
+    /// the screen.
+    fn draw_tuner_card_inner(&mut self, ui: &mut Ui, mobile: bool) {
         let status = self.audio.status();
         let reading = self.audio.reading();
         let input_level = self.audio.input_level();
@@ -103,12 +138,18 @@ impl App {
         let tuner_targets = self.filtered_tuner_targets(&tuning, &scale);
         let target = tuner_targets.first();
 
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(22))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
+                if mobile {
+                    // The screen of a split panel: the card is the whole screen, down to
+                    // the config, not a box floating over a gap (`mobile_split`).
+                    ui.set_min_height(ui.available_height());
+                }
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
@@ -128,6 +169,9 @@ impl App {
                             ui.add_space(8.0);
                         }
 
+                        if mobile {
+                            return;
+                        }
                         for chart in [LiveChartKind::Spiral, LiveChartKind::Fft, LiveChartKind::Tuner] {
                             let button =
                                 SegmentedButton::new(chart.label(), self.live_chart == chart).min_width(72.0);
@@ -138,13 +182,15 @@ impl App {
                     });
                 });
 
-                ui.add_space(12.0);
+                // Tighter on the phone: a landscape screen is 360 dp tall in all.
+                let gap = if mobile { 6.0 } else { 12.0 };
+                ui.add_space(gap);
                 self.draw_input_level(ui, input_level, selected_input_kind);
-                ui.add_space(12.0);
+                ui.add_space(gap);
                 match self.live_chart {
                     LiveChartKind::Tuner => self.draw_tuner_meter(ui, target, selected_input_kind),
                     LiveChartKind::Fft => self.draw_spectrum(ui, reading.as_ref()),
-                    LiveChartKind::Spiral => self.draw_spiral_spectrogram(ui, reading.as_ref()),
+                    LiveChartKind::Spiral => self.draw_spiral_spectrogram(ui, reading.as_ref(), mobile),
                 }
             });
     }
@@ -447,21 +493,29 @@ impl App {
         }
     }
 
-    fn draw_spiral_spectrogram(&self, ui: &mut Ui, reading: Option<&TunerReading>) {
-        snail::draw_spiral_chart(
-            ui,
-            SpiralChart {
-                title:             "Spiral spectrogram",
-                subtitle:          "octaves wrap onto the same pitch angle",
-                spectrum:          reading.map(|value| value.spiral_spectrum.as_slice()),
-                waterfall:         reading.map_or(&[][..], |value| value.spiral_waterfall.as_slice()),
-                note_labels:       reading.map_or(&[][..], |value| value.note_labels.as_slice()),
-                active_note:       None,
-                waiting_message:   "Play a sustained note to light up the spiral",
-                empty_message:     "The note spectrum is empty",
-                active_note_label: "active note",
+    /// `mobile`: the phone's screen — the spiral sized to it as the snail's is, and no
+    /// subtitle (beside the title it runs into it on a narrow screen, as on the snail).
+    fn draw_spiral_spectrogram(&self, ui: &mut Ui, reading: Option<&TunerReading>, mobile: bool) {
+        let chart = SpiralChart {
+            title:             "Spiral spectrogram",
+            subtitle:          if mobile {
+                ""
+            } else {
+                "octaves wrap onto the same pitch angle"
             },
-            &self.audio.analysis_settings(),
-        );
+            spectrum:          reading.map(|value| value.spiral_spectrum.as_slice()),
+            waterfall:         reading.map_or(&[][..], |value| value.spiral_waterfall.as_slice()),
+            note_labels:       reading.map_or(&[][..], |value| value.note_labels.as_slice()),
+            active_note:       None,
+            waiting_message:   "Play a sustained note to light up the spiral",
+            empty_message:     "The note spectrum is empty",
+            active_note_label: "active note",
+        };
+        let settings = self.audio.analysis_settings();
+        if mobile {
+            draw_mobile_spiral(ui, chart, &settings);
+        } else {
+            snail::draw_spiral_chart(ui, chart, &settings);
+        }
     }
 }

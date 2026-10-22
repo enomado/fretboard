@@ -4,7 +4,8 @@ mod controls;
 mod drone_panel;
 mod fretboard_panel;
 mod live_analysis;
-
+#[cfg(any(target_os = "android", test))]
+mod mobile_split;
 mod persist;
 mod pitch_roll_panel;
 mod resonator_panel;
@@ -272,6 +273,13 @@ pub struct App {
     /// влияет ни на что, но персистится вместе с остальными настройками. См.
     /// `draw_mobile_panel_selector` / мобильный `render`.
     mobile_panel: WorkspaceTab,
+    /// Показан ли на телефоне конфиг панели под её экраном (`mobile_split`): скрыт —
+    /// экран на всю высоту. Решение Стаса 2026-10-22: «конфиг снизу, и только если
+    /// включён». Своего переключателя у панелей нет, где ему быть — вопрос Стасу
+    /// (хендоф `docs/PLAN_dependencies_2026-10-21.md`); до ответа конфиг показан, то
+    /// есть ни одна ручка не стала недоступной. Не персистится, пока нет ручки.
+    #[cfg(any(target_os = "android", test))]
+    mobile_config_shown: bool,
     /// Имя следующего дубля (без расширения) — см. `take_path`. Не персистится:
     /// каждый дубль называется по тому, что в нём сыграно, и переживать сессию
     /// прошлому имени незачем.
@@ -362,6 +370,8 @@ impl App {
             pitch_roll: pitch_roll_panel::PitchRoll::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
             mobile_panel: WorkspaceTab::ResonatorSnail,
+            #[cfg(any(target_os = "android", test))]
+            mobile_config_shown: true,
             take_name: String::new(),
             takes: Vec::new(),
             corpus: Vec::new(),

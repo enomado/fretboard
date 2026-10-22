@@ -257,25 +257,25 @@ impl App {
                 // это максимум места под контент.
                 self.draw_mobile_panel_picker(ui);
 
+                // Панель-пара «экран + его конфиг» — стандартная раскладка телефона
+                // (`mobile_split`): экран сверху, конфиг снизу; скроллит каждая часть сама.
+                let tab = self.mobile_panel;
+                if tab.splits_on_phone() {
+                    self.draw_mobile_split(ui, tab);
+                    return;
+                }
+
                 // Скролл в обе стороны, как у пейна на десктопе: панели рассчитаны
                 // на десктопную ширину, и их ряды без переноса (поле имени дубля +
                 // Record, клавиатура дрона, тональность нотного стана) шире 360 dp.
                 // С одним вертикальным скроллом правый край молча обрезался —
                 // кнопка за ним была недостижима. Внутренний max_rect ScrollArea
                 // равен видимой области, поэтому «тянуться на оставшуюся высоту»
-                // (снейл) по-прежнему значит «до нижнего края экрана».
-                let tab = self.mobile_panel;
+                // по-прежнему значит «до нижнего края экрана».
                 egui::ScrollArea::both()
                     .id_salt(("mobile_panel_scroll", tab.label()))
                     .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        match tab {
-                            // У снейла свой мобильный вариант: спираль по размеру экрана
-                            // + встроенная полоса настроек.
-                            WorkspaceTab::ResonatorSnail => self.draw_mobile_snail_card(ui),
-                            tab => self.draw_workspace_tab(ui, tab),
-                        }
-                    });
+                    .show(ui, |ui| self.draw_workspace_tab(ui, tab));
             });
     }
 
@@ -727,6 +727,97 @@ mod tests {
                 spiral.height() >= 200.0,
                 "at {size:?} the spiral {spiral:?} is a sliver"
             );
+        }
+    }
+
+    /// Each split panel (`mobile_split`) with the node of its screen and one of its
+    /// config's controls.
+    const SPLITS: [(WorkspaceTab, &str, &str); 4] = [
+        (WorkspaceTab::ResonatorSnail, "Resonator spiral", "Spread"),
+        (WorkspaceTab::PitchRoll, "Pitch roll", "SWIPE′"),
+        (WorkspaceTab::LiveAnalysis, "Spiral spectrogram", "FFT"),
+        (WorkspaceTab::Staff, "Violin staff", "Treble"),
+    ];
+
+    /// All nodes labelled exactly `label`, as one rect (a slider and its caption share
+    /// one name), or `None` if there are none.
+    fn rect_of(harness: &Harness<'_, App>, label: &str) -> Option<Rect> {
+        rects(harness)
+            .into_iter()
+            .filter(|(_, l, _)| l == label)
+            .map(|(_, _, rect)| rect)
+            .reduce(|a, b| a.union(b))
+    }
+
+    /// The phone's split panels (Stas, 2026-10-22: «экран инструмента сверху, его конфиг
+    /// снизу, и только если конфиг включён»): the screen is whole on the first screen with
+    /// the config under it in portrait and beside it, on the right, in landscape; with the
+    /// config hidden its controls are gone and the screen keeps (the roll: grows into)
+    /// the room.
+    #[test]
+    fn split_panels_put_the_screen_over_its_config_and_take_the_room_without_it() {
+        for size in PHONES {
+            let portrait = size.y > size.x;
+            for (tab, screen_label, config_label) in SPLITS {
+                let at = format!("{} at {size:?}", tab.label());
+                let shown = phone_with(size, app_with_rolls(tab));
+                let pane = pane(&shown, size);
+                let screen = rect_of(&shown, screen_label).unwrap();
+                let config =
+                    rect_of(&shown, config_label).unwrap_or_else(|| panic!("{at}: no {config_label}"));
+                assert!(
+                    pane.contains_rect(screen),
+                    "{at}: screen {screen:?} is not whole in {pane:?}"
+                );
+                assert!(
+                    pane.contains_rect(config),
+                    "{at}: config {config:?} is not in {pane:?}"
+                );
+                // Nothing past the split's right edge (the picker row's: both span the
+                // shell's content width), where each part's scroll area clips. The
+                // snail's A4 row («440.0 Hz») did run past it in a landscape config column.
+                let header = format!("{}  ▼", tab.label());
+                let edge = shown.get_by_role_and_label(Role::Button, &header).rect().right() + 0.5;
+                let past: Vec<_> = rects(&shown)
+                    .into_iter()
+                    .filter(|(_, _, rect)| rect.right() > edge)
+                    .collect();
+                assert!(past.is_empty(), "{at}: past the split's right edge: {past:?}");
+                if portrait {
+                    assert!(
+                        screen.bottom() < config.top(),
+                        "{at}: screen {screen:?} over config {config:?}"
+                    );
+                } else {
+                    assert!(
+                        screen.right() < config.left(),
+                        "{at}: screen {screen:?} left of config {config:?}"
+                    );
+                }
+
+                let mut app = app_with_rolls(tab);
+                app.mobile_config_shown = false;
+                let hidden = phone_with(size, app);
+                assert!(
+                    rect_of(&hidden, config_label).is_none(),
+                    "{at}: hidden config still shows"
+                );
+                let alone = rect_of(&hidden, screen_label).unwrap();
+                assert!(
+                    pane.contains_rect(alone),
+                    "{at}: screen {alone:?} alone is not whole in {pane:?}"
+                );
+                assert!(
+                    alone.height() >= screen.height(),
+                    "{at}: {alone:?} shrank from {screen:?}"
+                );
+                if tab == WorkspaceTab::PitchRoll && portrait {
+                    assert!(
+                        alone.height() > screen.height() + config.height(),
+                        "{at}: the roll {alone:?} did not take the config's room (was {screen:?})"
+                    );
+                }
+            }
         }
     }
 }

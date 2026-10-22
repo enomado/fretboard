@@ -31,6 +31,8 @@ use eframe::egui::{
 };
 
 use super::App;
+#[cfg(any(target_os = "android", test))]
+use super::mobile_split::Part;
 use crate::audio::types::{
     MelodyFrame,
     MelodyHistory,
@@ -392,7 +394,8 @@ pub(super) fn columns_of<'a>(
         .collect()
 }
 
-/// The live roll's plot height off a touch screen — and its ceiling on one.
+/// The live roll's plot height off a touch screen. On the phone the roll is the screen of
+/// a split panel and fills it instead (`draw_pitch_roll_part`).
 const LIVE_PLOT_HEIGHT: f32 = 360.0;
 /// The least a roll's plot is given on a touch screen, however short the screen. Under it
 /// the rows of the minimum auto span ([`MIN_SPAN`]) drop below
@@ -402,16 +405,16 @@ const TOUCH_PLOT_FLOOR: f32 = 160.0;
 /// A roll's plot height: `desktop_h` under a mouse; on a touch screen no taller than fits
 /// the visible pane with a finger's strip to spare.
 ///
-/// Both rolls were a fixed height — 360 and 320 px — and a landscape phone's pane is
-/// ~270 px tall under the panel picker, so neither roll could ever be seen whole. Worse
-/// for the take roll: it takes the drag (pan) itself, so once scrolled to, it covered the
-/// whole pane and there was nothing left to put a finger on to scroll the page back. Two
-/// touch rows ([`space::TOUCH_H`]) of the pane stay free for exactly that.
+/// For the take roll, which sits in the take recorder's scrolling page: it was a fixed
+/// 320 px, and a landscape phone's pane is ~270 px tall under the panel picker, so it could
+/// never be seen whole. Worse, it takes the drag (pan) itself, so once scrolled to, it
+/// covered the whole pane and there was nothing left to put a finger on to scroll the page
+/// back. Two touch rows ([`space::TOUCH_H`]) of the pane stay free for exactly that. (The
+/// live roll does not scroll with a page: on the phone it fills its split screen.)
 ///
 /// Measured against the pane's visible rect (`clip_rect` inside its `ScrollArea`), not the
-/// screen, so whatever sits above the pane — the picker today, the split layout planned
-/// next — is already paid for. Never taller than `desktop_h`: taller than wide is wrong
-/// for a waterfall, and a portrait phone is already narrower than either roll's height.
+/// screen, so whatever sits above the pane is already paid for. Never taller than
+/// `desktop_h`.
 pub(super) fn roll_height(ui: &Ui, desktop_h: f32) -> f32 {
     if !theme::is_touch_screen(ui.ctx()) {
         return desktop_h;
@@ -430,17 +433,101 @@ pub(super) fn roll_switch<T: PartialEq>(ui: &mut Ui, current: &mut T, value: T, 
     }
 }
 
+/// The card's title, and the hint under it naming what is *under* the line — the two
+/// layers carry different authority and the picture cannot say so itself: one may
+/// convict the line, the other cannot (see `RollLayer`).
+fn title_and_hint(ui: &mut Ui, layer: RollLayer) {
+    ui.label(RichText::new("Pitch Roll").size(20.0).color(color::TEXT_HEADING));
+    ui.add(
+        egui::Label::new(
+            RichText::new(match layer {
+                RollLayer::Spectrum => "Rows are notes; your pitch scrolls in from the right",
+                RollLayer::Salience => "Under the line: what SWIPE′ scored — evidence, not ground truth",
+            })
+            .color(color::TEXT_HINT)
+            .size(12.0),
+        )
+        .wrap(),
+    );
+}
+
+/// The layer switches, in reading order.
+fn layer_switches(ui: &mut Ui, layer: &mut RollLayer) {
+    roll_switch(ui, layer, RollLayer::Spectrum, "spectrum");
+    roll_switch(ui, layer, RollLayer::Salience, "SWIPE′");
+}
+
 impl App {
     pub(super) fn draw_pitch_roll_card(&mut self, ui: &mut Ui) {
+        self.take_live_frames(ui);
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
+        Frame::new()
+            .fill(color::PANEL_FILL)
+            .corner_radius(radius)
+            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
+            .inner_margin(pad)
+            .show(ui, |ui| {
+                let layer = &mut self.pitch_roll.layer;
+                // Title + hint (~330 dp) beside the right-aligned switches (~150 dp).
+                // Narrower, the switches were laid right-to-left *over* the hint, so
+                // there they take their own row under it, in reading order.
+                const HEADER_W: f32 = 500.0;
+                if ui.available_width() >= HEADER_W {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| title_and_hint(ui, *layer));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            roll_switch(ui, layer, RollLayer::Salience, "SWIPE′");
+                            roll_switch(ui, layer, RollLayer::Spectrum, "spectrum");
+                        });
+                    });
+                } else {
+                    title_and_hint(ui, *layer);
+                    ui.horizontal(|ui| layer_switches(ui, layer));
+                }
+
+                ui.add_space(10.0);
+                self.draw_live_roll(ui, LIVE_PLOT_HEIGHT);
+            });
+    }
+
+    /// The phone's Pitch Roll, a split panel (`mobile_split`): the screen is the title
+    /// and the roll — as tall as the screen part, which is the whole pane while the
+    /// config is hidden — and the config is the layer switches.
+    #[cfg(any(target_os = "android", test))]
+    pub(super) fn draw_pitch_roll_part(&mut self, ui: &mut Ui, part: Part) {
+        match part {
+            Part::Screen => {
+                self.take_live_frames(ui);
+                let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
+                Frame::new()
+                    .fill(color::PANEL_FILL)
+                    .corner_radius(radius)
+                    .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
+                    .inner_margin(pad)
+                    .show(ui, |ui| {
+                        title_and_hint(ui, self.pitch_roll.layer);
+                        ui.add_space(10.0);
+                        // Inside the frame `available_height` already ends the card's
+                        // margin above the screen's bottom (egui shrinks a frame's
+                        // content rect by it), so the card ends at the screen's edge.
+                        let height = ui.available_height().max(TOUCH_PLOT_FLOOR);
+                        self.draw_live_roll(ui, height);
+                    });
+            }
+            Part::Config => {
+                ui.horizontal(|ui| layer_switches(ui, &mut self.pitch_roll.layer));
+            }
+        }
+    }
+
+    /// Keep the live panel running and take the engine's fresh frames into the roll —
+    /// once per UI frame, before the roll is drawn.
+    fn take_live_frames(&mut self, ui: &Ui) {
         // Live panel: keep repainting to track the audio thread, and keep the
         // resonator bank alive so the fused pitch stays low-latency (it parks when
         // no consumer asks — same reason the staff panel requests it).
         ui.ctx().request_repaint();
         self.audio.request_resonator();
-
-        let settings = self.audio.analysis_settings();
-        let style = settings.accidental;
-        let bank = settings.resonator.bank_range();
 
         // SOURCE = the engine's melody history, taken by cursor: every bank frame
         // published since the last repaint, each carrying the line's pitch, the heat
@@ -456,96 +543,39 @@ impl App {
         // `audio::dsp::melody`, the heat is raw ground truth by design.
         let fresh = self.audio.melody_since(self.pitch_roll.cursor);
         self.pitch_roll.update(fresh);
+    }
 
-        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
-        Frame::new()
-            .fill(color::PANEL_FILL)
-            .corner_radius(radius)
-            .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(pad)
-            .show(ui, |ui| {
-                let layer = &mut self.pitch_roll.layer;
-                let title_and_hint = |ui: &mut Ui, layer: RollLayer| {
-                    ui.label(RichText::new("Pitch Roll").size(20.0).color(color::TEXT_HEADING));
-                    // The hint names what is *under* the line, because the two layers
-                    // carry different authority and the picture cannot say so itself:
-                    // one may convict the line, the other cannot (see `RollLayer`).
-                    ui.add(
-                        egui::Label::new(
-                            RichText::new(match layer {
-                                RollLayer::Spectrum => "Rows are notes; your pitch scrolls in from the right",
-                                RollLayer::Salience => {
-                                    "Under the line: what SWIPE′ scored — evidence, not ground truth"
-                                }
-                            })
-                            .color(color::TEXT_HINT)
-                            .size(12.0),
-                        )
-                        .wrap(),
-                    );
-                };
-                // Title + hint (~330 dp) beside the right-aligned switches (~150 dp).
-                // Narrower — a phone — the switches were laid right-to-left *over* the
-                // hint, so there they take their own row under it, in reading order.
-                const HEADER_W: f32 = 500.0;
-                if ui.available_width() >= HEADER_W {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| title_and_hint(ui, *layer));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            roll_switch(ui, layer, RollLayer::Salience, "SWIPE′");
-                            roll_switch(ui, layer, RollLayer::Spectrum, "spectrum");
-                        });
-                    });
-                } else {
-                    title_and_hint(ui, *layer);
-                    ui.horizontal(|ui| {
-                        roll_switch(ui, layer, RollLayer::Spectrum, "spectrum");
-                        roll_switch(ui, layer, RollLayer::Salience, "SWIPE′");
-                    });
-                }
-
-                ui.add_space(10.0);
-
-                let width = ui.available_width();
-                let height = roll_height(ui, LIVE_PLOT_HEIGHT);
-                let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
-                // Named for TalkBack, and for the phone shell's tests to find the roll by.
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Pitch roll"));
-                let painter = ui.painter_at(rect);
-                let gutters = Gutters::for_screen(ui.ctx());
-                // The playhead is the newest frame's own timestamp, not "now": there is
-                // no reading of the clock here at all, so a late repaint draws the same
-                // picture, just later.
-                let Some(now) = self.pitch_roll.now() else {
-                    pianoroll::draw_pitch_roll(
-                        &painter,
-                        rect,
-                        gutters,
-                        &[],
-                        bank,
-                        self.pitch_roll.view_lo,
-                        self.pitch_roll.view_hi,
-                        LIVE_TIME_AXIS,
-                        style,
-                        // The live roll IS the line: it is the mirror you play into, and
-                        // there is nothing here to contaminate — see `app::take_marks`.
-                        true,
-                    );
-                    return;
-                };
-                pianoroll::draw_pitch_roll(
-                    &painter,
-                    rect,
-                    gutters,
-                    &self.pitch_roll.columns(now),
-                    bank,
-                    self.pitch_roll.view_lo,
-                    self.pitch_roll.view_hi,
-                    LIVE_TIME_AXIS,
-                    style,
-                    true,
-                );
-            });
+    /// The live roll itself, `height` tall across the whole width left in `ui`.
+    fn draw_live_roll(&self, ui: &mut Ui, height: f32) {
+        let settings = self.audio.analysis_settings();
+        let style = settings.accidental;
+        let bank = settings.resonator.bank_range();
+        let width = ui.available_width();
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+        // Named for TalkBack, and for the phone shell's tests to find the roll by.
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Pitch roll"));
+        let painter = ui.painter_at(rect);
+        // The playhead is the newest frame's own timestamp, not "now": there is no
+        // reading of the clock here at all, so a late repaint draws the same picture,
+        // just later. No frame yet — an empty roll.
+        let columns = match self.pitch_roll.now() {
+            Some(now) => self.pitch_roll.columns(now),
+            None => Vec::new(),
+        };
+        pianoroll::draw_pitch_roll(
+            &painter,
+            rect,
+            Gutters::for_screen(ui.ctx()),
+            &columns,
+            bank,
+            self.pitch_roll.view_lo,
+            self.pitch_roll.view_hi,
+            LIVE_TIME_AXIS,
+            style,
+            // The live roll IS the line: it is the mirror you play into, and there is
+            // nothing here to contaminate — see `app::take_marks`.
+            true,
+        );
     }
 }
 

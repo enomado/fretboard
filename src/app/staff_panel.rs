@@ -35,10 +35,8 @@
 use eframe::egui::{
     Align2,
     Color32,
-    CornerRadius,
     FontId,
     Frame,
-    Margin,
     Painter,
     Rect,
     RichText,
@@ -49,6 +47,8 @@ use eframe::egui::{
     vec2,
 };
 
+#[cfg(any(target_os = "android", test))]
+use super::mobile_split::Part;
 use super::{
     App,
     pill_colored,
@@ -79,7 +79,10 @@ use crate::ui::staff::{
     Clef,
     StaffGeom,
 };
-use crate::ui::theme::intonation_color;
+use crate::ui::theme::{
+    self,
+    intonation_color,
+};
 use crate::ui::tokens::color;
 
 /// Ink for the live-note chip, which is painted on `intonation_color(cents)` —
@@ -175,6 +178,22 @@ impl StaffTrainer {
 
 impl App {
     pub(super) fn draw_staff_card(&mut self, ui: &mut Ui) {
+        self.draw_staff_card_inner(ui, true);
+    }
+
+    /// The phone's Violin Staff, a split panel (`mobile_split`): the screen is the card
+    /// with its live-note chip and the staff, the config is the clef and key pickers.
+    #[cfg(any(target_os = "android", test))]
+    pub(super) fn draw_staff_part(&mut self, ui: &mut Ui, part: Part) {
+        match part {
+            Part::Screen => self.draw_staff_card_inner(ui, false),
+            Part::Config => draw_pickers(ui, &mut self.staff),
+        }
+    }
+
+    /// The staff card; without `with_pickers` (the phone's screen part) the clef and key
+    /// pickers are left to the split's config and the staff fits the screen's height.
+    fn draw_staff_card_inner(&mut self, ui: &mut Ui, with_pickers: bool) {
         // Live panel: keep repainting so the notation tracks the audio thread.
         ui.ctx().request_repaint();
         // The written line (`TunerReading::note_line`) is cut from the resonator bank's
@@ -206,19 +225,41 @@ impl App {
         let fresh = self.audio.melody_since(self.staff.cursor);
         self.staff.update(fresh);
 
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(22))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
+                if !with_pickers {
+                    // The screen of a split panel: the card is the whole screen, down to
+                    // the config, not a box floating over a gap (`mobile_split`).
+                    ui.set_min_height(ui.available_height());
+                }
                 draw_card_header(ui, &note_line, style);
-                draw_pickers(ui, &mut self.staff);
+                if with_pickers {
+                    draw_pickers(ui, &mut self.staff);
+                }
 
                 ui.add_space(10.0);
 
+                // The staff stops growing at 300 px (its line gap is capped at 20), so a
+                // taller screen gains nothing; a shorter one — a landscape phone — gets
+                // the staff shrunk to fit rather than scrolled. Floor: the gap's own
+                // minimum of 9.
+                const STAFF_H: f32 = 260.0;
+                let height = if with_pickers {
+                    STAFF_H
+                } else {
+                    ui.available_height().clamp(15.0 * 9.0, STAFF_H)
+                };
                 let width = ui.available_width();
-                let (rect, _resp) = ui.allocate_exact_size(vec2(width, 260.0), Sense::hover());
+                let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+                // Named for TalkBack, and for the phone shell's tests to find the staff by.
+                resp.widget_info(|| {
+                    eframe::egui::WidgetInfo::labeled(eframe::egui::Role::Image, true, "Violin staff")
+                });
                 let painter = ui.painter_at(rect);
                 // The bank's pitch range: what maps a heat bin to a pitch. The heat
                 // itself rides the frames now (`MelodyFrame::heat`) rather than a

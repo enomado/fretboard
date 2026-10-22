@@ -12,13 +12,18 @@ use eframe::egui::{
     vec2,
 };
 
+#[cfg(any(target_os = "android", test))]
+use super::mobile_split::Part;
 use super::{
     App,
     pill,
     pill_muted,
     spectrum_color,
 };
-use crate::audio::types::ResonatorReading;
+use crate::audio::types::{
+    AnalysisSettings,
+    ResonatorReading,
+};
 #[cfg(any(target_os = "android", test))]
 use crate::core_types::note::AccidentalStyle;
 #[cfg(any(target_os = "android", test))]
@@ -37,46 +42,57 @@ use crate::ui::snail::{
 use crate::ui::tokens::color;
 #[cfg(any(target_os = "android", test))]
 use crate::ui::tokens::space;
-use crate::ui::waterfall;
+use crate::ui::{
+    theme,
+    waterfall,
+};
 
 impl App {
     pub(super) fn draw_resonator_snail_card(&mut self, ui: &mut Ui) {
-        self.draw_resonator_snail_card_inner(ui, snail::SPIRAL_MIN_HEIGHT, false);
+        self.draw_resonator_snail_card_inner(ui, false);
     }
 
-    /// Mobile (Android) entry: the same snail card, but the spiral is sized to the
-    /// phone's screen and the card grows a compact settings strip. The phone has
-    /// no other place for these knobs, so the card doubles as the settings surface.
+    /// The phone's snail, a split panel (`mobile_split`): the screen is this card with
+    /// the spiral sized to it, the config the knob strip — the phone has no other place
+    /// for these knobs (no Controls/Config tabs beside it).
     #[cfg(any(target_os = "android", test))]
-    pub(super) fn draw_mobile_snail_card(&mut self, ui: &mut Ui) {
-        self.draw_resonator_snail_card_inner(ui, snail::SPIRAL_MIN_HEIGHT, true);
+    pub(super) fn draw_mobile_snail_part(&mut self, ui: &mut Ui, part: Part) {
+        match part {
+            Part::Screen => self.draw_resonator_snail_card_inner(ui, true),
+            Part::Config => self.draw_mobile_snail_settings(ui),
+        }
     }
 
-    /// Shared body for both the desktop tab and the mobile card. `min_height` is
-    /// the desktop spiral's height floor; `with_settings` switches to the mobile
-    /// body — spiral sized to the screen plus the knob strip (Android only).
-    fn draw_resonator_snail_card_inner(&mut self, ui: &mut Ui, min_height: f32, with_settings: bool) {
+    /// The snail card. `mobile` = the phone's screen part: compact header, card margins
+    /// for a finger's screen, the spiral sized to the screen (`draw_mobile_spiral`).
+    fn draw_resonator_snail_card_inner(&mut self, ui: &mut Ui, mobile: bool) {
         self.audio.request_resonator(); // потребитель банка → держим его «нужным»
         let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
 
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(22))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
+                if mobile {
+                    // The screen of a split panel: the card is the whole screen, down to
+                    // the config, not a box floating over a gap (`mobile_split`).
+                    ui.set_min_height(ui.available_height());
+                }
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
                         ui.label(
                             egui::RichText::new("Resonators")
-                                .size(if with_settings { 19.0 } else { 20.0 })
+                                .size(if mobile { 19.0 } else { 20.0 })
                                 .color(color::TEXT_HEADING),
                         );
                         // The long subtitle is a single non-wrapping line — on the
                         // phone it would distend the frame past the screen's right
                         // edge, so the compact (mobile) header drops it.
-                        if !with_settings {
+                        if !mobile {
                             ui.label(
                                 egui::RichText::new(
                                     "Alexandre Francois's Resonate bank, streamed into our pitch spiral",
@@ -95,13 +111,13 @@ impl App {
                     });
                 });
 
-                ui.add_space(if with_settings { 6.0 } else { 12.0 });
+                ui.add_space(if mobile { 6.0 } else { 12.0 });
                 let chart = SpiralChart {
                     title:             "Resonator spiral",
                     // The chart paints title (left) and subtitle (right) on one
                     // line; on the narrow phone they collide, so mobile drops
                     // the subtitle just like the card header above.
-                    subtitle:          if with_settings {
+                    subtitle:          if mobile {
                         ""
                     } else {
                         "same snail, but driven by the resonator bank instead of FFT bins"
@@ -115,56 +131,18 @@ impl App {
                     active_note_label: "bank focus",
                 };
                 #[cfg(any(target_os = "android", test))]
-                if with_settings {
-                    self.draw_mobile_snail_body(ui, chart);
+                if mobile {
+                    draw_mobile_spiral(ui, chart, &self.audio.analysis_settings());
                     return;
                 }
                 snail::draw_spiral_chart_sized(
                     ui,
                     chart,
                     &self.audio.analysis_settings(),
-                    min_height,
+                    snail::SPIRAL_MIN_HEIGHT,
                     f32::INFINITY,
                 );
             });
-    }
-
-    /// The phone's snail: the spiral first, the knobs after it. The knobs used to
-    /// sit *above* the spiral, and nine rows of them (~400 dp) left a 360×740
-    /// portrait screen — and every landscape one — with the spiral, the thing the
-    /// card is for, entirely below the bottom edge.
-    ///
-    /// - Portrait: the spiral fills the leftover height but never exceeds the
-    ///   width (the chart is round; taller is dead space), with a floor so a short
-    ///   screen still gets a usable chart; the knobs follow below and the outer
-    ///   scroll area reaches them.
-    /// - Landscape (the screen is wider than tall): spiral as a square on the
-    ///   left, at most 60% of the width, knobs in a column beside it — stacking
-    ///   them would again push one of the two off a 360 dp-tall screen.
-    #[cfg(any(target_os = "android", test))]
-    fn draw_mobile_snail_body(&mut self, ui: &mut Ui, chart: SpiralChart<'_>) {
-        // The floor the phone card always had: keeps the spiral usable on a short
-        // screen; anything taller just fills the leftover height.
-        const SPIRAL_FLOOR: f32 = 240.0;
-        let settings = self.audio.analysis_settings();
-        let available = ui.available_size_before_wrap();
-        // Orientation of the *screen*, not of the leftover space: with the panel
-        // picker unfolded a portrait phone has little height left, and the knob
-        // column beside the spiral would be ~150 dp wide — too narrow for its rows.
-        let screen = ui.ctx().content_rect();
-        if screen.width() > screen.height() {
-            let side = available.y.max(SPIRAL_FLOOR).min(available.x * 0.6);
-            ui.horizontal_top(|ui| {
-                ui.allocate_ui(vec2(side, side), |ui| {
-                    snail::draw_spiral_chart_sized(ui, chart, &settings, side, side);
-                });
-                ui.vertical(|ui| self.draw_mobile_snail_settings(ui));
-            });
-        } else {
-            snail::draw_spiral_chart_sized(ui, chart, &settings, SPIRAL_FLOOR.min(available.x), available.x);
-            ui.add_space(8.0);
-            self.draw_mobile_snail_settings(ui);
-        }
     }
 
     /// Compact, touch-friendly knobs that shape the snail. One knob per row,
@@ -535,6 +513,28 @@ impl App {
             color::TEXT_HINT,
         );
     }
+}
+
+/// The phone's spiral: round and as big as the screen part allows — a square of the
+/// screen's width or of what is left of its height, whichever is less, centred. Under
+/// `SPIRAL_FLOOR` (the picker unfolded over a short screen) the chart keeps the floor
+/// and the screen scrolls, rather than shrinking into an unreadable dot.
+///
+/// The knobs are not in this card any more: they are the split's config
+/// (`mobile_split`). Stacked above the spiral in one card they used to push it off a
+/// 360×740 screen entirely. Live analysis draws its spiral on the phone this way too.
+pub(super) fn draw_mobile_spiral(ui: &mut Ui, chart: SpiralChart<'_>, settings: &AnalysisSettings) {
+    // A 360 dp-tall landscape screen leaves the snail's spiral ≈232 dp under the card's
+    // header and Live analysis's ≈167 under its header and level meter; the old 240
+    // pushed both off the bottom there.
+    const SPIRAL_FLOOR: f32 = 150.0;
+    let available = ui.available_size_before_wrap();
+    let side = available.y.max(SPIRAL_FLOOR).min(available.x);
+    ui.vertical_centered(|ui| {
+        ui.allocate_ui(vec2(side, side), |ui| {
+            snail::draw_spiral_chart_sized(ui, chart, settings, side, side);
+        });
+    });
 }
 
 /// One labelled knob row for the mobile settings strip: a caption, a slider over
