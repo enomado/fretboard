@@ -220,6 +220,19 @@ impl Default for AudioEngine {
 
 impl AudioEngine {
     pub fn new() -> Self {
+        Self::build(true)
+    }
+
+    /// UI-стенд для тестов: то же общее состояние, но **без audio-треда** — ни одно
+    /// устройство не открывается (kittest на машине разработчика не должен хватать
+    /// его микрофон). Команды UI уходят в никуда — ровно состояние движка после
+    /// `Drop`; панели видят «ещё нет данных», как до первого кадра с входа.
+    #[cfg(test)]
+    pub(crate) fn without_device() -> Self {
+        Self::build(false)
+    }
+
+    fn build(spawn_audio_thread: bool) -> Self {
         let shared = Arc::new(Mutex::new(SharedState::new()));
         let settings = Arc::new(Mutex::new(AnalysisSettings::default()));
         let input_gain = Arc::new(AtomicU32::new(DEFAULT_INPUT_GAIN.to_bits()));
@@ -236,11 +249,10 @@ impl AudioEngine {
         let recorder = RecorderHandle::new();
         let replay = ReplayHandle::new();
 
-        let (command_tx, command_rx) = mpsc::channel::<Command>();
-
         // Запускаем audio-тред: он единственный владеет cpal::Stream.
         // UI шлёт команды через канал и мгновенно возвращается.
-        let audio_thread = thread::spawn({
+        let (command_tx, audio_thread) = if spawn_audio_thread {
+            let (command_tx, command_rx) = mpsc::channel::<Command>();
             let ctx = AudioContext {
                 shared:              shared.clone(),
                 settings:            settings.clone(),
@@ -257,10 +269,11 @@ impl AudioEngine {
                 recorder:            recorder.clone(),
                 replay:              replay.clone(),
             };
-            move || {
-                audio_thread_main(command_rx, ctx);
-            }
-        });
+            let audio_thread = thread::spawn(move || audio_thread_main(command_rx, ctx));
+            (Some(command_tx), Some(audio_thread))
+        } else {
+            (None, None)
+        };
 
         Self {
             shared,
@@ -277,8 +290,8 @@ impl AudioEngine {
             drone_playing,
             recorder,
             replay,
-            command_tx: Some(command_tx),
-            audio_thread: Some(audio_thread),
+            command_tx,
+            audio_thread,
         }
     }
 

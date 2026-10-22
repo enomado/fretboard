@@ -1026,7 +1026,9 @@ impl TakeRoll {
                     )
                 }
             };
-            ui.label(RichText::new(text).color(tint).size(12.0));
+            // Wraps within the row's leftover width: unwrapped, this one-line hint
+            // stretched the row to ~530 dp and pushed the card past a phone's edge.
+            ui.add(egui::Label::new(RichText::new(text).color(tint).size(12.0)).wrap());
         });
 
         let Some(loaded) = self.loaded.as_mut() else {
@@ -1089,18 +1091,51 @@ impl App {
         // thing it bounds), so the two cannot be swapped at a call site.
         let bank = settings.resonator.bank_range();
 
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Take Roll").color(color::TEXT_CAPTION).strong());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                // The line is a layer you switch on, not part of the picture: it is the
-                // detector's answer, and it is the thing a marker would agree with.
-                ui.selectable_value(&mut self.take_roll.show_line, true, "line");
-                ui.selectable_value(&mut self.take_roll.show_line, false, "no line");
-                ui.separator();
-                ui.selectable_value(&mut self.take_roll.layer, RollLayer::Salience, "SWIPE′");
-                ui.selectable_value(&mut self.take_roll.layer, RollLayer::Spectrum, "spectrum");
+        // The layer switches, in reading order. The line is a layer you switch on,
+        // not part of the picture: it is the detector's answer, and it is the thing a
+        // marker would agree with.
+        enum Switch {
+            Layer(RollLayer, &'static str),
+            Line(bool, &'static str),
+            Gap,
+        }
+        const SWITCHES: [Switch; 5] = [
+            Switch::Layer(RollLayer::Spectrum, "spectrum"),
+            Switch::Layer(RollLayer::Salience, "SWIPE′"),
+            Switch::Gap,
+            Switch::Line(false, "no line"),
+            Switch::Line(true, "line"),
+        ];
+        let switch = |ui: &mut Ui, roll: &mut TakeRoll, switch: &Switch| {
+            match *switch {
+                Switch::Layer(layer, label) => ui.selectable_value(&mut roll.layer, layer, label),
+                Switch::Line(show, label) => ui.selectable_value(&mut roll.show_line, show, label),
+                Switch::Gap => ui.separator(),
+            };
+        };
+        // Caption + right-aligned switches are ~400 dp. Narrower (a phone), the
+        // right-to-left switches ran over the caption and past the card's left edge,
+        // so there the caption takes its own row and the switches wrap below it.
+        const HEADER_W: f32 = 430.0;
+        if ui.available_width() >= HEADER_W {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Take Roll").color(color::TEXT_CAPTION).strong());
+                // A right-to-left layout places its first item rightmost: feed it the
+                // switches reversed, so they still read left to right.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    for s in SWITCHES.iter().rev() {
+                        switch(ui, &mut self.take_roll, s);
+                    }
+                });
             });
-        });
+        } else {
+            ui.label(RichText::new("Take Roll").color(color::TEXT_CAPTION).strong());
+            ui.horizontal_wrapped(|ui| {
+                for s in &SWITCHES {
+                    switch(ui, &mut self.take_roll, s);
+                }
+            });
+        }
         ui.add_space(6.0);
         self.take_roll.draw_declaration(ui);
         ui.add_space(6.0);

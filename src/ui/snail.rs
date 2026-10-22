@@ -72,7 +72,10 @@ pub fn draw_spiral_chart_sized(
     // clamp() requires min <= max; guard the (degenerate) very-narrow case.
     let height = available_size.y.clamp(min_height, max_height.max(min_height));
     let desired_size = vec2(available_size.x, height);
-    let (rect, _) = ui.allocate_exact_size(desired_size, Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(desired_size, Sense::hover());
+    // Named for accessibility (TalkBack reads the chart by its title instead of an
+    // anonymous node) — and it is how a test finds where the chart landed.
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, chart.title));
     let painter = ui.painter_at(rect);
 
     painter.rect_filled(rect, 18.0, color::PLOT_BG);

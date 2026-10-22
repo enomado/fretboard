@@ -71,7 +71,9 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
-                ui.set_min_width(frame_width - 32.0);
+                // Inner margin + the 1 dp stroke, both sides: egui sizes a frame with
+                // its stroke, so `- 32` made the card 2 dp wider than its pane.
+                ui.set_min_width(frame_width - 34.0);
 
                 ui.horizontal_wrapped(|ui| {
                     ui.add(RowCaption::new("Source"));
@@ -112,8 +114,10 @@ impl App {
                         .map(|option| option.label.clone())
                         .unwrap_or_else(|| "Choose input device".to_owned());
 
+                    // Never wider than the row itself: 340 dp is more than a 360-dp
+                    // phone's card has, and the combo ran past the screen edge.
                     PillCombo::new("audio_input_device", selected_input_label)
-                        .min_width(340.0)
+                        .min_width(340.0_f32.min(ui.max_rect().width()))
                         .show(ui, |ui| {
                             for option in &self.audio_inputs {
                                 if ui
@@ -158,7 +162,7 @@ impl App {
 
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
-                    ui.label(
+                    let caption = ui.label(
                         RichText::new("Mic gain")
                             .color(color::TEXT_CAPTION)
                             .strong(),
@@ -169,7 +173,9 @@ impl App {
                         .clamping(egui::SliderClamping::Always)
                         .trailing_fill(true)
                         .show_value(false);
-                    if ui.add_sized([220.0, 18.0], slider).changed() {
+                    // The caption is a separate label, so name the slider after it:
+                    // a bare `show_value(false)` slider has no accessible name at all.
+                    if ui.add_sized([220.0, 18.0], slider).labelled_by(caption.id).changed() {
                         self.audio.set_input_gain(input_gain);
                     }
 
@@ -183,7 +189,8 @@ impl App {
                 ui.add_space(10.0);
                 self.draw_input_level(ui, input_level, selected_input_kind);
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
+                // Wraps on a phone (~400 dp in one row); every item is a single widget.
+                ui.horizontal_wrapped(|ui| {
                     let monitor_button = SegmentedButton::new(
                         if monitor_enabled { "Monitor on" } else { "Monitor off" },
                         monitor_enabled,
@@ -195,13 +202,13 @@ impl App {
                         self.audio.set_monitor_enabled(monitor_enabled);
                     }
 
-                    ui.add(RowCaption::new("Monitor gain"));
+                    let caption = ui.add(RowCaption::new("Monitor gain"));
 
                     let slider = egui::Slider::new(&mut monitor_gain, 0.0..=1.0)
                         .clamping(egui::SliderClamping::Always)
                         .trailing_fill(true)
                         .show_value(false);
-                    if ui.add_sized([140.0, 18.0], slider).changed() {
+                    if ui.add_sized([140.0, 18.0], slider).labelled_by(caption.id).changed() {
                         self.audio.set_monitor_gain(monitor_gain);
                     }
 
@@ -256,7 +263,7 @@ impl App {
                     // Эталон A4 (камертон): задаёт стандарт строя для всего
                     // движка (маппинг частота↔нота + банк резонаторов). Это
                     // свойство анализа, а не фретборда — потому живёт в Controls.
-                    ui.label(
+                    let caption = ui.label(
                         RichText::new("A4 pitch")
                             .color(color::TEXT_CAPTION)
                             .strong(),
@@ -268,6 +275,7 @@ impl App {
                             egui::Slider::new(&mut settings.concert_pitch_hz.0, 415.0..=466.0)
                                 .show_value(false),
                         )
+                        .labelled_by(caption.id)
                         .changed();
                     ui.label(
                         RichText::new(format!("{:.1} Hz", settings.concert_pitch_hz.0))
@@ -367,7 +375,9 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
-                ui.set_min_width(frame_width - 32.0);
+                // Inner margin + the 1 dp stroke, both sides: egui sizes a frame with
+                // its stroke, so `- 32` made the card 2 dp wider than its pane.
+                ui.set_min_width(frame_width - 34.0);
 
                 ui.horizontal_wrapped(|ui| {
                     ui.add(RowCaption::new("Tuning"));
@@ -513,12 +523,13 @@ impl App {
 
             ui.separator();
 
-            ui.label(RichText::new("Smooth").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Smooth").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [120.0, 18.0],
                     egui::Slider::new(&mut settings.spectrum_smoothing, 0..=4).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -532,7 +543,7 @@ impl App {
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Min Hz").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Min Hz").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [180.0, 18.0],
@@ -540,6 +551,7 @@ impl App {
                         .logarithmic(true)
                         .show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -552,7 +564,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Max Hz").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Max Hz").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [180.0, 18.0],
@@ -560,6 +572,7 @@ impl App {
                         .logarithmic(true)
                         .show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -588,12 +601,13 @@ impl App {
 
             ui.separator();
 
-            ui.label(RichText::new("Note spread").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Note spread").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [150.0, 18.0],
                     egui::Slider::new(&mut settings.note_spread, 0.15..=0.8).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -607,12 +621,13 @@ impl App {
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("FFT gamma").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("FFT gamma").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [160.0, 18.0],
                     egui::Slider::new(&mut settings.spectrum_gamma, 0.35..=1.2).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -625,12 +640,13 @@ impl App {
 
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Note gamma").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Note gamma").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [160.0, 18.0],
                     egui::Slider::new(&mut settings.note_gamma, 0.35..=1.2).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -650,7 +666,8 @@ impl App {
         changed: &mut bool,
     ) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Range").color(color::TEXT_CAPTION).strong());
+            // Both range sliders are named after this caption ("to" names nothing).
+            let caption = ui.label(RichText::new("Range").color(color::TEXT_CAPTION).strong());
 
             // Sliders bind a raw `u8` scratch; the validated `PNote` is rebuilt
             // on change (both ranges sit inside 0..=127, so `new` can't fail).
@@ -660,6 +677,7 @@ impl App {
                     [140.0, 18.0],
                     egui::Slider::new(&mut min_midi, 12..=84).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 settings.resonator.min_midi = PNote::new(min_midi).unwrap();
@@ -679,6 +697,7 @@ impl App {
                     [140.0, 18.0],
                     egui::Slider::new(&mut max_midi, 24..=108).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 settings.resonator.max_midi = PNote::new(max_midi).unwrap();
@@ -692,7 +711,7 @@ impl App {
 
             ui.separator();
 
-            ui.label(
+            let caption = ui.label(
                 RichText::new("Bins / semitone")
                     .color(color::TEXT_CAPTION)
                     .strong(),
@@ -702,6 +721,7 @@ impl App {
                     [120.0, 18.0],
                     egui::Slider::new(&mut settings.resonator.bins, 1..=12).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -715,7 +735,7 @@ impl App {
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Alpha").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Alpha").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -726,6 +746,7 @@ impl App {
                         .logarithmic(true)
                         .show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -738,7 +759,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Beta").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Beta").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -746,6 +767,7 @@ impl App {
                         .logarithmic(true)
                         .show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -758,12 +780,13 @@ impl App {
 
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Gamma").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Gamma").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [150.0, 18.0],
                     egui::Slider::new(&mut settings.resonator.gamma, 0.15..=2.4).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -789,12 +812,13 @@ impl App {
 
             ui.add_space(10.0);
 
-            ui.label(RichText::new("History").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("History").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [120.0, 18.0],
                     egui::Slider::new(&mut settings.resonator.history, 8..=240).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;
@@ -807,12 +831,13 @@ impl App {
 
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Update").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Update").color(color::TEXT_CAPTION).strong());
             if ui
                 .add_sized(
                     [120.0, 18.0],
                     egui::Slider::new(&mut settings.resonator.update_ms, 8..=80).show_value(false),
                 )
+                .labelled_by(caption.id)
                 .changed()
             {
                 *changed = true;

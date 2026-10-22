@@ -29,7 +29,10 @@ use crate::ui::segmented::{
     RowCaption,
     SegmentedButton,
 };
-use crate::ui::tokens::color;
+use crate::ui::tokens::{
+    color,
+    space,
+};
 
 // Диапазон тумблер-клавиатуры: C2..=B5 (4 октавы) — покрывает строй гитары/виолы
 // и удобные дрон-регистры, не разрастаясь по экрану.
@@ -76,7 +79,9 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
-                ui.set_min_width(frame_width - 32.0);
+                // Inner margin + the 1 dp stroke, both sides: egui sizes a frame with
+                // its stroke, so `- 32` made the card 2 dp wider than its pane.
+                ui.set_min_width(frame_width - 34.0);
 
                 // ── Транспорт: большая Play/Stop + сводка набора ──
                 ui.horizontal(|ui| {
@@ -140,7 +145,10 @@ impl App {
                 ui.add_space(12.0);
 
                 // ── Режим ──
-                ui.horizontal(|ui| {
+                // Ряды пилюль переносятся, как ряд Voice: каждая пилюля — одиночный
+                // виджет, не вложенный horizontal (GOTCHA_egui_layout_width_doubling),
+                // а на 360-dp телефоне три пилюли по 86 dp с подписью шире карточки.
+                ui.horizontal_wrapped(|ui| {
                     ui.add(RowCaption::new("Mode"));
                     ui.add_space(6.0);
                     for (mode, name) in [
@@ -171,7 +179,7 @@ impl App {
                         changed |= slider_row(ui, "Gate", &mut drone.arp_gate, 0.05..=1.0, |v| {
                             format!("{:>3.0}%", v * 100.0)
                         });
-                        ui.horizontal(|ui| {
+                        ui.horizontal_wrapped(|ui| {
                             ui.add(RowCaption::new("Pattern"));
                             ui.add_space(6.0);
                             for (pattern, name) in [
@@ -191,8 +199,10 @@ impl App {
                 ui.add_space(14.0);
 
                 // ── Набор нот: тумблер-клавиатура + быстрые действия ──
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Notes").color(LABEL_COLOR).strong());
+                // Переносится (до пяти быстрых действий), поэтому подпись —
+                // RowCaption: обычный label в wrapped-ряду встал бы выше пилюль.
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(RowCaption::new("Notes"));
                     ui.add_space(6.0);
                     if quick_button(ui, "Clear").clicked() && !drone.notes.is_empty() {
                         drone.notes.clear();
@@ -235,15 +245,29 @@ impl App {
 
 /// Тумблер-клавиатура C2..=B5: ряд на октаву, чёрные клавиши приглушены,
 /// выбранные подсвечены акцентом. Возвращает true, если набор изменился.
+///
+/// Октава в ряд — это 12 клавиш по 34 dp плюс 11 зазоров ≈ 520 dp. Где столько
+/// нет (телефон, узкий пейн), ряд — пол-октавы (C..F и F#..B), а клавиши делят
+/// ширину поровну и растут до touch-высоты: на 360-dp экране правые пять клавиш
+/// каждой октавы (G..B) уезжали за край, а 34×24 dp — мимо пальца.
 fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) -> bool {
     const BLACK_KEYS: [bool; 12] = [
         false, true, false, true, false, false, true, false, true, false, true, false,
     ];
+    const KEY_MIN: egui::Vec2 = vec2(34.0, 24.0);
+    let gap = ui.spacing().item_spacing.x;
+    let octave_row_w = 12.0 * KEY_MIN.x + 11.0 * gap;
+    let (keys_per_row, key_size) = if ui.available_width() >= octave_row_w {
+        (12, KEY_MIN)
+    } else {
+        let width = (ui.available_width() - 5.0 * gap) / 6.0;
+        (6, vec2(width.max(KEY_MIN.x), space::TOUCH_H))
+    };
     let mut changed = false;
     let mut midi = KEYBOARD_MIN_MIDI;
     while midi <= KEYBOARD_MAX_MIDI {
         ui.horizontal(|ui| {
-            for _ in 0..12 {
+            for _ in 0..keys_per_row {
                 if midi > KEYBOARD_MAX_MIDI {
                     break;
                 }
@@ -265,7 +289,7 @@ fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) ->
                 let text_color = if selected { VALUE_COLOR } else { KEY_LABEL };
                 let button =
                     egui::Button::new(RichText::new(style.midi_name(note)).size(11.0).color(text_color))
-                        .min_size(vec2(34.0, 24.0))
+                        .min_size(key_size)
                         .fill(fill)
                         .stroke(Stroke::new(1.0_f32, stroke))
                         .corner_radius(CornerRadius::same(6));
@@ -302,14 +326,23 @@ fn slider_row(
     range: std::ops::RangeInclusive<f32>,
     fmt: impl Fn(f32) -> String,
 ) -> bool {
+    // Room left for the readout ("100%", " 300 bpm" in monospace) after the slider.
+    const READOUT_W: f32 = 72.0;
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(label).color(LABEL_COLOR).strong());
+        let caption = ui.label(RichText::new(label).color(LABEL_COLOR).strong());
         let slider = egui::Slider::new(value, range)
             .clamping(egui::SliderClamping::Always)
             .trailing_fill(true)
             .show_value(false);
-        if ui.add_sized([200.0, 18.0], slider).changed() {
+        // 200 dp where it fits; on a phone the slider gives way so the readout stays
+        // on screen ("Brightness" + 200 + readout is ~350 dp, the card ~314).
+        let width = (ui.available_width() - READOUT_W).clamp(80.0, 200.0);
+        if ui
+            .add_sized([width, 18.0], slider)
+            .labelled_by(caption.id)
+            .changed()
+        {
             changed = true;
         }
         ui.label(RichText::new(fmt(*value)).color(VALUE_COLOR).monospace());

@@ -152,21 +152,64 @@ impl App {
         }
     }
 
-    /// Мобильная лента вкладок — тот самый «конфиг какую открывать», но все панели
-    /// видны сразу (а не спрятаны в дропдаун): тап переключает активную, выбор
-    /// пишется в `mobile_panel` и переживает перезапуск (персист в RON).
+    /// Мобильный выбор панели — тот самый «конфиг какую открывать»: выбор пишется
+    /// в `mobile_panel` и переживает перезапуск (персист в RON).
     ///
-    /// Перенос на новые строки — `horizontal_wrapped`. Это безопасно, потому что
-    /// каждая вкладка — ОДИНОЧНЫЙ `selectable_label` (не вложенный фиксированный
-    /// `ui.horizontal`), а удвоение ширины ловится именно на «wrapped + вложенный
-    /// не-переносящий horizontal» (см. GOTCHA_egui_layout_width_doubling).
-    #[cfg(target_os = "android")]
-    fn draw_mobile_panel_tabs(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
-            for tab in WorkspaceTab::ALL {
-                ui.selectable_value(&mut self.mobile_panel, tab, tab.label());
-            }
-        });
+    /// В покое это ОДНА строка «текущая панель ▼». Раньше все 16 панелей стояли
+    /// лентой `horizontal_wrapped` постоянно и занимали 6–8 строк: ≈460 dp из 740 в
+    /// портрете 360 dp и ≈230 из 360 в ландшафте — снейл, панель по умолчанию,
+    /// уезжал под нижний край. Тап по строке раскрывает ВСЕ панели сразу (не
+    /// дропдаун со скроллом: каждая видна и доступна одним тапом), выбор
+    /// сворачивает список обратно. Раскрыт ли список — состояние жеста, а не
+    /// настройка, поэтому живёт во временной памяти egui и не персистится.
+    ///
+    /// Плитки — сетка строками по `columns` штук (каждая строка — обычный
+    /// `horizontal` внутри вертикального layout), а не `horizontal_wrapped`
+    /// с вложенными рядами: см. GOTCHA_egui_layout_width_doubling.
+    #[cfg(any(target_os = "android", test))]
+    fn draw_mobile_panel_picker(&mut self, ui: &mut Ui) {
+        use crate::ui::segmented::SegmentedButton;
+        use crate::ui::tokens::space;
+
+        // Один выбор панели на приложение — глобальный id, без привязки к месту в дереве.
+        let open_id = egui::Id::unique("mobile_panel_picker_open");
+        let open = ui.data_mut(|data| *data.get_temp_mut_or_default::<bool>(open_id));
+        let arrow = if open { "▲" } else { "▼" };
+        let width = ui.available_width();
+        let header = format!("{}  {arrow}", self.mobile_panel.label());
+        let mut toggle = ui
+            .add(
+                SegmentedButton::new(&header, open)
+                    .min_width(width)
+                    .height(space::TOUCH_H),
+            )
+            .clicked();
+
+        if open {
+            // Плитки в колонку шириной не меньше MIN_TILE_W (на 360-dp экране — две),
+            // а ряд переносится: самая длинная подпись («Config Resonator FFT»,
+            // ≈172 dp пилюлей) шире половины узкого экрана и уходит на свою строку,
+            // а не за правый край. Каждая плитка — одиночный виджет, так что
+            // wrapped-ряд не раздувает ширину (GOTCHA_egui_layout_width_doubling).
+            const MIN_TILE_W: f32 = 150.0;
+            let gap = ui.spacing().item_spacing.x;
+            let columns = (((width + gap) / (MIN_TILE_W + gap)).floor()).clamp(2.0, 4.0);
+            let tile_w = (width - gap * (columns - 1.0)) / columns;
+            ui.horizontal_wrapped(|ui| {
+                for tab in WorkspaceTab::ALL {
+                    let tile = SegmentedButton::new(tab.label(), tab == self.mobile_panel)
+                        .min_width(tile_w)
+                        .height(space::TOUCH_H);
+                    if ui.add(tile).clicked() {
+                        self.mobile_panel = tab;
+                        toggle = true;
+                    }
+                }
+            });
+        }
+        if toggle {
+            ui.data_mut(|data| data.insert_temp(open_id, !open));
+        }
         ui.add_space(6.0);
     }
 
@@ -195,30 +238,44 @@ impl App {
             self.audio.set_selected_input_id(None);
         }
 
+        self.render_mobile_shell(ui);
+    }
+
+    /// Мобильная оболочка целиком — всё, что Android рисует после разрешения на
+    /// микрофон. Отдельно от `render`, чтобы хостовые kittest-тесты гоняли ровно эту
+    /// вёрстку на ширине телефона (JNI-часть `render` на хосте не собирается).
+    #[cfg(any(target_os = "android", test))]
+    pub(super) fn render_mobile_shell(&mut self, ui: &mut Ui) {
         egui::CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin::same(8)))
             .show(ui, |ui| {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));
 
-                // «Конфиг какую панель открывать»: лента вкладок сверху (все панели
-                // видны сразу), активная панель под ней. Одна панель за раз — на
-                // узком экране это максимум места под контент.
-                self.draw_mobile_panel_tabs(ui);
+                // «Конфиг какую панель открывать»: одна строка выбора сверху,
+                // активная панель под ней. Одна панель за раз — на узком экране
+                // это максимум места под контент.
+                self.draw_mobile_panel_picker(ui);
 
-                match self.mobile_panel {
-                    // У снейла свой мобильный вариант: тянется на всю оставшуюся
-                    // высоту + встроенная полоса настроек, и НЕ в ScrollArea —
-                    // иначе (unbounded height) он бы раздувался без предела.
-                    WorkspaceTab::ResonatorSnail => self.draw_mobile_snail_card(ui),
-                    // Остальные панели — конечной высоты; вертикальный скролл на
-                    // случай, если контент не влезает в экран телефона.
-                    tab => {
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| self.draw_workspace_tab(ui, tab));
-                    }
-                }
+                // Скролл в обе стороны, как у пейна на десктопе: панели рассчитаны
+                // на десктопную ширину, и их ряды без переноса (поле имени дубля +
+                // Record, клавиатура дрона, тональность нотного стана) шире 360 dp.
+                // С одним вертикальным скроллом правый край молча обрезался —
+                // кнопка за ним была недостижима. Внутренний max_rect ScrollArea
+                // равен видимой области, поэтому «тянуться на оставшуюся высоту»
+                // (снейл) по-прежнему значит «до нижнего края экрана».
+                let tab = self.mobile_panel;
+                egui::ScrollArea::both()
+                    .id_salt(("mobile_panel_scroll", tab.label()))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        match tab {
+                            // У снейла свой мобильный вариант: спираль по размеру экрана
+                            // + встроенная полоса настроек.
+                            WorkspaceTab::ResonatorSnail => self.draw_mobile_snail_card(ui),
+                            tab => self.draw_workspace_tab(ui, tab),
+                        }
+                    });
             });
     }
 
@@ -317,4 +374,168 @@ pub(super) fn default_workspace_tree() -> egui_tiles::Tree<WorkspaceTab> {
         egui::Id::unique("fretboard_workspace_tree"),
         WorkspaceTab::ALL.to_vec(),
     )
+}
+
+/// The phone shell, rendered by `egui_kittest` at phone sizes (logical px = dp).
+///
+/// Runs on the host: the JNI half of the Android `render` does not build here, but
+/// [`App::render_mobile_shell`] — everything the phone draws — does. The engine has
+/// no audio device ([`App::for_ui_test`]), so panels show their empty states, which
+/// is also what a phone shows before the first frame of audio.
+///
+/// The harness also fails on any glyph no installed font can draw (kittest's
+/// missing-glyph policy) and on an interactive widget with no accessible name, so
+/// walking every panel doubles as a tofu and TalkBack check.
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{
+        Rect,
+        Role,
+        Vec2,
+        vec2,
+    };
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::{
+        NodeT,
+        Queryable,
+    };
+
+    use super::super::{
+        App,
+        WorkspaceTab,
+    };
+    use crate::ui::tokens::space;
+
+    /// The narrowest common Android portrait, a large portrait, and a landscape phone.
+    const PHONES: [Vec2; 3] = [vec2(360.0, 740.0), vec2(412.0, 915.0), vec2(740.0, 360.0)];
+
+    fn phone(size: Vec2, tab: WorkspaceTab) -> Harness<'static, App> {
+        let mut app = App::for_ui_test();
+        app.mobile_panel = tab;
+        let mut harness = Harness::builder()
+            .with_size(size)
+            .with_context_setup(|ctx| {
+                crate::ui::theme::install_fonts(ctx);
+                crate::ui::theme::apply_theme(ctx);
+            })
+            .build_ui_state(|ui, app: &mut App| app.render_mobile_shell(ui), app);
+        // Live panels keep asking for repaints, so `run()` would never settle; a few
+        // frames let every lazily-sized layout reach its steady state.
+        harness.run_steps(4);
+        harness
+    }
+
+    /// Every laid-out node with its rect (nodes without bounds have none to check).
+    fn rects(harness: &Harness<'_, App>) -> Vec<(Role, String, Rect)> {
+        harness
+            .root()
+            .children_recursive()
+            .filter(|node| node.accesskit_node().bounding_box().is_some())
+            .map(|node| {
+                let ak = node.accesskit_node();
+                (ak.role(), ak.label().unwrap_or_default(), node.rect())
+            })
+            .collect()
+    }
+
+    /// REGRESSION: nothing is laid out past the right edge of a phone screen.
+    ///
+    /// The phone's panels are the desktop's, built for a wide pane; rows that never
+    /// wrap (take name + Record, the drone keyboard's twelve keys, clef pills + key
+    /// combo, the monitor row, the 340 dp device combo) ran past 360 dp, and the
+    /// part past the edge was simply cut — Record and five keys per octave could
+    /// not be reached. Vertical overflow is fine (the pane scrolls); a node right of
+    /// the screen is a control the user has to find by panning sideways, if at all.
+    #[test]
+    fn every_panel_stays_inside_a_phone_screen() {
+        for size in PHONES {
+            for tab in WorkspaceTab::ALL {
+                let harness = phone(size, tab);
+                // Left too: a right-to-left row that does not fit spills leftwards,
+                // over its caption and out of the card (the Take Roll switches did).
+                let past: Vec<_> = rects(&harness)
+                    .into_iter()
+                    .filter(|(_, _, rect)| rect.right() > size.x + 0.5 || rect.left() < -0.5)
+                    .collect();
+                assert!(
+                    past.is_empty(),
+                    "{} at {size:?}: laid out past a screen edge: {past:?}",
+                    tab.label()
+                );
+            }
+        }
+    }
+
+    /// REGRESSION: the panel picker is one touch-sized row until tapped, then shows
+    /// every panel at once, each a touch-sized tile on screen, and picking one folds
+    /// it back. It used to be all sixteen panels as a permanent wrapped strip of
+    /// 31 dp text buttons — 6–8 rows, about half a portrait screen — above the panel.
+    #[test]
+    fn picker_is_one_row_until_tapped_and_then_one_tap_from_every_panel() {
+        let size = PHONES[0];
+        let mut harness = phone(size, WorkspaceTab::ResonatorSnail);
+
+        let header = harness.get_by_role_and_label(Role::Button, "Resonator Snail  ▼");
+        assert!(header.rect().height() >= space::TOUCH_H, "{:?}", header.rect());
+        assert!(
+            harness.query_by_label("Drone").is_none(),
+            "folded picker shows only the current panel"
+        );
+
+        header.click();
+        harness.run_steps(2);
+        for tab in WorkspaceTab::ALL {
+            let tile = harness.get_by_role_and_label(Role::Button, tab.label());
+            let rect = tile.rect();
+            assert!(
+                rect.height() >= space::TOUCH_H && rect.right() <= size.x && rect.bottom() <= size.y,
+                "{}: tile {rect:?} is not a touch target on a {size:?} screen",
+                tab.label()
+            );
+        }
+
+        // The panel under the unfolded picker still fits the width (the snail's knob
+        // column used to go landscape here, judged by the height the picker left).
+        let past: Vec<_> = rects(&harness)
+            .into_iter()
+            .filter(|(_, _, rect)| rect.right() > size.x + 0.5)
+            .collect();
+        assert!(
+            past.is_empty(),
+            "past the right edge with the picker open: {past:?}"
+        );
+
+        harness.get_by_role_and_label(Role::Button, "Drone").click();
+        harness.run_steps(2);
+        assert!(harness.state().mobile_panel == WorkspaceTab::Drone);
+        assert!(
+            harness.query_by_label("Pitch Roll").is_none(),
+            "picking a panel folds the picker"
+        );
+        harness.get_by_role_and_label(Role::Button, "Drone  ▼");
+    }
+
+    /// REGRESSION: the snail — the phone's default panel — shows its spiral on the
+    /// first screen, portrait and landscape. Nine knob rows sat above it and the card
+    /// was not in a scroll area, so on 360×740 and on every landscape phone the
+    /// spiral was entirely below the bottom edge and could not be scrolled to.
+    #[test]
+    fn snail_spiral_is_on_the_first_screen() {
+        for size in PHONES {
+            let harness = phone(size, WorkspaceTab::ResonatorSnail);
+            let spiral = harness
+                .get_by_role_and_label(Role::Image, "Resonator spiral")
+                .rect();
+            let screen = Rect::from_min_size(eframe::egui::Pos2::ZERO, size);
+            let visible = spiral.intersect(screen);
+            assert!(
+                visible.width() >= 0.9 * spiral.width() && visible.height() >= 0.6 * spiral.height(),
+                "at {size:?} the spiral {spiral:?} is mostly off screen"
+            );
+            assert!(
+                spiral.height() >= 200.0,
+                "at {size:?} the spiral {spiral:?} is a sliver"
+            );
+        }
+    }
 }

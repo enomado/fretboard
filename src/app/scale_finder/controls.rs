@@ -38,7 +38,7 @@ impl App {
 
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Window").color(color::TEXT_CAPTION).strong());
+            let caption = ui.label(RichText::new("Window").color(color::TEXT_CAPTION).strong());
             // Окно интеграции В СЕКУНДАХ (решалка копит свой буфер по времени).
             // Логарифмический, чтобы и доли секунды, и 20 c были под рукой.
             ui.add_sized(
@@ -48,7 +48,8 @@ impl App {
                     .clamping(egui::SliderClamping::Always)
                     .trailing_fill(true)
                     .show_value(false),
-            );
+            )
+            .labelled_by(caption.id);
             ui.label(
                 RichText::new(format!("{:.1}s", config.window_seconds))
                     .color(color::TEXT_VALUE)
@@ -66,14 +67,15 @@ impl App {
 
 /// Один помеченный слайдер веса метода (0..1) с цветной меткой и числом.
 fn weight_slider(ui: &mut Ui, label: &str, color: Color32, value: &mut f32) {
-    ui.label(RichText::new(label).color(color).strong().size(12.0));
+    let caption = ui.label(RichText::new(label).color(color).strong().size(12.0));
     ui.add_sized(
         [110.0, 18.0],
         egui::Slider::new(value, 0.0..=1.0)
             .clamping(egui::SliderClamping::Always)
             .trailing_fill(true)
             .show_value(false),
-    );
+    )
+    .labelled_by(caption.id);
     ui.label(
         RichText::new(format!("{value:.2}"))
             .color(color::TEXT_VALUE)

@@ -44,7 +44,9 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(16))
             .show(ui, |ui| {
-                ui.set_min_width(frame_width - 32.0);
+                // Inner margin + the 1 dp stroke, both sides: egui sizes a frame with
+                // its stroke, so `- 32` made the card 2 dp wider than its pane.
+                ui.set_min_width(frame_width - 34.0);
                 self.draw_take_controls(ui);
                 ui.add_space(14.0);
                 ui.separator();
@@ -99,12 +101,18 @@ impl App {
         ui.horizontal(|ui| {
             ui.add(RowCaption::new("Take"));
 
+            // Поле уступает место кнопке: на 360-dp телефоне фиксированные 240 dp
+            // выталкивали Record за правый край экрана. 88 — `min_width` кнопки,
+            // три зазора — поле↔кнопка и внутренние поля TextEdit.
+            const BUTTON_W: f32 = 88.0;
+            let name_w =
+                (ui.available_width() - BUTTON_W - 3.0 * ui.spacing().item_spacing.x).clamp(96.0, 240.0);
             // Посреди дубля имя менять нечему: писатель уже держит файл открытым,
             // и переименование не переоткрывает его, а начинает НОВЫЙ дубль.
             ui.add_enabled(
                 !recording,
                 egui::TextEdit::singleline(&mut self.take_name)
-                    .desired_width(240.0)
+                    .desired_width(name_w)
                     .hint_text("g_flageolet_f5"),
             );
 
@@ -116,7 +124,7 @@ impl App {
             // Без имени писать некуда — но только для старта: начатый дубль
             // остановить можно всегда. При реплее старт запрещён (см. `replaying`).
             let armed = recording || (!replaying && !self.take_name.trim().is_empty());
-            let button = SegmentedButton::colored(label, fill, stroke).min_width(88.0);
+            let button = SegmentedButton::colored(label, fill, stroke).min_width(BUTTON_W);
             if ui.add_enabled(armed, button).clicked() {
                 if recording {
                     self.audio.stop_take();
@@ -180,8 +188,10 @@ impl App {
                     .find(|report| report.path == take.path)
                     .map(|report| report.is_evidence());
                 let (mark, tint) = match verdict {
-                    Some(true) => ("✓", color::STATUS_LISTENING),
-                    Some(false) => ("✗", color::STATUS_ERROR),
+                    // √/×, not ✓/✗: U+2713/U+2717 are in none of the app's fonts and
+                    // were drawn as tofu boxes; these two are in both Ubuntu and Hack.
+                    Some(true) => ("√", color::STATUS_LISTENING),
+                    Some(false) => ("×", color::STATUS_ERROR),
                     None => (" ", color::TEXT_MUTED),
                 };
                 ui.label(RichText::new(mark).color(tint).monospace());

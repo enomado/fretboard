@@ -64,7 +64,8 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                // Wraps on a phone: the three counters are ~470 dp in one row.
+                ui.horizontal_wrapped(|ui| {
                     ui.label(
                         RichText::new(format!("Scale tones: {}", scale.notes().len()))
                             .color(color::TEXT_HINT),

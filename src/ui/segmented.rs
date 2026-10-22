@@ -47,6 +47,7 @@ use eframe::egui::{
     Popup,
     PopupCloseBehavior,
     Response,
+    Role,
     ScrollArea,
     Sense,
     Shape,
@@ -55,6 +56,7 @@ use eframe::egui::{
     TextWrapMode,
     Ui,
     Widget,
+    WidgetInfo,
     pos2,
     vec2,
 };
@@ -104,6 +106,9 @@ pub struct SegmentedButton<'a> {
     /// Lower bound on width. The pill still grows to fit long labels; this only
     /// stops short labels from collapsing (keeps a row of pills tidy).
     min_width:  f32,
+    /// Outer height; [`PILL_HEIGHT`] unless a touch surface asks for more
+    /// (see [`Self::height`]).
+    height:     f32,
     font_size:  f32,
     /// Hand-tuned vertical bias in logical px (`+` = down). The caps-band centring
     /// is already optical; this exists only to nudge if a font asks for it.
@@ -125,6 +130,7 @@ impl<'a> SegmentedButton<'a> {
             stroke,
             text_color: color::TEXT_VALUE,
             min_width: 0.0,
+            height: PILL_HEIGHT,
             font_size: DEFAULT_FONT_SIZE,
             text_dy: 0.0,
         }
@@ -141,6 +147,7 @@ impl<'a> SegmentedButton<'a> {
             stroke: color::IDLE_STROKE,
             text_color: color::TEXT_VALUE,
             min_width: 0.0,
+            height: PILL_HEIGHT,
             font_size: DEFAULT_FONT_SIZE,
             text_dy: 0.0,
         }
@@ -155,9 +162,20 @@ impl<'a> SegmentedButton<'a> {
             stroke,
             text_color: color::TEXT_VALUE,
             min_width: 0.0,
+            height: PILL_HEIGHT,
             font_size: DEFAULT_FONT_SIZE,
             text_dy: 0.0,
         }
+    }
+
+    /// Taller pill for a finger: the phone's panel picker and transport buttons
+    /// use [`space::TOUCH_H`]. Text stays centred on the ink band, which is
+    /// measured against the rect's centre, so only the hit area and the outline
+    /// grow. Never below the pill band ([`space::ROW_H`]), or a row of pills would
+    /// lose its shared height.
+    pub fn height(mut self, h: f32) -> Self {
+        self.height = h.max(PILL_HEIGHT);
+        self
     }
 
     /// Keep short pills from collapsing below `w` logical px.
@@ -207,7 +225,10 @@ impl Widget for SegmentedButton<'_> {
 
         let band_mid = ink_band_mid(ui, &font_id);
         let width = (galley.size().x + 2.0 * H_PAD).max(self.min_width);
-        let (rect, response) = ui.allocate_exact_size(vec2(width, PILL_HEIGHT), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(vec2(width, self.height), Sense::click());
+        // Custom-painted, so egui does not know what the pill says; tell
+        // accessibility (TalkBack reads the label, tests find the pill by it).
+        response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, self.text));
 
         if ui.is_rect_visible(rect) {
             let hovered = enabled && response.hovered();
@@ -295,6 +316,10 @@ impl Widget for RowCaption<'_> {
 
         // Same height band as a pill — that is the whole point. Width hugs the text.
         let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x, PILL_HEIGHT), Sense::hover());
+        // A caption is a label to accessibility too: it gives the node a name, and
+        // gives a slider beside it something to be `labelled_by` — a `labelled_by`
+        // pointing at an id with no node panics inside accesskit.
+        response.widget_info(|| WidgetInfo::labeled(Role::Label, true, self.text));
 
         if ui.is_rect_visible(rect) {
             let pos = pos2(rect.left(), rect.center().y - band_mid);

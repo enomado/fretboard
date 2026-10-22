@@ -275,7 +275,13 @@ fn draw_card_header(ui: &mut Ui, line: &NoteLine, style: AccidentalStyle) {
 fn draw_pickers(ui: &mut Ui, trainer: &mut StaffTrainer) {
     // Clef picker — one staff at a time (a violin reads treble, a cello/bass the
     // lower clefs). The choice lives in `StaffTrainer`.
-    ui.horizontal(|ui| {
+    //
+    // Wrapping: clef pills + key combo are ~490 dp, so on a phone the key picker
+    // went past the screen edge. Every item is a single widget (pill, caption,
+    // combo) — none a nested `horizontal`, so wrapping cannot double the width
+    // (GOTCHA_egui_layout_width_doubling); the captions are `RowCaption` because a
+    // wrapped row top-aligns, which is the case they exist for.
+    ui.horizontal_wrapped(|ui| {
         // Both captions keep their smaller, dimmer secondary look; only the
         // vertical band comes from `RowCaption`, so they line up with the
         // pills instead of riding above them.
@@ -292,7 +298,17 @@ fn draw_pickers(ui: &mut Ui, trainer: &mut StaffTrainer) {
             }
         }
 
-        ui.add_space(18.0);
+        // "Key" and its combo wrap as one: if both do not fit after the clef pills,
+        // start the next row here, or the caption would end this row and its combo
+        // open the next one. 160 = the theme's `combo_width`, the combo's floor.
+        const KEY_GROUP_W: f32 = 18.0 + 30.0 + 10.0 + 160.0;
+        // `available_width()` of a wrapping row is the whole row; what is left on
+        // *this* line is `available_size_before_wrap`.
+        if ui.available_size_before_wrap().x < KEY_GROUP_W {
+            ui.end_row();
+        } else {
+            ui.add_space(18.0);
+        }
 
         // Key-signature picker — the circle of fifths. Selecting a key both draws
         // its sharps/flats at the clef and re-spells the notes accordingly (see

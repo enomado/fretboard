@@ -234,6 +234,10 @@ pub mod space {
     /// The height band every row-level control shares — pills, captions, combos.
     /// This is what makes a row's baselines line up; see `super::super::segmented`.
     pub const ROW_H: f32 = 28.0;
+    /// The smallest height a control meant for a finger may have on the phone —
+    /// the ~44 dp touch target of the platform guidelines (Apple 44 pt, Material
+    /// 48 dp). Desktop rows stay on [`ROW_H`]; only the mobile shell uses this.
+    pub const TOUCH_H: f32 = 44.0;
     /// Default gap between items in a row (egui `item_spacing`).
     pub const GAP: f32 = 10.0;
     /// Inner margin of a card frame.

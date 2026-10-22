@@ -323,7 +323,31 @@ impl App {
 
         let persisted = Self::load_persistent(cc);
 
-        let mut app = Self {
+        let mut app = Self::with_engine(audio, audio_inputs);
+        app.refresh_corpus();
+
+        // Restore last session's preferences over the defaults built above.
+        // Defaults stay intact for any field a stale RON file is missing.
+        if let Some(state) = persisted {
+            app.apply_persistent(state);
+        }
+
+        app
+    }
+
+    /// UI-стенд для kittest: дефолтные настройки, движок без устройства
+    /// ([`AudioEngine::without_device`]), пустые списки входов и дублей. Тема и
+    /// шрифты — забота harness'а (`with_context_setup`), как и у `App::new` они
+    /// ставятся на контекст, а не на `App`.
+    #[cfg(test)]
+    fn for_ui_test() -> Self {
+        Self::with_engine(AudioEngine::without_device(), Vec::new())
+    }
+
+    /// Дефолты всех полей вокруг готового движка; общий для `new` и UI-стенда,
+    /// чтобы тесты видели ровно тот `App`, что стартует у пользователя.
+    fn with_engine(audio: AudioEngine, audio_inputs: Vec<AudioInputOption>) -> Self {
+        Self {
             audio,
             audio_inputs,
             last_audio_input_refresh: Instant::now(),
@@ -342,16 +366,7 @@ impl App {
             takes: Vec::new(),
             corpus: Vec::new(),
             take_roll: take_roll::TakeRoll::default(),
-        };
-        app.refresh_corpus();
-
-        // Restore last session's preferences over the defaults built above.
-        // Defaults stay intact for any field a stale RON file is missing.
-        if let Some(state) = persisted {
-            app.apply_persistent(state);
         }
-
-        app
     }
 
     fn selected_input_kind(&self, selected_input_id: Option<&str>) -> AudioInputKind {

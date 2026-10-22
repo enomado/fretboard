@@ -55,6 +55,21 @@ pub fn install_fonts(ctx: &Context) {
             .or_default()
             .push("noto_music".to_owned());
     }
+    // And Hack (already bundled for Monospace) after it, for punctuation neither
+    // Ubuntu-Light nor Noto Music carries: the prime of "SWIPE′" (U+2032) on the
+    // layer pills was drawn as a tofu box. Appended after Noto Music, so every
+    // glyph that already rendered keeps its font; only former tofu changes.
+    let hack = fonts
+        .families
+        .get(&FontFamily::Monospace)
+        .and_then(|faces| faces.first())
+        .expect("egui's default Monospace family starts with its bundled Hack")
+        .clone();
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .push(hack);
     ctx.set_fonts(fonts);
 }
 
@@ -116,5 +131,42 @@ pub fn intonation_color(cents: f32) -> Color32 {
         a if a < 22.0 => Color32::from_rgb(232, 204, 84),
         a if a < 35.0 => Color32::from_rgb(236, 150, 72),
         _ => Color32::from_rgb(232, 96, 84),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{
+        Context,
+        FontId,
+    };
+
+    /// REGRESSION: the symbols the UI writes in plain labels have a glyph in the
+    /// app's fonts — and are not drawn as tofu boxes.
+    ///
+    /// egui 0.37 moved its emoji fonts behind `monochrome_emoji_fonts`, so ▶/■ on
+    /// the Play/Stop pills (drone, corpus replay) silently became tofu; ● (recording),
+    /// ′ (SWIPE′), → and the verdict marks never had one. The phone-layout kittest
+    /// catches glyphs on screen by default, but these only appear while playing,
+    /// recording or after a take — states that test does not reach.
+    #[test]
+    fn ui_symbols_have_a_glyph() {
+        let ctx = Context::default();
+        super::install_fonts(&ctx);
+        // Font definitions take effect at the start of the next frame.
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        for (font, symbols) in [
+            (FontId::proportional(14.0), "▶■●′→√×♯♭♮"),
+            (FontId::monospace(14.0), "√×"),
+        ] {
+            for c in symbols.chars() {
+                assert!(
+                    ctx.fonts_mut(|fonts| fonts.has_glyph(&font, c)),
+                    "{c:?} (U+{:04X}) has no glyph in {:?}",
+                    c as u32,
+                    font.family
+                );
+            }
+        }
     }
 }
