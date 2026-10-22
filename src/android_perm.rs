@@ -173,6 +173,28 @@ pub fn request_record_audio() {
     alog(&format!("requestPermissions fired ok = {}", fired.is_some()));
 }
 
+/// `Activity.moveTaskToBack(true)`: send the app to the background, as the system's
+/// back does at an app's first screen (Android 12+ moves a root activity's task back
+/// rather than finishing it). The phone shell asks for this when back has nothing left
+/// in the app to go back to — see `app::mobile_back`. It lives here because it is the
+/// app's only other call on the Activity, and `with_activity` holds the one handle.
+///
+/// Not `finish()`: that would destroy the activity, and with it the capture, a take
+/// being recorded and the session's navigation; coming back to the app must find it as
+/// it was left, like Home does.
+pub fn move_task_to_back() {
+    let moved = with_activity(|env, activity| {
+        env.call_method(
+            activity,
+            jni_str!("moveTaskToBack"),
+            jni_sig!("(Z)Z"),
+            &[JValue::Bool(jni::sys::JNI_TRUE)],
+        )?
+        .z()
+    });
+    alog(&format!("moveTaskToBack: moved = {moved:?}"));
+}
+
 /// Returns `true` exactly once: on the first poll where the permission is seen
 /// granted. The caller uses that rising edge to (re-)open the capture stream.
 /// After it fires once this stays `false` forever (no further JNI polling).

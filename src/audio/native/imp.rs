@@ -472,6 +472,13 @@ impl AudioEngine {
         self.recorder.status()
     }
 
+    /// Is a take wanted — between [`Self::start_take`] and [`Self::stop_take`] (or the
+    /// take failing)? The phone's back button will not send the app to the background
+    /// then (`app::mobile_back`).
+    pub fn take_wanted(&self) -> bool {
+        self.recorder.wanted()
+    }
+
     /// Проиграть записанный дубль через движок вместо живого входа.
     ///
     /// Линия, которая при этом рисуется, — БОЕВАЯ: её строит тот же код, что и

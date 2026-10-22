@@ -8,11 +8,21 @@ use eframe::egui::{
     vec2,
 };
 
+#[cfg(any(target_os = "android", test))]
+use super::mobile_back::ShellRequest;
 use super::{
     App,
     WorkspaceTab,
 };
 use crate::ui::tokens::color;
+
+/// Раскрыт ли мобильный выбор панели — во временной памяти egui (состояние жеста, не
+/// настройка). Один выбор на приложение — глобальный id, без привязки к месту в дереве;
+/// его же сворачивает кнопка «назад» (`mobile_back`).
+#[cfg(any(target_os = "android", test))]
+pub(super) fn picker_open_id() -> egui::Id {
+    egui::Id::unique("mobile_panel_picker_open")
+}
 
 pub(super) struct WorkspaceBehavior<'a> {
     app: &'a mut App,
@@ -171,8 +181,7 @@ impl App {
         use crate::ui::segmented::SegmentedButton;
         use crate::ui::tokens::space;
 
-        // Один выбор панели на приложение — глобальный id, без привязки к месту в дереве.
-        let open_id = egui::Id::unique("mobile_panel_picker_open");
+        let open_id = picker_open_id();
         let open = ui.data_mut(|data| *data.get_temp_mut_or_default::<bool>(open_id));
         let arrow = if open { "▲" } else { "▼" };
         let width = ui.available_width();
@@ -201,7 +210,7 @@ impl App {
                         .min_width(tile_w)
                         .height(space::TOUCH_H);
                     if ui.add(tile).clicked() {
-                        self.mobile_panel = tab;
+                        self.open_mobile_panel(tab);
                         toggle = true;
                     }
                 }
@@ -224,7 +233,7 @@ impl App {
             };
             static FRAME: AtomicU64 = AtomicU64::new(0);
             let n = FRAME.fetch_add(1, Ordering::Relaxed);
-            if n % 30 == 0 {
+            if n.is_multiple_of(30) {
                 crate::android_perm::alog(&format!("frame {n}"));
             }
         }
@@ -238,14 +247,20 @@ impl App {
             self.audio.set_selected_input_id(None);
         }
 
-        self.render_mobile_shell(ui);
+        if self.render_mobile_shell(ui) == ShellRequest::LeaveApp {
+            crate::android_perm::move_task_to_back();
+        }
     }
 
     /// Мобильная оболочка целиком — всё, что Android рисует после разрешения на
     /// микрофон. Отдельно от `render`, чтобы хостовые kittest-тесты гоняли ровно эту
-    /// вёрстку на ширине телефона (JNI-часть `render` на хосте не собирается).
+    /// вёрстку на ширине телефона (JNI-часть `render` на хосте не собирается); по той же
+    /// причине выход из приложения по «назад» она не делает сама, а возвращает просьбой.
     #[cfg(any(target_os = "android", test))]
-    pub(super) fn render_mobile_shell(&mut self, ui: &mut Ui) {
+    pub(super) fn render_mobile_shell(&mut self, ui: &mut Ui) -> ShellRequest {
+        // До отрисовки: «назад» может свернуть пикер или сменить панель, и этот кадр
+        // уже должен показать результат.
+        let request = self.handle_mobile_back(ui.ctx());
         egui::CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin::same(8)))
             .show(ui, |ui| {
@@ -277,6 +292,7 @@ impl App {
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.draw_workspace_tab(ui, tab));
             });
+        request
     }
 
     #[cfg(not(target_os = "android"))]
@@ -435,7 +451,14 @@ mod tests {
                 crate::ui::theme::install_fonts(ctx);
                 crate::ui::theme::apply_theme(ctx);
             })
-            .build_ui_state(|ui, app: &mut App| app.render_mobile_shell(ui), app);
+            // These tests never press back, the one source of a request (`mobile_back`'s
+            // tests do, and look at it).
+            .build_ui_state(
+                |ui, app: &mut App| {
+                    let _stay = app.render_mobile_shell(ui);
+                },
+                app,
+            );
         // Live panels keep asking for repaints, so `run()` would never settle; a few
         // frames let every lazily-sized layout reach its steady state.
         harness.run_steps(4);
@@ -862,6 +885,155 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// Frames for everything transient to die down before a screenshot is compared: the
+    /// scroll bars egui shows while a pane scrolls fade out over about a second of the
+    /// harness's 60 fps clock.
+    const SETTLE: usize = 60;
+
+    /// A finger's tap at `at`: down and up in place, as the phone sends it (no hover is
+    /// left behind — kittest's `click` leaves its pointer, and a hover highlight, there).
+    fn tap_at(harness: &mut Harness<'_, App>, at: eframe::egui::Pos2) {
+        use crate::app::touch_fingers::{
+            Finger,
+            gesture,
+        };
+        gesture(harness, &[(Finger::FIRST, at, at)], 0);
+    }
+
+    /// Go to `tab` the way a user does: tap the picker's row, then the panel's tile.
+    fn switch_to(harness: &mut Harness<'_, App>, tab: WorkspaceTab) {
+        let header = format!("{}  ▼", harness.state().mobile_panel.label());
+        let at = harness
+            .get_by_role_and_label(Role::Button, &header)
+            .rect()
+            .center();
+        tap_at(harness, at);
+        harness.run_steps(2);
+        let at = harness
+            .get_by_role_and_label(Role::Button, tab.label())
+            .rect()
+            .center();
+        tap_at(harness, at);
+        harness.run_steps(SETTLE);
+        assert!(harness.state().mobile_panel == tab);
+    }
+
+    /// Scroll the panel's pane down, as far as it goes up to `by` dp.
+    ///
+    /// By wheel, not by a finger: a drag from the pane's middle lands on whatever control
+    /// is there (a slider, the roll), and what is under test is the pane's offset, not how
+    /// it got there — egui keeps it the same either way.
+    fn scroll_pane(harness: &mut Harness<'_, App>, size: Vec2, by: f32) {
+        use eframe::egui::{
+            Event,
+            Modifiers,
+            MouseWheelSource,
+            MouseWheelUnit,
+            TouchPhase,
+        };
+        harness.event(Event::PointerMoved(pane(harness, size).center()));
+        harness.event(Event::MouseWheel {
+            unit:      MouseWheelUnit::Point,
+            delta:     vec2(0.0, -by),
+            modifiers: Modifiers::NONE,
+            phase:     TouchPhase::Move,
+            source:    MouseWheelSource::Unknown,
+        });
+        harness.run_steps(4);
+        harness.event(Event::PointerGone);
+        harness.run_steps(SETTLE);
+    }
+
+    /// Zoom the take roll in time with two fingers spread sideways on it, and check that
+    /// it took — the state a phone user is most likely to set and lose.
+    fn zoom_take_roll(harness: &mut Harness<'_, App>, size: Vec2) {
+        use crate::app::touch_fingers::{
+            Finger,
+            gesture,
+        };
+        let roll = harness.get_by_role_and_label(Role::Image, "Take roll").rect();
+        let on_screen = roll.intersect(pane(harness, size));
+        assert!(
+            on_screen.width() > 120.0 && on_screen.height() > 20.0,
+            "at {size:?} the take roll {roll:?} is not on screen to pinch"
+        );
+        let unzoomed = harness.render().expect("wgpu render failed");
+        let c = on_screen.center();
+        gesture(
+            harness,
+            &[
+                (Finger::FIRST, c - vec2(20.0, 0.0), c - vec2(55.0, 0.0)),
+                (Finger::SECOND, c + vec2(20.0, 0.0), c + vec2(55.0, 0.0)),
+            ],
+            8,
+        );
+        harness.run_steps(SETTLE);
+        assert!(
+            harness.render().expect("wgpu render failed") != unzoomed,
+            "at {size:?} the pinch did not zoom the take roll"
+        );
+    }
+
+    /// Leaving a panel for another and coming back finds it exactly as it was left — pane
+    /// scrolled, take roll zoomed — pixel for pixel, on every panel. Its state lives on
+    /// `App` or under ids that do not depend on which panel the shell drew last; a panel
+    /// that kept it in a layout-positional id, or reset it on being shown, would come back
+    /// scrolled to the top or zoomed out.
+    #[test]
+    fn leaving_a_panel_and_coming_back_finds_it_as_it_was_left() {
+        let size = PHONES[0];
+        for tab in WorkspaceTab::ALL {
+            let mut harness = phone_with(size, app_with_rolls(tab));
+            scroll_pane(&mut harness, size, 150.0);
+            if tab == WorkspaceTab::TakeRecorder {
+                zoom_take_roll(&mut harness, size);
+            }
+            let left = harness.render().expect("wgpu render failed");
+
+            let elsewhere = match tab {
+                WorkspaceTab::Drone => WorkspaceTab::PitchRoll,
+                _ => WorkspaceTab::Drone,
+            };
+            switch_to(&mut harness, elsewhere);
+            switch_to(&mut harness, tab);
+            assert!(
+                harness.render().expect("wgpu render failed") == left,
+                "{} is not as it was left after a visit to {}",
+                tab.label(),
+                elsewhere.label()
+            );
+        }
+    }
+
+    /// Turning the phone over and back (any resize — split screen, a fold) puts every panel
+    /// back as it was: the take roll keeps its zoom, the split panels their config.
+    ///
+    /// Unscrolled on purpose: a scrolled pane keeps its offset only as far as the turned
+    /// layout reaches, as egui clamps it there (the standing neck lies down a third as
+    /// tall). Today the manifest locks the phone in portrait anyway — see the handoff.
+    #[test]
+    fn turning_the_phone_and_back_puts_every_panel_back() {
+        let size = PHONES[0];
+        for tab in WorkspaceTab::ALL {
+            let mut harness = phone_with(size, app_with_rolls(tab));
+            if tab == WorkspaceTab::TakeRecorder {
+                zoom_take_roll(&mut harness, size);
+            }
+            harness.run_steps(SETTLE);
+            let upright = harness.render().expect("wgpu render failed");
+
+            harness.set_size(vec2(size.y, size.x));
+            harness.run_steps(SETTLE);
+            harness.set_size(size);
+            harness.run_steps(SETTLE);
+            assert!(
+                harness.render().expect("wgpu render failed") == upright,
+                "{} changed across a turn of the phone",
+                tab.label()
+            );
         }
     }
 }

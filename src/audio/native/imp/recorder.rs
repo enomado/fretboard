@@ -169,6 +169,13 @@ impl RecorderHandle {
         self.shared.lock().unwrap().status.clone()
     }
 
+    /// Does the user want a take running — Record pressed, not stopped, and not
+    /// withdrawn by a failure? The intent, not [`Self::status`]: it holds from the
+    /// press on, before the writer has opened the file.
+    pub(super) fn wanted(&self) -> bool {
+        self.shared.lock().unwrap().wanted.is_some()
+    }
+
     fn publish(&self, status: RecorderStatus) {
         self.shared.lock().unwrap().status = status;
     }

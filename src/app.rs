@@ -5,6 +5,8 @@ mod drone_panel;
 mod fretboard_panel;
 mod live_analysis;
 #[cfg(any(target_os = "android", test))]
+mod mobile_back;
+#[cfg(any(target_os = "android", test))]
 mod mobile_split;
 mod persist;
 mod pitch_roll_panel;
@@ -273,6 +275,12 @@ pub struct App {
     /// влияет ни на что, но персистится вместе с остальными настройками. См.
     /// `draw_mobile_panel_selector` / мобильный `render`.
     mobile_panel: WorkspaceTab,
+    /// Панели, с которых на телефоне ушли выбором в пикере, последняя — сверху: куда
+    /// ведёт кнопка «назад» (`mobile_back`). Каждая панель не больше одного раза, текущей
+    /// нет. Навигация сессии, а не настройка, — не персистится: после перезапуска
+    /// «назад» с первой же панели выходит из приложения, как у любого Android-приложения.
+    #[cfg(any(target_os = "android", test))]
+    mobile_back_stack: Vec<WorkspaceTab>,
     /// Показан ли на телефоне конфиг панели под её экраном (`mobile_split`): скрыт —
     /// экран на всю высоту. Решение Стаса 2026-10-22: «конфиг снизу, и только если
     /// включён». Своего переключателя у панелей нет, где ему быть — вопрос Стасу
@@ -370,6 +378,8 @@ impl App {
             pitch_roll: pitch_roll_panel::PitchRoll::default(),
             workspace_tree: Some(workspace::default_workspace_tree()),
             mobile_panel: WorkspaceTab::ResonatorSnail,
+            #[cfg(any(target_os = "android", test))]
+            mobile_back_stack: Vec::new(),
             #[cfg(any(target_os = "android", test))]
             mobile_config_shown: true,
             take_name: String::new(),
