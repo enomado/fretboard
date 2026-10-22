@@ -10,6 +10,7 @@ use eframe::egui::{
     Sense,
     Stroke,
     Ui,
+    Vec2,
     pos2,
     vec2,
 };
@@ -24,7 +25,6 @@ use super::{
     HoveredNote,
     ResonatorTarget,
     TunerTarget,
-    rangef_to_range,
 };
 use crate::core_types::note::Accidental;
 use crate::core_types::pitch::{
@@ -44,8 +44,12 @@ use crate::ui::fretboard::draw::{
 use crate::ui::fretboard::geometry::{
     FretConfig,
     Fretboard,
+    NeckAxis,
 };
-use crate::ui::fretboard::positions::draw_positions;
+use crate::ui::fretboard::positions::{
+    VERTICAL_REACH,
+    draw_positions,
+};
 use crate::ui::theme::fretboard_fill;
 use crate::ui::tokens::color;
 
@@ -81,18 +85,16 @@ impl App {
 
                 ui.add_space(10.0);
 
-                let avail_width = ui.available_width();
-                let (component_rect, response) =
-                    ui.allocate_exact_size(vec2(avail_width, FRETBOARD_HEIGHT), Sense::hover());
+                let layout = NeckLayout::for_width(ui.available_width());
+                let (component_rect, response) = ui.allocate_exact_size(layout.size, Sense::hover());
+                // Named for accessibility, like the snail's spiral; also how a test
+                // finds which way the neck was laid out.
+                response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Fretboard"));
 
                 let painter = ui.painter_at(component_rect);
                 painter.rect_filled(component_rect, 20.0, fretboard_fill());
 
-                let mut fretboard_rect = component_rect;
-                fretboard_rect.min.x += FRETBOARD_MARGIN_LEFT;
-                fretboard_rect.max.x -= FRETBOARD_MARGIN_RIGHT;
-                fretboard_rect.min.y += FRETBOARD_MARGIN_TOP;
-                fretboard_rect.max.y -= FRETBOARD_MARGIN_BOTTOM;
+                let fretboard_rect = layout.neck_rect(component_rect);
 
                 painter.rect_stroke(
                     fretboard_rect,
@@ -101,13 +103,13 @@ impl App {
                     egui::StrokeKind::Inside,
                 );
 
-                let fretboard = Fretboard {
-                    screen_size_x: rangef_to_range(fretboard_rect.x_range()),
-                    screen_size_y: rangef_to_range(fretboard_rect.y_range()),
-                    config: FretConfig::Log,
+                let fretboard = Fretboard::new(
+                    fretboard_rect,
+                    layout.axis,
+                    FretConfig::Log,
                     tuning,
-                    fret_range_show: Fret(1)..Fret(19),
-                };
+                    VISIBLE_FRETS,
+                );
 
                 draw_fret_lines(&painter, fretboard_rect, &fretboard);
                 draw_string_lines_scale(&painter, fretboard_rect, &fretboard, &scale, accidental);
@@ -115,7 +117,7 @@ impl App {
                     self.draw_resonator_targets(&painter, &fretboard, &resonator_targets);
                 }
                 draw_fretboard_scale(painter.clone(), &fretboard, &scale, accidental);
-                draw_positions(&painter, fretboard_rect, &fretboard);
+                draw_positions(&painter, &fretboard);
                 if !tuner_targets.is_empty() {
                     self.draw_tuner_targets(&painter, &fretboard, &tuner_targets);
                 }
@@ -152,7 +154,7 @@ impl App {
     ) -> Option<HoveredNote> {
         for string in fretboard.iter_strings() {
             for fret in fretboard.iter_frets() {
-                let center = pos2(fretboard.fret_pos(fret), fretboard.string_pos(string));
+                let center = fretboard.note_center(string, fret);
                 let rect = Rect::from_center_size(center, vec2(34.0, 22.0));
 
                 if rect.contains(pointer_pos) {
@@ -323,10 +325,7 @@ impl App {
         targets: &[ResonatorTarget],
     ) {
         for target in targets {
-            let center = pos2(
-                fretboard.fret_pos(target.fret),
-                fretboard.string_pos(target.string),
-            );
+            let center = fretboard.note_center(target.string, target.fret);
             let strength = target.strength.clamp(0.0, 1.0);
             let glow_alpha = (34.0 + strength * 96.0).round() as u8;
             let core_alpha = (80.0 + strength * 150.0).round() as u8;
@@ -342,10 +341,7 @@ impl App {
 
     fn draw_tuner_targets(&self, painter: &egui::Painter, fretboard: &Fretboard, targets: &[TunerTarget]) {
         for target in targets {
-            let center = pos2(
-                fretboard.fret_pos(target.fret),
-                fretboard.string_pos(target.string),
-            );
+            let center = fretboard.note_center(target.string, target.fret);
             painter.circle_stroke(center, 18.0, Stroke::new(2.0_f32, color::MARKER));
             painter.circle_stroke(
                 center,
@@ -353,6 +349,75 @@ impl App {
                 Stroke::new(1.0_f32, color::MARKER.gamma_multiply(96.0 / 255.0)),
             );
         }
+    }
+}
+
+/// Frets 1–18, as the card's counter says.
+const VISIBLE_FRETS: std::ops::Range<Fret> = Fret(1)..Fret(19);
+
+/// Below this card width the neck turns vertical. At 600 dp the horizontal neck's
+/// 18 log-spaced frets already sit closer than a note pill is wide from about the
+/// 7th fret on; on a phone in portrait (a ~314 dp card) the top frets are 7 dp
+/// apart, four of them to one 30 dp pill. Landscape phones and desktop panes
+/// stay horizontal.
+const VERTICAL_BELOW_W: f32 = 600.0;
+/// Length of the vertical neck, nut → bridge. The log spacing shrinks towards the
+/// bridge, and the closest pair (frets 17–18) is 0.032 of this length apart, so
+/// 660 dp keeps them ~21 dp apart: more than a note pill is tall (16).
+const VERTICAL_NECK_LEN: f32 = 660.0;
+/// Vertical neck margins: two label rows above the nut (string name, open note),
+/// fret numbers on the left, the position brackets on the right, the footer below.
+const VERTICAL_MARGIN_TOP: f32 = 44.0;
+/// Room for a two-digit fret number ("18", ~15 dp in 12 px monospace) and its gap.
+const VERTICAL_MARGIN_LEFT: f32 = 24.0;
+const VERTICAL_MARGIN_BOTTOM: f32 = 40.0;
+
+/// How the fretboard card lays its neck out in a given width: the axis, the size
+/// of the whole drawing, and the neck's insets inside it.
+struct NeckLayout {
+    axis:   NeckAxis,
+    size:   Vec2,
+    /// Insets of the neck rectangle: left, right, top, bottom.
+    margin: [f32; 4],
+}
+
+impl NeckLayout {
+    fn for_width(width: f32) -> Self {
+        if width < VERTICAL_BELOW_W {
+            Self {
+                axis:   NeckAxis::Vertical,
+                size:   vec2(
+                    width,
+                    VERTICAL_MARGIN_TOP + VERTICAL_NECK_LEN + VERTICAL_MARGIN_BOTTOM,
+                ),
+                margin: [
+                    VERTICAL_MARGIN_LEFT,
+                    VERTICAL_REACH,
+                    VERTICAL_MARGIN_TOP,
+                    VERTICAL_MARGIN_BOTTOM,
+                ],
+            }
+        } else {
+            Self {
+                axis:   NeckAxis::Horizontal,
+                size:   vec2(width, FRETBOARD_HEIGHT),
+                margin: [
+                    FRETBOARD_MARGIN_LEFT,
+                    FRETBOARD_MARGIN_RIGHT,
+                    FRETBOARD_MARGIN_TOP,
+                    FRETBOARD_MARGIN_BOTTOM,
+                ],
+            }
+        }
+    }
+
+    /// The neck rectangle inside the card's drawing `component`.
+    fn neck_rect(&self, component: Rect) -> Rect {
+        let [left, right, top, bottom] = self.margin;
+        Rect::from_min_max(
+            pos2(component.left() + left, component.top() + top),
+            pos2(component.right() - right, component.bottom() - bottom),
+        )
     }
 }
 
@@ -377,4 +442,76 @@ fn resonator_note_strengths(spectrum: &[f32], note_count: usize) -> Vec<f32> {
             spectrum[start..=end].iter().copied().fold(0.0_f32, f32::max)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::{
+        Rect,
+        pos2,
+    };
+
+    use super::{
+        NeckLayout,
+        VISIBLE_FRETS,
+    };
+    use crate::app::ALL_TUNINGS;
+    use crate::ui::fretboard::draw::NOTE_PILL;
+    use crate::ui::fretboard::geometry::{
+        FretConfig,
+        Fretboard,
+        NeckAxis,
+    };
+
+    /// Every pair of note pills on the neck laid out for a card `width` wide that
+    /// overlap, for every tuning the card offers.
+    fn overlapping_pills(width: f32) -> Vec<String> {
+        let layout = NeckLayout::for_width(width);
+        let component = Rect::from_min_size(pos2(0.0, 0.0), layout.size);
+        let mut overlaps = Vec::new();
+        for kind in ALL_TUNINGS {
+            let neck = Fretboard::new(
+                layout.neck_rect(component),
+                layout.axis,
+                FretConfig::Log,
+                kind.to_tuning(),
+                VISIBLE_FRETS,
+            );
+            let pills: Vec<_> = neck
+                .iter_strings()
+                .flat_map(|s| neck.iter_frets().map(move |f| (s, f)))
+                .map(|(s, f)| (s, f, Rect::from_center_size(neck.note_center(s, f), NOTE_PILL)))
+                .collect();
+            for (i, (s, f, a)) in pills.iter().enumerate() {
+                for (t, g, b) in &pills[i + 1..] {
+                    if a.intersect(*b).area() > 0.0 {
+                        overlaps.push(format!("{}: {s:?}/{f:?} with {t:?}/{g:?}", kind.label()));
+                    }
+                }
+            }
+        }
+        overlaps
+    }
+
+    /// REGRESSION: on a phone in portrait the neck is vertical and no two notes are
+    /// drawn on top of each other — 18 log-spaced frets in a ~314 dp wide horizontal
+    /// neck put the top frets 7 dp apart under 30 dp pills, four notes to one pill.
+    /// 314/366 = the card on a 360/412 dp phone, six strings included (guitar).
+    #[test]
+    fn phone_neck_is_vertical_and_its_notes_do_not_overlap() {
+        for width in [314.0, 366.0] {
+            let overlaps = overlapping_pills(width);
+            assert!(overlaps.is_empty(), "card {width} dp: {overlaps:?}");
+            assert_eq!(NeckLayout::for_width(width).axis, NeckAxis::Vertical);
+        }
+    }
+
+    /// The desktop card and a landscape phone (a ~694 dp card) keep the horizontal
+    /// neck the panel always had.
+    #[test]
+    fn wide_card_keeps_the_horizontal_neck() {
+        for width in [694.0, 900.0] {
+            assert_eq!(NeckLayout::for_width(width).axis, NeckAxis::Horizontal);
+        }
+    }
 }

@@ -1,17 +1,36 @@
 //! The neck model: musical coordinates → screen pixels.
 //!
-//! Given a [`Fret`] and a [`GString`] it returns the `x` / `y` pixel position
-//! inside the neck rectangle. The renderers that paint on top of this model
-//! (`crate::ui::fretboard::draw`, `::positions`) borrow a [`Fretboard`] and own
-//! no state of their own.
+//! Given a [`Fret`] and a [`GString`] it returns the screen point inside the neck
+//! rectangle. The neck runs along either screen axis ([`NeckAxis`]), so the model
+//! speaks in *along* (nut → bridge) and *across* (string 1 → last string)
+//! coordinates and maps them to `x`/`y` in one place, [`Fretboard::point`]. The
+//! renderers that paint on top of this model (`crate::ui::fretboard::draw`,
+//! `::positions`) borrow a [`Fretboard`] and own no state of their own.
 
 use std::ops::Range;
+
+use eframe::egui::{
+    Pos2,
+    Rect,
+    pos2,
+};
 
 use crate::core_types::tuning::{
     Fret,
     GString,
     Tuning,
 };
+
+/// Which screen axis the neck runs along.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NeckAxis {
+    /// Nut on the left, frets running right, string 1 on top — the desktop card.
+    Horizontal,
+    /// Nut at the top, frets running down, string 1 on the right — a chord
+    /// diagram facing the player, lowest string on the left. The phone in
+    /// portrait: its long axis is the only one that holds 18 log-spaced frets.
+    Vertical,
+}
 
 /// How fret spacing is laid out along the neck.
 pub enum FretConfig {
@@ -22,13 +41,17 @@ pub enum FretConfig {
     Linear,
 }
 
-/// The neck as drawn on screen: the screen rectangle it occupies, the tuning
-/// that fixes the open notes, and which slice of frets is currently visible.
+/// The neck as drawn on screen: the screen rectangle it occupies and the axis
+/// it runs along, the tuning that fixes the open notes, and which slice of frets
+/// is currently visible.
 pub struct Fretboard {
-    /// Horizontal screen span of the neck, nut → bridge, in pixels.
-    pub screen_size_x:   Range<f32>,
-    /// Vertical screen span of the neck, in pixels.
-    pub screen_size_y:   Range<f32>,
+    /// Screen span along the neck, nut → bridge, in pixels.
+    along:               Range<f32>,
+    /// Screen span across the neck, from string 1's side to the last string's.
+    /// Runs backwards (`start > end`) on the vertical neck, which puts string 1
+    /// on the right; `string_position` is plain interpolation, so it does not care.
+    across:              Range<f32>,
+    axis:                NeckAxis,
     pub config:          FretConfig,
     pub tuning:          Tuning,
     /// Half-open range of frets to show, e.g. `Fret(1)..Fret(19)` for frets 1–18.
@@ -36,19 +59,94 @@ pub struct Fretboard {
 }
 
 impl Fretboard {
-    /// Screen `x` of fret `n`, honouring the current [`FretConfig`].
-    pub fn fret_pos(&self, n: Fret) -> f32 {
-        match self.config {
-            FretConfig::Log => fret_position_log(&self.screen_size_x, &self.fret_range_show, n),
-            FretConfig::Linear => fret_position_linear(&self.screen_size_x, &self.fret_range_show, n),
+    /// The neck filling `rect`, running along `axis`.
+    pub fn new(
+        rect: Rect,
+        axis: NeckAxis,
+        config: FretConfig,
+        tuning: Tuning,
+        fret_range_show: Range<Fret>,
+    ) -> Self {
+        let (along, across) = match axis {
+            NeckAxis::Horizontal => (rect.left()..rect.right(), rect.top()..rect.bottom()),
+            NeckAxis::Vertical => (rect.top()..rect.bottom(), rect.right()..rect.left()),
+        };
+        Self {
+            along,
+            across,
+            axis,
+            config,
+            tuning,
+            fret_range_show,
         }
     }
 
-    /// Screen `y` of string `s`. The `+ 2` widens the divisor by one row at each
-    /// end, so the outer strings keep a margin instead of sitting flush against
-    /// the top and bottom edges (see `string_position`).
+    pub fn axis(&self) -> NeckAxis {
+        self.axis
+    }
+
+    /// The screen point at `along` (nut → bridge) and `across` (string 1 → last
+    /// string) — the one place the neck's coordinates meet the screen's.
+    pub fn point(&self, along: f32, across: f32) -> Pos2 {
+        match self.axis {
+            NeckAxis::Horizontal => pos2(along, across),
+            NeckAxis::Vertical => pos2(across, along),
+        }
+    }
+
+    /// Where the note at `fret` on `string` is drawn.
+    pub fn note_center(&self, string: GString, fret: Fret) -> Pos2 {
+        self.point(self.fret_pos(fret), self.string_pos(string))
+    }
+
+    /// Fret `n` as a line across the whole neck.
+    pub fn fret_line(&self, n: Fret) -> [Pos2; 2] {
+        let along = self.fret_pos(n);
+        [
+            self.point(along, self.across.start),
+            self.point(along, self.across.end),
+        ]
+    }
+
+    /// String `s` as a line along the whole neck.
+    pub fn string_line(&self, s: GString) -> [Pos2; 2] {
+        let across = self.string_pos(s);
+        [
+            self.point(self.along.start, across),
+            self.point(self.along.end, across),
+        ]
+    }
+
+    /// `offset` px out from the neck's edge on string 1's side (0 = the edge):
+    /// above a horizontal neck, right of a vertical one. The position brackets
+    /// stack out from there.
+    pub fn outside(&self, offset: f32) -> f32 {
+        let outward = if self.across.end >= self.across.start {
+            -1.0
+        } else {
+            1.0
+        };
+        self.across.start + outward * offset
+    }
+
+    /// The middle of the neck across its width — where the inlay dots sit.
+    pub fn across_center(&self) -> f32 {
+        (self.across.start + self.across.end) * 0.5
+    }
+
+    /// Position along the neck of fret `n`, honouring the current [`FretConfig`].
+    pub fn fret_pos(&self, n: Fret) -> f32 {
+        match self.config {
+            FretConfig::Log => fret_position_log(&self.along, &self.fret_range_show, n),
+            FretConfig::Linear => fret_position_linear(&self.along, &self.fret_range_show, n),
+        }
+    }
+
+    /// Position across the neck of string `s`. The `+ 2` widens the divisor by one
+    /// row at each end, so the outer strings keep a margin instead of sitting flush
+    /// against the edges (see `string_position`).
     pub fn string_pos(&self, s: GString) -> f32 {
-        string_position(&self.screen_size_y, s, (self.tuning.string_count() + 2) as u32)
+        string_position(&self.across, s, (self.tuning.string_count() + 2) as u32)
     }
 
     /// Visible frets, low → high (`fret_range_show` is half-open).
@@ -106,7 +204,7 @@ fn fret_position_linear(ui_range: &Range<f32>, fret_range: &Range<Fret>, n: Fret
     ui_range.start + (ui_range.end - ui_range.start) * (n_eff / visible)
 }
 
-/// Evenly spread strings across the vertical span. String index is 1-based, so
+/// Evenly spread strings across the neck's width. String index is 1-based, so
 /// string `k` sits at `k / (string_count - 1)` of the way down the range; the
 /// caller pads `string_count` (see [`Fretboard::string_pos`]) to leave margins.
 fn string_position(range: &Range<f32>, string_index: GString, string_count: u32) -> f32 {

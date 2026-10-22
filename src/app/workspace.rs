@@ -515,6 +515,28 @@ mod tests {
         harness.get_by_role_and_label(Role::Button, "Drone  ▼");
     }
 
+    /// The fretboard card stands its neck up on a portrait phone (Stas, 2026-10-22:
+    /// "гриф на телефоне рисовать вертикально") and keeps it lying in landscape.
+    /// Whether its notes then fit is `fretboard_panel`'s geometry test; this pins
+    /// that the phone actually gets that layout.
+    #[test]
+    fn fretboard_stands_up_on_a_portrait_phone() {
+        for size in PHONES {
+            let harness = phone(size, WorkspaceTab::Fretboard);
+            let neck = harness.get_by_role_and_label(Role::Image, "Fretboard").rect();
+            // Not just "taller than wide": the lying neck is 340 dp tall, which on a
+            // 360 dp phone is taller than its ~314 dp width too. Standing, it is
+            // over twice as tall as wide.
+            let standing = neck.height() > 2.0 * neck.width();
+            let lying = neck.width() > neck.height();
+            let portrait = size.y > size.x;
+            assert!(
+                if portrait { standing } else { lying },
+                "at {size:?} the neck {neck:?} lies the wrong way"
+            );
+        }
+    }
+
     /// REGRESSION: the snail — the phone's default panel — shows its spiral on the
     /// first screen, portrait and landscape. Nine knob rows sat above it and the card
     /// was not in a scroll area, so on 360×740 and on every landscape phone the

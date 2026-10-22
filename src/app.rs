@@ -15,14 +15,12 @@ mod take_panel;
 mod take_roll;
 mod workspace;
 
-use std::ops::Range;
 use std::time::Duration;
 
 use eframe::egui::{
     self,
     Color32,
     Margin,
-    Rangef,
     RichText,
     Ui,
 };
@@ -643,10 +641,6 @@ fn format_sample_count(value: usize) -> String {
     } else {
         value.to_string()
     }
-}
-
-pub fn rangef_to_range(range: Rangef) -> Range<f32> {
-    range.min..range.max
 }
 
 impl eframe::App for App {
