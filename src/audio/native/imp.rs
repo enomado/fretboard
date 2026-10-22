@@ -200,6 +200,11 @@ pub struct AudioEngine {
 
 enum Command {
     SwitchInput(Option<String>),
+    /// Пересобрать живой вход на том, что последним просили через `SwitchInput`
+    /// (`None` — дефолтный). Нужен Android: до разрешения на микрофон вход не
+    /// открывается, а сохранённый выбор приходит именно тогда — и `selected_input_id`
+    /// (что ОТКРЫТО) его не знает. Помнит запрос audio-тред, не UI.
+    ReopenInput,
     SetMonitorEnabled(bool),
     PlayTestNote(PNote),
     StartDrone,
@@ -416,6 +421,16 @@ impl AudioEngine {
         }
     }
 
+    /// Reopen the live input the user last asked for ([`Self::set_selected_input_id`],
+    /// the default device if never) — e.g. once Android grants the microphone, which
+    /// every open before that failed or got silence from. Not `set_selected_input_id(None)`:
+    /// that would trade a saved device for the default one on every launch.
+    pub fn reopen_input(&self) {
+        if let Some(tx) = self.command_tx.as_ref() {
+            let _ = tx.send(Command::ReopenInput);
+        }
+    }
+
     pub fn play_test_note(&self, midi: PNote) {
         if let Some(tx) = self.command_tx.as_ref() {
             let _ = tx.send(Command::PlayTestNote(midi));
@@ -540,6 +555,9 @@ fn audio_thread_main(rx: Receiver<Command>, ctx: AudioContext) {
     if current.is_none() {
         ctx.set_error("Could not open default audio input");
     }
+    // Что просили последним (`None` = дефолтный) — в отличие от
+    // `ctx.selected_input_id`, который знает только успешно открытое. См. `ReopenInput`.
+    let mut requested_input: Option<String> = None;
 
     // Дрон-стрим живёт параллельно capture: отдельный output, который audio-
     // тред держит ровно пока дрон играет. Дроп = тишина и освобождение устройства.
@@ -548,10 +566,20 @@ fn audio_thread_main(rx: Receiver<Command>, ctx: AudioContext) {
     while let Ok(cmd) = rx.recv() {
         match cmd {
             Command::SwitchInput(id) => {
+                requested_input = id.clone();
                 if let Some(cap) = current.take() {
                     cap.shutdown();
                 }
-                match ctx.build_capture(id.clone()) {
+                match ctx.build_capture(id) {
+                    Ok(cap) => current = Some(cap),
+                    Err(msg) => ctx.set_error(&msg),
+                }
+            }
+            Command::ReopenInput => {
+                if let Some(cap) = current.take() {
+                    cap.shutdown();
+                }
+                match ctx.build_capture(requested_input.clone()) {
                     Ok(cap) => current = Some(cap),
                     Err(msg) => ctx.set_error(&msg),
                 }

@@ -18,6 +18,8 @@ use super::ranking::{
 };
 use crate::core_types::scale_detect::ensemble::MethodWeights;
 use crate::ui::segmented::RowCaption;
+use crate::ui::slider_row::SliderRow;
+use crate::ui::theme;
 use crate::ui::tokens::color;
 
 impl App {
@@ -32,35 +34,36 @@ impl App {
             weight_slider(ui, "tonal", COLOR_PROFILE, &mut config.weights.profile);
             weight_slider(ui, "root", COLOR_ROOT, &mut config.weights.root);
             weight_slider(ui, "spiral", COLOR_SPIRAL, &mut config.weights.spiral);
-            if ui.button("Reset").clicked() {
+            if theme::finger_sized(ui, |ui| ui.button("Reset")).clicked() {
                 config.weights = MethodWeights::default();
             }
         });
 
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            let caption = ui.add(RowCaption::new("Window"));
             // Окно интеграции В СЕКУНДАХ (решалка копит свой буфер по времени).
             // Логарифмический, чтобы и доли секунды, и 20 c были под рукой.
-            ui.add_sized(
-                [200.0, 18.0],
-                egui::Slider::new(&mut config.window_seconds, 0.3..=20.0)
-                    .logarithmic(true)
-                    .clamping(egui::SliderClamping::Always)
-                    .trailing_fill(true)
-                    .show_value(false),
+            let window = SliderRow::new(
+                RowCaption::new("Window"),
+                &mut config.window_seconds,
+                0.3..=20.0,
+                |v| format!("{v:.1}s"),
             )
-            .labelled_by(caption.id);
-            ui.label(
-                RichText::new(format!("{:.1}s", config.window_seconds))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            .width(200.0)
+            .logarithmic()
+            .clamp_always()
+            .trailing_fill();
+            ui.add(window);
             // Сколько реально накоплено: окно наполняется с открытия панели.
-            ui.label(
-                RichText::new(format!("· have {captured_secs:.1}s"))
-                    .color(color::TEXT_HINT)
-                    .size(12.0),
+            // Неразрывно: перенос посреди («· have | 0.0s») клал вторую строку
+            // надписи под ряд окна, поверх его слайдера.
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!("· have {captured_secs:.1}s"))
+                        .color(color::TEXT_HINT)
+                        .size(12.0),
+                )
+                .extend(),
             );
         });
     }
@@ -68,18 +71,11 @@ impl App {
 
 /// Один помеченный слайдер веса метода (0..1) с цветной меткой и числом.
 fn weight_slider(ui: &mut Ui, label: &str, color: Color32, value: &mut f32) {
-    let caption = ui.add(RowCaption::new(label).color(color).font_size(12.0));
-    ui.add_sized(
-        [110.0, 18.0],
-        egui::Slider::new(value, 0.0..=1.0)
-            .clamping(egui::SliderClamping::Always)
-            .trailing_fill(true)
-            .show_value(false),
-    )
-    .labelled_by(caption.id);
-    ui.label(
-        RichText::new(format!("{value:.2}"))
-            .color(color::TEXT_VALUE)
-            .monospace(),
+    let caption = RowCaption::new(label).color(color).font_size(12.0);
+    ui.add(
+        SliderRow::new(caption, value, 0.0..=1.0, |v| format!("{v:.2}"))
+            .width(110.0)
+            .clamp_always()
+            .trailing_fill(),
     );
 }

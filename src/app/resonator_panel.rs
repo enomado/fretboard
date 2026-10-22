@@ -36,6 +36,8 @@ use crate::ui::segmented::{
     RowCaption,
     SegmentedButton,
 };
+#[cfg(any(target_os = "android", test))]
+use crate::ui::slider_row::SliderRow;
 use crate::ui::snail::{
     self,
     SpiralChart,
@@ -153,8 +155,7 @@ impl App {
     /// A plain vertical stack sizes to the real content width.
     #[cfg(any(target_os = "android", test))]
     fn draw_mobile_snail_settings(&mut self, ui: &mut Ui) {
-        // Every knob is a finger target: the slider's hit area is its whole
-        // allocated rect, so the row is TOUCH_H tall even though the rail is thin.
+        // Every knob is a finger target, TOUCH_H tall (sliders: `ui::slider_row`).
         // At the old 20 dp the −/+ nudges were ~18×26 — a miss for a fingertip.
         const KNOB_H: f32 = space::TOUCH_H;
         let mut settings = self.audio.analysis_settings();
@@ -186,13 +187,14 @@ impl App {
                 *a4 = snap(*a4 - STEP).clamp(400.0, 466.0);
                 changed = true;
             }
-            changed |= ui
-                .add_sized(
-                    [104.0, KNOB_H],
-                    egui::Slider::new(a4, 400.0..=466.0).show_value(false),
-                )
-                .labelled_by(a4_caption.id)
-                .changed();
+            // egui sizes a slider by `interact_size.y`, not by `add_sized` (it wraps
+            // itself in a `horizontal`): see `ui::slider_row`.
+            changed |= theme::finger_sized(ui, |ui| {
+                ui.spacing_mut().slider_width = 104.0;
+                ui.add(egui::Slider::new(a4, 400.0..=466.0).show_value(false))
+            })
+            .labelled_by(a4_caption.id)
+            .changed();
             if ui.add(nudge("+")).clicked() {
                 *a4 = snap(*a4 + STEP).clamp(400.0, 466.0);
                 changed = true;
@@ -233,9 +235,10 @@ impl App {
 
         // Δφ reassignment toggle (super-resolution + image/noise gate). Off falls
         // back to plain per-bin magnitude — the safety net if reassignment misbehaves.
-        if ui
-            .checkbox(&mut settings.resonator.reassign, "Δφ reassign")
-            .changed()
+        if theme::finger_sized(ui, |ui| {
+            ui.checkbox(&mut settings.resonator.reassign, "Δφ reassign")
+        })
+        .changed()
         {
             changed = true;
         }
@@ -509,11 +512,10 @@ pub(super) fn draw_mobile_spiral(ui: &mut Ui, chart: SpiralChart<'_>, settings: 
     });
 }
 
-/// One labelled knob row for the mobile settings strip: a caption, a slider over
-/// `range` (named after the caption, so TalkBack reads "Spread", not an anonymous
-/// slider) and the `readout` of the value it leaves. True when the user moved it.
-/// The trio sits on one fixed [`knob_row`]; rows are stacked by the caller's
-/// vertical layout (see `draw_mobile_snail_settings` for why we don't wrap them).
+/// One labelled knob row for the mobile settings strip — the canonical [`SliderRow`]
+/// (caption, slider over `range` named after it, `readout`). True when the user moved
+/// it. Rows are stacked by the caller's vertical layout (see
+/// `draw_mobile_snail_settings` for why we don't wrap them).
 #[cfg(any(target_os = "android", test))]
 fn mobile_slider<N: egui::emath::Numeric>(
     ui: &mut Ui,
@@ -522,19 +524,8 @@ fn mobile_slider<N: egui::emath::Numeric>(
     range: std::ops::RangeInclusive<N>,
     readout: impl Fn(N) -> String,
 ) -> bool {
-    let mut changed = false;
-    knob_row(ui, |ui| {
-        let caption = ui.label(egui::RichText::new(label).color(color::TEXT_CAPTION).strong());
-        changed = ui
-            .add_sized(
-                [140.0, space::TOUCH_H],
-                egui::Slider::new(value, range).show_value(false),
-            )
-            .labelled_by(caption.id)
-            .changed();
-        knob_value(ui, readout(*value));
-    });
-    changed
+    ui.add(SliderRow::new(RowCaption::new(label), value, range, readout).width(140.0))
+        .changed()
 }
 
 /// A touch-height row of the mobile strip with its items centred on it. A plain

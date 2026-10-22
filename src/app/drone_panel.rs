@@ -29,6 +29,8 @@ use crate::ui::segmented::{
     RowCaption,
     SegmentedButton,
 };
+use crate::ui::slider_row::SliderRow;
+use crate::ui::theme;
 use crate::ui::tokens::{
     color,
     space,
@@ -42,7 +44,6 @@ const KEYBOARD_MAX_MIDI: u8 = 83; // B5
 // Палитра пилюль живёт в `ui::segmented` (единственный источник правды) — раньше
 // её копии лежали здесь и успели разъехаться. Клавиатура нот ниже берёт тот же
 // accent/idle, чтобы нажатая клавиша читалась ровно как выбранная пилюля.
-const LABEL_COLOR: Color32 = color::TEXT_CAPTION;
 const VALUE_COLOR: Color32 = color::TEXT_VALUE;
 const HINT_COLOR: Color32 = color::TEXT_HINT;
 /// The note keyboard's keys. File-local — only this panel draws a keyboard, and
@@ -91,7 +92,7 @@ impl App {
                         ("▶ Play", color::PLAY_FILL, color::PLAY_STROKE)
                     };
                     let button = egui::Button::new(RichText::new(caption).size(16.0).strong())
-                        .min_size(vec2(132.0, 36.0))
+                        .min_size(vec2(132.0, theme::min_target_h(ui.ctx()).max(36.0)))
                         .fill(fill)
                         .stroke(Stroke::new(1.0_f32, stroke))
                         .corner_radius(CornerRadius::same(16));
@@ -249,16 +250,18 @@ impl App {
 /// Октава в ряд — это 12 клавиш по 34 dp плюс 11 зазоров ≈ 520 dp. Где столько
 /// нет (телефон, узкий пейн), ряд — пол-октавы (C..F и F#..B), а клавиши делят
 /// ширину поровну и растут до touch-высоты: на 360-dp экране правые пять клавиш
-/// каждой октавы (G..B) уезжали за край, а 34×24 dp — мимо пальца.
+/// каждой октавы (G..B) уезжали за край, а 34×24 dp — мимо пальца. На тач-экране
+/// клавиша не ниже пальца и в целой октаве (ландшафт телефона): там было 34×27.
 fn draw_keyboard(ui: &mut Ui, drone: &mut DroneState, style: AccidentalStyle) -> bool {
     const BLACK_KEYS: [bool; 12] = [
         false, true, false, true, false, false, true, false, true, false, true, false,
     ];
     const KEY_MIN: egui::Vec2 = vec2(34.0, 24.0);
+    let key_h = KEY_MIN.y.max(theme::min_target_h(ui.ctx()));
     let gap = ui.spacing().item_spacing.x;
     let octave_row_w = 12.0 * KEY_MIN.x + 11.0 * gap;
     let (keys_per_row, key_size) = if ui.available_width() >= octave_row_w {
-        (12, KEY_MIN)
+        (12, vec2(KEY_MIN.x, key_h))
     } else {
         let width = (ui.available_width() - 5.0 * gap) / 6.0;
         (6, vec2(width.max(KEY_MIN.x), space::TOUCH_H))
@@ -318,7 +321,8 @@ fn add_interval(drone: &mut DroneState, root: PNote, semitones: u8) -> bool {
     drone.notes.len() != before
 }
 
-/// Строка-слайдер «label … value» в едином стиле панели. Возвращает true при изменении.
+/// Строка-слайдер «label … value» в едином стиле панели (общий [`SliderRow`]: на
+/// телефоне ряд 44 dp, слайдер уступает место значению). Возвращает true при изменении.
 fn slider_row(
     ui: &mut Ui,
     label: &str,
@@ -326,28 +330,13 @@ fn slider_row(
     range: std::ops::RangeInclusive<f32>,
     fmt: impl Fn(f32) -> String,
 ) -> bool {
-    // Room left for the readout ("100%", " 300 bpm" in monospace) after the slider.
-    const READOUT_W: f32 = 72.0;
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        let caption = ui.label(RichText::new(label).color(LABEL_COLOR).strong());
-        let slider = egui::Slider::new(value, range)
-            .clamping(egui::SliderClamping::Always)
-            .trailing_fill(true)
-            .show_value(false);
-        // 200 dp where it fits; on a phone the slider gives way so the readout stays
-        // on screen ("Brightness" + 200 + readout is ~350 dp, the card ~314).
-        let width = (ui.available_width() - READOUT_W).clamp(80.0, 200.0);
-        if ui
-            .add_sized([width, 18.0], slider)
-            .labelled_by(caption.id)
-            .changed()
-        {
-            changed = true;
-        }
-        ui.label(RichText::new(fmt(*value)).color(VALUE_COLOR).monospace());
-    });
-    changed
+    ui.add(
+        SliderRow::new(RowCaption::new(label), value, range, fmt)
+            .width(200.0)
+            .clamp_always()
+            .trailing_fill(),
+    )
+    .changed()
 }
 
 fn mode_button(ui: &mut Ui, label: &str, active: bool) -> egui::Response {

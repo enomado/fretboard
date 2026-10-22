@@ -13,6 +13,7 @@ use eframe::egui::{
     Stroke,
     Style,
     TextStyle,
+    Ui,
     Visuals,
     vec2,
 };
@@ -113,6 +114,22 @@ pub fn is_touch_screen(ctx: &Context) -> bool {
 /// `Button::min_size` and the like on panels both shells draw.
 pub fn min_target_h(ctx: &Context) -> f32 {
     if is_touch_screen(ctx) { space::TOUCH_H } else { 0.0 }
+}
+
+/// Run `add` with egui's own widgets sized for a finger on a touch screen: a checkbox,
+/// a plain `Button`, a `Slider` take their height (and so their hit area) from
+/// `interact_size.y` (18 dp), which this raises to [`min_target_h`] for `add` alone.
+/// The desktop passes through unchanged. Scoped rather than set for the whole phone:
+/// `interact_size.y` is also the floor of every `ui.horizontal` row, and raising it
+/// globally would push each text row and card header to 44 dp as well.
+pub fn finger_sized<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let floor = min_target_h(ui.ctx());
+    ui.scope(|ui| {
+        let size = &mut ui.spacing_mut().interact_size.y;
+        *size = size.max(floor);
+        add(ui)
+    })
+    .inner
 }
 
 /// A card's inner margin and corner radius: the card's own (`desktop_pad`,

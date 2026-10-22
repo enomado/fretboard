@@ -241,10 +241,12 @@ impl App {
         // Mic permission is driven from here (the first real frame ⇒ the Activity
         // is resumed and can show the dialog). `request_record_audio` fires once;
         // on the rising edge of the grant we re-open capture, since the audio
-        // engine's startup open happened before the user tapped "Allow".
+        // engine's startup open happened before the user tapped "Allow" — on the
+        // input the user chose (restored from the last session), not the default one,
+        // which every launch used to switch to here.
         crate::android_perm::request_record_audio();
         if crate::android_perm::newly_granted() {
-            self.audio.set_selected_input_id(None);
+            self.audio.reopen_input();
         }
 
         if self.render_mobile_shell(ui) == ShellRequest::LeaveApp {
@@ -744,26 +746,12 @@ mod tests {
         }
     }
 
-    /// Every control of the two roll panels is a finger's height on a phone, and the take
-    /// roll's hint names the phone's gestures — the pinch, not ctrl/shift+wheel, which a
-    /// phone does not have.
+    /// The take roll's hint names the phone's gestures — the pinch, not ctrl/shift+wheel,
+    /// which a phone does not have. (Its controls' size is
+    /// `every_control_is_a_finger_target_on_a_phone`'s.)
     #[test]
-    fn the_roll_panels_are_made_for_a_finger() {
+    fn the_take_roll_hint_names_the_phone_gestures() {
         let size = PHONES[0];
-        for tab in [WorkspaceTab::PitchRoll, WorkspaceTab::TakeRecorder] {
-            let harness = phone_with(size, app_with_rolls(tab));
-            let small: Vec<_> = rects(&harness)
-                .into_iter()
-                .filter(|(role, _, rect)| {
-                    matches!(role, Role::Button | Role::TextInput) && rect.height() < space::TOUCH_H
-                })
-                .collect();
-            assert!(
-                small.is_empty(),
-                "{}: under a finger's height: {small:?}",
-                tab.label()
-            );
-        }
         let harness = phone_with(size, app_with_rolls(WorkspaceTab::TakeRecorder));
         assert!(
             harness
@@ -1035,5 +1023,90 @@ mod tests {
                 tab.label()
             );
         }
+    }
+
+    /// A control's role: what a finger has to hit.
+    fn is_control(role: Role) -> bool {
+        matches!(
+            role,
+            Role::Button | Role::TextInput | Role::Slider | Role::CheckBox | Role::ComboBox
+        )
+    }
+
+    /// REGRESSION: every control of every panel is a finger's height on a phone, portrait
+    /// and landscape.
+    ///
+    /// Nine of the sixteen panels had targets under 44 dp: 28 dp pills (tonic, voice,
+    /// clef, detector…), 31 dp Reset buttons, 20 dp checkboxes and every slider at 20 dp —
+    /// the snail's "44 dp" knobs included, since egui's `Slider` wraps itself in a
+    /// `horizontal` and `add_sized` never reached it. Now the row controls take the touch
+    /// band from `segmented::row_band` and egui's own widgets from `theme::finger_sized`.
+    #[test]
+    fn every_control_is_a_finger_target_on_a_phone() {
+        let mut failures = Vec::new();
+        for size in PHONES {
+            for tab in WorkspaceTab::ALL {
+                let harness = phone_with(size, app_with_rolls(tab));
+                let small: Vec<_> = rects(&harness)
+                    .into_iter()
+                    .filter(|(role, _, rect)| is_control(*role) && rect.height() < space::TOUCH_H)
+                    .map(|(role, label, rect)| format!("{role:?} '{label}' {:.0} dp", rect.height()))
+                    .collect();
+                if !small.is_empty() {
+                    failures.push(format!("{} at {size:?}: {small:?}", tab.label()));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "under a finger's height:\n{}",
+            failures.join("\n")
+        );
+    }
+
+    /// REGRESSION: a slider or a combo never parts from its caption on a phone — the
+    /// caption sits on the control's line, just left of it.
+    ///
+    /// Caption, slider and readout were three items of a wrapping row, and on 360–412 dp
+    /// (the config cards, Scale Finder's mix, Monitor gain) or a landscape row (the
+    /// fretboard's "Scale") the caption ended one line and its control opened the next.
+    /// `SliderRow` and `PillCombo::caption` now place each pair as one item.
+    #[test]
+    fn captions_stay_on_the_line_of_their_control_on_a_phone() {
+        let mut failures = Vec::new();
+        for size in PHONES {
+            for tab in WorkspaceTab::ALL {
+                let harness = phone_with(size, app_with_rolls(tab));
+                let nodes = rects(&harness);
+                for (role, name, control) in &nodes {
+                    if !matches!(role, Role::Slider | Role::ComboBox) {
+                        continue;
+                    }
+                    // The caption: a label ending just left of the control, on its line —
+                    // or heading the control's row from right above it, starting no
+                    // further right (the snail's "Pitch A4" over its −/slider/+ row, one
+                    // line of which would be wider than the screen). A caption left at the
+                    // end of the line above starts right of a control that opens a line.
+                    // A combo is named by its selection, a slider by its caption, so the
+                    // pair is found by place, not by name.
+                    let caption = nodes.iter().find(|(r, _, label)| {
+                        let beside = label.right() <= control.left()
+                            && control.left() - label.right() <= 12.0
+                            && (label.center().y - control.center().y).abs() <= 1.0;
+                        let heading = label.bottom() <= control.top()
+                            && control.top() - label.bottom() <= 12.0
+                            && label.left() <= control.left();
+                        *r == Role::Label && (beside || heading)
+                    });
+                    if caption.is_none() {
+                        failures.push(format!(
+                            "{} at {size:?}: {role:?} '{name}' {control:?} has no caption beside it",
+                            tab.label()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

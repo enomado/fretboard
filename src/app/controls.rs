@@ -38,6 +38,8 @@ use crate::ui::segmented::{
     RowCaption,
     SegmentedButton,
 };
+use crate::ui::slider_row::SliderRow;
+use crate::ui::theme;
 use crate::ui::tokens::color;
 
 impl App {
@@ -106,8 +108,6 @@ impl App {
 
                     ui.separator();
 
-                    ui.add(RowCaption::new("Device"));
-
                     let selected_input_label = selected_input_id
                         .as_deref()
                         .and_then(|id| self.audio_inputs.iter().find(|option| option.id == id))
@@ -117,6 +117,7 @@ impl App {
                     // Never wider than the row itself: 340 dp is more than a 360-dp
                     // phone's card has, and the combo ran past the screen edge.
                     PillCombo::new("audio_input_device", selected_input_label)
+                        .caption(RowCaption::new("Device"))
                         .min_width(340.0_f32.min(ui.max_rect().width()))
                         .show(ui, |ui| {
                             for option in &self.audio_inputs {
@@ -161,30 +162,16 @@ impl App {
                 }
 
                 ui.add_space(14.0);
-                ui.horizontal(|ui| {
-                    let caption = ui.label(
-                        RichText::new("Mic gain")
-                            .color(color::TEXT_CAPTION)
-                            .strong(),
-                    );
-
-                    let slider = egui::Slider::new(&mut input_gain, 1.0..=12.0)
-                        .logarithmic(true)
-                        .clamping(egui::SliderClamping::Always)
-                        .trailing_fill(true)
-                        .show_value(false);
-                    // The caption is a separate label, so name the slider after it:
-                    // a bare `show_value(false)` slider has no accessible name at all.
-                    if ui.add_sized([220.0, 18.0], slider).labelled_by(caption.id).changed() {
-                        self.audio.set_input_gain(input_gain);
-                    }
-
-                    ui.label(
-                        RichText::new(format!("{input_gain:.1}x"))
-                            .color(color::TEXT_VALUE)
-                            .monospace(),
-                    );
-                });
+                let mic_gain = SliderRow::new(RowCaption::new("Mic gain"), &mut input_gain, 1.0..=12.0, |v| {
+                    format!("{v:.1}x")
+                })
+                .width(220.0)
+                .logarithmic()
+                .clamp_always()
+                .trailing_fill();
+                if ui.add(mic_gain).changed() {
+                    self.audio.set_input_gain(input_gain);
+                }
 
                 ui.add_space(10.0);
                 self.draw_input_level(ui, input_level, selected_input_kind);
@@ -202,21 +189,15 @@ impl App {
                         self.audio.set_monitor_enabled(monitor_enabled);
                     }
 
-                    let caption = ui.add(RowCaption::new("Monitor gain"));
-
-                    let slider = egui::Slider::new(&mut monitor_gain, 0.0..=1.0)
-                        .clamping(egui::SliderClamping::Always)
-                        .trailing_fill(true)
-                        .show_value(false);
-                    if ui.add_sized([140.0, 18.0], slider).labelled_by(caption.id).changed() {
+                    let gain = SliderRow::new(RowCaption::new("Monitor gain"), &mut monitor_gain, 0.0..=1.0, |v| {
+                        format!("{:>3.0}%", v * 100.0)
+                    })
+                    .width(140.0)
+                    .clamp_always()
+                    .trailing_fill();
+                    if ui.add(gain).changed() {
                         self.audio.set_monitor_gain(monitor_gain);
                     }
-
-                    ui.label(
-                        RichText::new(format!("{:>3.0}%", monitor_gain * 100.0))
-                            .color(color::TEXT_VALUE)
-                            .monospace(),
-                    );
                 });
                 ui.add_space(8.0);
                 ui.label(
@@ -259,33 +240,20 @@ impl App {
                     );
                 });
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    // Эталон A4 (камертон): задаёт стандарт строя для всего
-                    // движка (маппинг частота↔нота + банк резонаторов). Это
-                    // свойство анализа, а не фретборда — потому живёт в Controls.
-                    let caption = ui.label(
-                        RichText::new("A4 pitch")
-                            .color(color::TEXT_CAPTION)
-                            .strong(),
-                    );
-                    let mut settings = self.audio.analysis_settings();
-                    let pitch_changed = ui
-                        .add_sized(
-                            [180.0, 18.0],
-                            egui::Slider::new(&mut settings.concert_pitch_hz.0, 415.0..=466.0)
-                                .show_value(false),
-                        )
-                        .labelled_by(caption.id)
-                        .changed();
-                    ui.label(
-                        RichText::new(format!("{:.1} Hz", settings.concert_pitch_hz.0))
-                            .color(color::TEXT_VALUE)
-                            .monospace(),
-                    );
-                    if pitch_changed {
-                        self.audio.set_analysis_settings(settings);
-                    }
-                });
+                // Эталон A4 (камертон): задаёт стандарт строя для всего
+                // движка (маппинг частота↔нота + банк резонаторов). Это
+                // свойство анализа, а не фретборда — потому живёт в Controls.
+                let mut settings = self.audio.analysis_settings();
+                let a4 = SliderRow::new(
+                    RowCaption::new("A4 pitch"),
+                    &mut settings.concert_pitch_hz.0,
+                    415.0..=466.0,
+                    |v| format!("{v:.1} Hz"),
+                )
+                .width(180.0);
+                if ui.add(a4).changed() {
+                    self.audio.set_analysis_settings(settings);
+                }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     // Знаки альтерации: диезы (C#) или бемоли (Db) во ВСЕХ подписях
@@ -380,8 +348,9 @@ impl App {
                 ui.set_min_width(frame_width - 34.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.add(RowCaption::new("Tuning"));
-                    PillCombo::new("tuning", self.tuning_kind.label()).show(ui, |ui| {
+                    let tuning =
+                        PillCombo::new("tuning", self.tuning_kind.label()).caption(RowCaption::new("Tuning"));
+                    tuning.show(ui, |ui| {
                         for tuning in ALL_TUNINGS {
                             ui.selectable_value(&mut self.tuning_kind, tuning, tuning.label());
                         }
@@ -399,8 +368,9 @@ impl App {
 
                     ui.separator();
 
-                    ui.add(RowCaption::new("Scale"));
-                    PillCombo::new("scale", self.scale_kind.label()).show(ui, |ui| {
+                    let scale =
+                        PillCombo::new("scale", self.scale_kind.label()).caption(RowCaption::new("Scale"));
+                    scale.show(ui, |ui| {
                         for scale in ALL_SCALES {
                             ui.selectable_value(&mut self.scale_kind, scale, scale.label());
                         }
@@ -488,7 +458,7 @@ impl App {
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Reset").clicked() {
+                        if theme::finger_sized(ui, |ui| ui.button("Reset")).clicked() {
                             reset(&mut settings, &defaults);
                             changed = true;
                         }
@@ -506,89 +476,62 @@ impl App {
 
     fn draw_general_config_tab(&mut self, ui: &mut Ui, settings: &mut AnalysisSettings, changed: &mut bool) {
         ui.horizontal_wrapped(|ui| {
-            ui.add(RowCaption::new("Window"));
-            PillCombo::new("analysis_window_size", format_sample_count(settings.window_size)).show(
-                ui,
-                |ui| {
-                    for preset in WINDOW_SIZE_PRESETS {
-                        if ui
-                            .selectable_value(&mut settings.window_size, preset, format_sample_count(preset))
-                            .changed()
-                        {
-                            *changed = true;
-                        }
+            let window = PillCombo::new("analysis_window_size", format_sample_count(settings.window_size))
+                .caption(RowCaption::new("Window"));
+            window.show(ui, |ui| {
+                for preset in WINDOW_SIZE_PRESETS {
+                    if ui
+                        .selectable_value(&mut settings.window_size, preset, format_sample_count(preset))
+                        .changed()
+                    {
+                        *changed = true;
                     }
-                },
-            );
+                }
+            });
 
             ui.separator();
 
-            let caption = ui.add(RowCaption::new("Smooth"));
-            if ui
-                .add_sized(
-                    [120.0, 18.0],
-                    egui::Slider::new(&mut settings.spectrum_smoothing, 0..=4).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(settings.spectrum_smoothing.to_string())
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            let smooth = SliderRow::new(
+                RowCaption::new("Smooth"),
+                &mut settings.spectrum_smoothing,
+                0..=4,
+                |v| v.to_string(),
+            )
+            .width(120.0);
+            *changed |= ui.add(smooth).changed();
         });
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            let caption = ui.add(RowCaption::new("Min Hz"));
-            if ui
-                .add_sized(
-                    [180.0, 18.0],
-                    egui::Slider::new(&mut settings.min_frequency, 16.0..=600.0)
-                        .logarithmic(true)
-                        .show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(format!("{:.0}", settings.min_frequency))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            let min_hz = SliderRow::new(
+                RowCaption::new("Min Hz"),
+                &mut settings.min_frequency,
+                16.0..=600.0,
+                |v| format!("{v:.0}"),
+            )
+            .width(180.0)
+            .logarithmic();
+            *changed |= ui.add(min_hz).changed();
 
             ui.add_space(10.0);
 
-            let caption = ui.add(RowCaption::new("Max Hz"));
-            if ui
-                .add_sized(
-                    [180.0, 18.0],
-                    egui::Slider::new(&mut settings.max_frequency, 300.0..=4_000.0)
-                        .logarithmic(true)
-                        .show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(format!("{:.0}", settings.max_frequency))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            let max_hz = SliderRow::new(
+                RowCaption::new("Max Hz"),
+                &mut settings.max_frequency,
+                300.0..=4_000.0,
+                |v| format!("{v:.0}"),
+            )
+            .width(180.0)
+            .logarithmic();
+            *changed |= ui.add(max_hz).changed();
         });
     }
 
     fn draw_fft1_config_tab(&mut self, ui: &mut Ui, settings: &mut AnalysisSettings, changed: &mut bool) {
         ui.horizontal_wrapped(|ui| {
-            ui.add(RowCaption::new("FFT"));
-            PillCombo::new("analysis_fft_size", format_sample_count(settings.fft_size)).show(ui, |ui| {
+            let fft = PillCombo::new("analysis_fft_size", format_sample_count(settings.fft_size))
+                .caption(RowCaption::new("FFT"));
+            fft.show(ui, |ui| {
                 for preset in FFT_SIZE_PRESETS {
                     if ui
                         .selectable_value(&mut settings.fft_size, preset, format_sample_count(preset))
@@ -601,61 +544,35 @@ impl App {
 
             ui.separator();
 
-            let caption = ui.add(RowCaption::new("Note spread"));
-            if ui
-                .add_sized(
-                    [150.0, 18.0],
-                    egui::Slider::new(&mut settings.note_spread, 0.15..=0.8).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(format!("{:.2}", settings.note_spread))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            let spread = SliderRow::new(
+                RowCaption::new("Note spread"),
+                &mut settings.note_spread,
+                0.15..=0.8,
+                |v| format!("{v:.2}"),
+            )
+            .width(150.0);
+            *changed |= ui.add(spread).changed();
         });
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            let caption = ui.add(RowCaption::new("FFT gamma"));
-            if ui
-                .add_sized(
-                    [160.0, 18.0],
-                    egui::Slider::new(&mut settings.spectrum_gamma, 0.35..=1.2).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(format!("{:.2}", settings.spectrum_gamma))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
+            let fft_gamma = SliderRow::new(
+                RowCaption::new("FFT gamma"),
+                &mut settings.spectrum_gamma,
+                0.35..=1.2,
+                |v| format!("{v:.2}"),
             );
+            *changed |= ui.add(fft_gamma).changed();
 
             ui.add_space(10.0);
 
-            let caption = ui.add(RowCaption::new("Note gamma"));
-            if ui
-                .add_sized(
-                    [160.0, 18.0],
-                    egui::Slider::new(&mut settings.note_gamma, 0.35..=1.2).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(format!("{:.2}", settings.note_gamma))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
+            let note_gamma = SliderRow::new(
+                RowCaption::new("Note gamma"),
+                &mut settings.note_gamma,
+                0.35..=1.2,
+                |v| format!("{v:.2}"),
             );
+            *changed |= ui.add(note_gamma).changed();
         });
     }
 
@@ -666,132 +583,84 @@ impl App {
         changed: &mut bool,
     ) {
         ui.horizontal_wrapped(|ui| {
-            // Both range sliders are named after this caption ("to" names nothing).
-            let caption = ui.add(RowCaption::new("Range"));
-
             // Sliders bind a raw `u8` scratch; the validated `PNote` is rebuilt
-            // on change (both ranges sit inside 0..=127, so `new` can't fail).
+            // on change (both ranges sit inside 0..=127, so `new` can't fail). The
+            // readout spells the scratch, which is the note the slider stands on.
+            let accidental = settings.accidental;
+            let note_name = |midi: u8| accidental.midi_name(PNote::new(midi).unwrap());
             let mut min_midi = settings.resonator.min_midi.as_u8();
-            if ui
-                .add_sized(
-                    [140.0, 18.0],
-                    egui::Slider::new(&mut min_midi, 12..=84).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
+            // A sharp/flat name of octaves 0–8 is the widest the readout shows.
+            const WIDEST_NOTE: &str = "C#0";
+            let low = SliderRow::new(RowCaption::new("Range"), &mut min_midi, 12..=84, note_name)
+                .width(140.0)
+                .readout_sample(WIDEST_NOTE)
+                .accessible_name("Range low");
+            if ui.add(low).changed() {
                 settings.resonator.min_midi = PNote::new(min_midi).unwrap();
                 *changed = true;
             }
-            ui.label(
-                RichText::new(settings.accidental.midi_name(settings.resonator.min_midi))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
 
-            ui.label(RichText::new("to").color(color::TEXT_HINT).strong());
-
+            // "to" alone names nothing: the slider says which end it is.
             let mut max_midi = settings.resonator.max_midi.as_u8();
-            if ui
-                .add_sized(
-                    [140.0, 18.0],
-                    egui::Slider::new(&mut max_midi, 24..=108).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
+            let to = RowCaption::new("to").color(color::TEXT_HINT);
+            let high = SliderRow::new(to, &mut max_midi, 24..=108, note_name)
+                .width(140.0)
+                .readout_sample(WIDEST_NOTE)
+                .accessible_name("Range high");
+            if ui.add(high).changed() {
                 settings.resonator.max_midi = PNote::new(max_midi).unwrap();
                 *changed = true;
             }
-            ui.label(
-                RichText::new(settings.accidental.midi_name(settings.resonator.max_midi))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
 
             ui.separator();
 
-            let caption = ui.add(RowCaption::new("Bins / semitone"));
-            if ui
-                .add_sized(
-                    [120.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.bins, 1..=12).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(settings.resonator.bins.to_string())
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            let bins = SliderRow::new(
+                RowCaption::new("Bins / semitone"),
+                &mut settings.resonator.bins,
+                1..=12,
+                |v| v.to_string(),
+            )
+            .width(120.0);
+            *changed |= ui.add(bins).changed();
         });
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            let caption = ui.add(RowCaption::new("Alpha"));
-            if ui
-                .add_sized(
-                    [150.0, 18.0],
-                    // Логарифмический: перцептуально интересна нижняя декада
-                    // (0.001..0.1 — длинный «звон»), на линейной шкале она
-                    // занимала бы <1% хода слайдера.
-                    egui::Slider::new(&mut settings.resonator.alpha, 0.001..=12.0)
-                        .logarithmic(true)
-                        .show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(format!("{:.3}", settings.resonator.alpha))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            // Логарифмический: перцептуально интересна нижняя декада
+            // (0.001..0.1 — длинный «звон»), на линейной шкале она
+            // занимала бы <1% хода слайдера.
+            let alpha = SliderRow::new(
+                RowCaption::new("Alpha"),
+                &mut settings.resonator.alpha,
+                0.001..=12.0,
+                |v| format!("{v:.3}"),
+            )
+            .width(150.0)
+            .logarithmic();
+            *changed |= ui.add(alpha).changed();
 
             ui.add_space(10.0);
 
-            let caption = ui.add(RowCaption::new("Beta"));
-            if ui
-                .add_sized(
-                    [150.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.beta, 0.001..=12.0)
-                        .logarithmic(true)
-                        .show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(format!("{:.3}", settings.resonator.beta))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            let beta = SliderRow::new(
+                RowCaption::new("Beta"),
+                &mut settings.resonator.beta,
+                0.001..=12.0,
+                |v| format!("{v:.3}"),
+            )
+            .width(150.0)
+            .logarithmic();
+            *changed |= ui.add(beta).changed();
 
             ui.add_space(10.0);
 
-            let caption = ui.add(RowCaption::new("Gamma"));
-            if ui
-                .add_sized(
-                    [150.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.gamma, 0.15..=2.4).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(format!("{:.2}", settings.resonator.gamma))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            let gamma = SliderRow::new(
+                RowCaption::new("Gamma"),
+                &mut settings.resonator.gamma,
+                0.15..=2.4,
+                |v| format!("{v:.2}"),
+            )
+            .width(150.0);
+            *changed |= ui.add(gamma).changed();
         });
 
         ui.add_space(10.0);
@@ -808,45 +677,25 @@ impl App {
 
             ui.add_space(10.0);
 
-            let caption = ui.add(RowCaption::new("History"));
-            if ui
-                .add_sized(
-                    [120.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.history, 8..=240).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            ui.label(
-                RichText::new(settings.resonator.history.to_string())
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
-            );
+            let history = SliderRow::new(
+                RowCaption::new("History"),
+                &mut settings.resonator.history,
+                8..=240,
+                |v| v.to_string(),
+            )
+            .width(120.0);
+            *changed |= ui.add(history).changed();
 
             ui.add_space(10.0);
 
-            let caption = ui.add(RowCaption::new("Update"));
-            if ui
-                .add_sized(
-                    [120.0, 18.0],
-                    egui::Slider::new(&mut settings.resonator.update_ms, 8..=80).show_value(false),
-                )
-                .labelled_by(caption.id)
-                .changed()
-            {
-                *changed = true;
-            }
-            // One unit with its number: a wrapped row would otherwise break "16 | ms".
-            ui.add(
-                egui::Label::new(
-                    RichText::new(format!("{} ms", settings.resonator.update_ms))
-                        .color(color::TEXT_VALUE)
-                        .monospace(),
-                )
-                .extend(),
-            );
+            let update = SliderRow::new(
+                RowCaption::new("Update"),
+                &mut settings.resonator.update_ms,
+                8..=80,
+                |v| format!("{v} ms"),
+            )
+            .width(120.0);
+            *changed |= ui.add(update).changed();
         });
 
         ui.add_space(10.0);
@@ -875,11 +724,13 @@ impl App {
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            if ui
-                .checkbox(
+            let reassign = theme::finger_sized(ui, |ui| {
+                ui.checkbox(
                     &mut settings.resonator.reassign,
                     RichText::new("Δφ reassign").color(color::TEXT_CAPTION).strong(),
                 )
+            });
+            if reassign
                 .on_hover_text(
                     "Place each partial at its true frequency via instantaneous-frequency \
                      (Δφ) reassignment, with a coherence gate that suppresses the \

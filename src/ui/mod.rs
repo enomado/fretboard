@@ -5,6 +5,7 @@
 //!   - `waterfall` — spectrogram-style history strips,
 //!   - `plot_text` — a plot frame's title row and empty-plot hint, kept inside it,
 //!   - `segmented` — the canonical pill / segmented toggle button,
+//!   - `slider_row` — the canonical caption + slider + value row,
 //!   - `tokens`    — design tokens: the only home for raw colour/size literals,
 //!   - `theme`     — the egui style, built from `tokens`.
 //!
@@ -15,6 +16,7 @@ pub mod fretboard;
 pub mod pianoroll;
 pub mod plot_text;
 pub mod segmented;
+pub mod slider_row;
 pub mod snail;
 pub mod staff;
 pub mod theme;

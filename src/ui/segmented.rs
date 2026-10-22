@@ -40,10 +40,15 @@
 //!
 //! [`SegmentedButton::text_dy`] remains as a hand-nudge escape hatch.
 
+use std::sync::Arc;
+
 use eframe::egui::{
+    Align,
     Color32,
     CornerRadius,
     FontId,
+    Galley,
+    Layout,
     Popup,
     PopupCloseBehavior,
     Response,
@@ -55,12 +60,14 @@ use eframe::egui::{
     StrokeKind,
     TextWrapMode,
     Ui,
+    Vec2,
     Widget,
     WidgetInfo,
     pos2,
     vec2,
 };
 
+use crate::ui::theme;
 use crate::ui::tokens::{
     color,
     radius,
@@ -77,6 +84,19 @@ use crate::ui::tokens::{
 /// metrics per call site. Shared with captions/combos via the token so a row's
 /// controls cannot end up on different bands.
 const PILL_HEIGHT: f32 = space::ROW_H;
+
+/// The height band of a row's controls *here*: the pill's [`space::ROW_H`] under a mouse, a finger's
+/// [`space::TOUCH_H`] on a touch screen (`theme::min_target_h`).
+///
+/// Every row-level control — pill, caption, combo, [`crate::ui::slider_row::SliderRow`]
+/// — takes its height from this one function, so on the phone they all become finger
+/// targets at once and a row's baselines still line up; the desktop keeps 28. Before,
+/// each phone call site raised its own pills to 44 and nine of the sixteen panels still
+/// had 28 dp pills (s17's count). Only controls grow: text rows and card headers keep
+/// their height, which a global `interact_size` would have inflated too.
+pub fn row_band(ui: &Ui) -> f32 {
+    PILL_HEIGHT.max(theme::min_target_h(ui.ctx()))
+}
 /// Corner radius — the canonical value from the screenshot (others had drifted).
 const PILL_RADIUS: u8 = radius::PILL;
 /// Horizontal breathing room on each side of the label when the pill is sized to
@@ -106,8 +126,8 @@ pub struct SegmentedButton<'a> {
     /// Lower bound on width. The pill still grows to fit long labels; this only
     /// stops short labels from collapsing (keeps a row of pills tidy).
     min_width:  f32,
-    /// Outer height; [`PILL_HEIGHT`] unless a touch surface asks for more
-    /// (see [`Self::height`]).
+    /// Outer height; [`PILL_HEIGHT`] unless a call site asks for more (see
+    /// [`Self::height`]). Never below [`row_band`] when drawn.
     height:     f32,
     font_size:  f32,
     /// Hand-tuned vertical bias in logical px (`+` = down). The caps-band centring
@@ -225,7 +245,8 @@ impl Widget for SegmentedButton<'_> {
 
         let band_mid = ink_band_mid(ui, &font_id);
         let width = (galley.size().x + 2.0 * H_PAD).max(self.min_width);
-        let (rect, response) = ui.allocate_exact_size(vec2(width, self.height), Sense::click());
+        let height = self.height.max(row_band(ui));
+        let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
         // Custom-painted, so egui does not know what the pill says; tell
         // accessibility (TalkBack reads the label, tests find the pill by it).
         response.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, self.text));
@@ -304,6 +325,20 @@ impl<'a> RowCaption<'a> {
         self.font_size = size;
         self
     }
+
+    /// The width the caption takes in a row — for a control that keeps its caption on
+    /// its own line ([`PillCombo::caption`], `SliderRow`) and has to know the pair's
+    /// width before placing it.
+    pub fn width(&self, ui: &Ui) -> f32 {
+        ui.painter()
+            .layout_no_wrap(
+                self.text.to_owned(),
+                FontId::proportional(self.font_size),
+                self.color,
+            )
+            .size()
+            .x
+    }
 }
 
 impl Widget for RowCaption<'_> {
@@ -315,7 +350,7 @@ impl Widget for RowCaption<'_> {
         let band_mid = ink_band_mid(ui, &font_id);
 
         // Same height band as a pill — that is the whole point. Width hugs the text.
-        let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x, PILL_HEIGHT), Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(vec2(galley.size().x, row_band(ui)), Sense::hover());
         // A caption is a label to accessibility too: it gives the node a name, and
         // gives a slider beside it something to be `labelled_by` — a `labelled_by`
         // pointing at an id with no node panics inside accesskit.
@@ -353,6 +388,9 @@ pub struct PillCombo<'a> {
     /// absence genuinely means "no call-site opinion, defer to the theme".
     min_width:     Option<f32>,
     font_size:     f32,
+    /// The caption the combo keeps beside it ([`Self::caption`]); `None` = the call
+    /// site places its own (or none).
+    caption:       Option<RowCaption<'a>>,
 }
 
 /// Width reserved for the caret box at the pill's right end, and the gap that
@@ -372,7 +410,17 @@ impl<'a> PillCombo<'a> {
             selected_text: selected_text.into(),
             min_width: None,
             font_size: DEFAULT_FONT_SIZE,
+            caption: None,
         }
+    }
+
+    /// Put `caption` ("Tuning", "Scale", "Key") in front of the pill as one item of the
+    /// row: in a wrapping row the pair moves to the next line together. Added as two
+    /// widgets, the caption could end a line and its combo open the next one — on a
+    /// phone that is where "Scale", "Device" and the staff's "Key" were left dangling.
+    pub fn caption(mut self, caption: RowCaption<'a>) -> Self {
+        self.caption = Some(caption);
+        self
     }
 
     /// Keep the pill from collapsing below `w` logical px. It still grows to fit a
@@ -406,17 +454,61 @@ impl<'a> PillCombo<'a> {
         let galley = ui
             .painter()
             .layout_no_wrap(self.selected_text, font_id.clone(), text_color);
-        let band_mid = ink_band_mid(ui, &font_id);
+        let face = ComboFace {
+            band_mid: ink_band_mid(ui, &font_id),
+            galley,
+            text_color,
+        };
 
         let min_width = self.min_width.unwrap_or_else(|| ui.spacing().combo_width);
-        let width = (galley.size().x + 2.0 * H_PAD + CARET_GAP + CARET_BOX).max(min_width);
+        let width = (face.galley.size().x + 2.0 * H_PAD + CARET_GAP + CARET_BOX).max(min_width);
+        let band = row_band(ui);
 
+        let Some(caption) = self.caption else {
+            return face.show(ui, self.id_salt, vec2(width, band), contents);
+        };
+        // The pair is one fixed-width item of the row. A `min_width` sized to the row
+        // ("never wider than the row") leaves the caption no room beside it, so the
+        // pill gives the caption's share back rather than run past the edge — down to
+        // its text, never under it.
+        let caption_w = caption.width(ui) + ui.spacing().item_spacing.x;
+        let width = width
+            .min(ui.max_rect().width() - caption_w)
+            .max(face.galley.size().x + 2.0 * H_PAD + CARET_GAP + CARET_BOX);
+        ui.allocate_ui_with_layout(
+            vec2(caption_w + width, band),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.add(caption);
+                face.show(ui, self.id_salt, vec2(width, band), contents)
+            },
+        )
+        .inner
+    }
+}
+
+/// What a [`PillCombo`]'s button shows: its laid-out selection, the colour it is laid
+/// out in, and where the font's ink band sits in it.
+struct ComboFace {
+    galley:     Arc<Galley>,
+    text_color: Color32,
+    band_mid:   f32,
+}
+
+impl ComboFace {
+    /// The button at `size`, and its popup while open.
+    fn show(self, ui: &mut Ui, id_salt: &str, size: Vec2, contents: impl FnOnce(&mut Ui)) -> Response {
+        let enabled = ui.is_enabled();
         // `allocate_space` hands back an auto id we deliberately drop: the popup's
         // open-state must survive across frames under a *stable* id, so the button
         // interacts under the salt instead.
-        let (_auto_id, rect) = ui.allocate_space(vec2(width, PILL_HEIGHT));
-        let id = ui.make_persistent_id(self.id_salt);
+        let (_auto_id, rect) = ui.allocate_space(size);
+        let id = ui.make_persistent_id(id_salt);
         let response = ui.interact(rect, id, Sense::click());
+        // Custom-painted like the pill: name it for accessibility (TalkBack reads the
+        // selection, tests find the combo by it).
+        let selection = self.galley.text().to_owned();
+        response.widget_info(|| WidgetInfo::labeled(Role::ComboBox, enabled, &selection));
 
         let popup_id = id.with("popup");
         let is_open = Popup::is_id_open(ui.ctx(), popup_id);
@@ -448,9 +540,9 @@ impl<'a> PillCombo<'a> {
             // but its *vertical* placement is the pill rule verbatim: ink band centred
             // on the rect's centre.
             painter.galley(
-                pos2(rect.left() + H_PAD, rect.center().y - band_mid),
-                galley,
-                text_color,
+                pos2(rect.left() + H_PAD, rect.center().y - self.band_mid),
+                self.galley,
+                self.text_color,
             );
 
             let caret_x = rect.right() - H_PAD - CARET_BOX * 0.5;
@@ -461,12 +553,15 @@ impl<'a> PillCombo<'a> {
                     pos2(caret_x + CARET_W * 0.5, caret_y - CARET_H * 0.5),
                     pos2(caret_x, caret_y + CARET_H * 0.5),
                 ],
-                text_color,
+                self.text_color,
                 Stroke::NONE,
             ));
         }
 
         let popup_height = ui.spacing().combo_height;
+        // The popup's rows are what the finger picks from on a phone: they get the
+        // touch height there (egui sizes a selectable row by `interact_size.y`).
+        let row_h = theme::min_target_h(ui.ctx());
         Popup::menu(&response)
             .id(popup_id)
             .width(rect.width())
@@ -482,6 +577,7 @@ impl<'a> PillCombo<'a> {
                 let style = ui.style_mut();
                 style.spacing.item_spacing.y = 2.0;
                 style.spacing.button_padding.y = 3.0;
+                style.spacing.interact_size.y = style.spacing.interact_size.y.max(row_h);
                 for widget in [
                     &mut style.visuals.widgets.hovered,
                     &mut style.visuals.widgets.active,

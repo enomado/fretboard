@@ -134,6 +134,11 @@ pub(super) fn split_screen<T>(
     };
     let content = ui
         .scope_builder(UiBuilder::new().max_rect(config_rect), |ui| {
+            // A solid bar while the config overflows its share (the snail's knobs do).
+            // egui's floating bar shows only under a hovering pointer, which a finger never
+            // is, and a config cut mid-screen — unlike a page cut at the screen's edge —
+            // does not look like it goes on: its last row was simply missing.
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
             egui::ScrollArea::both()
                 .id_salt(id.with("config"))
                 .auto_shrink([false, false])

@@ -330,25 +330,20 @@ fn draw_pickers(ui: &mut Ui, trainer: &mut StaffTrainer) {
             }
         }
 
-        // "Key" and its combo wrap as one: if both do not fit after the clef pills,
-        // start the next row here, or the caption would end this row and its combo
-        // open the next one. 160 = the theme's `combo_width`, the combo's floor.
-        const KEY_GROUP_W: f32 = 18.0 + 30.0 + 10.0 + 160.0;
-        // `available_width()` of a wrapping row is the whole row; what is left on
-        // *this* line is `available_size_before_wrap`.
-        if ui.available_size_before_wrap().x < KEY_GROUP_W {
-            ui.end_row();
-        } else {
-            ui.add_space(18.0);
+        // A wider gap sets the key group apart from the clef pills; at the start of a
+        // line it would only push the group off the left edge.
+        if ui.available_size_before_wrap().x < ui.max_rect().width() {
+            ui.add_space(8.0);
         }
 
         // Key-signature picker — the circle of fifths. Selecting a key both draws
         // its sharps/flats at the clef and re-spells the notes accordingly (see
-        // `KeySignature`).
-        ui.add(RowCaption::new("Key").font_size(12.0).color(color::TEXT_HINT));
+        // `KeySignature`). "Key" and its combo wrap as one (`PillCombo::caption`).
         // The snug popup style these short rows need is baked into `PillCombo`, so
         // it is no longer spelled out here.
-        PillCombo::new("staff_key_sig", key_label(trainer.key)).show(ui, |ui| {
+        let key = PillCombo::new("staff_key_sig", key_label(trainer.key))
+            .caption(RowCaption::new("Key").font_size(12.0).color(color::TEXT_HINT));
+        key.show(ui, |ui| {
             for &(fifths, name) in CIRCLE_OF_FIFTHS.iter() {
                 let k = KeySignature { fifths };
                 ui.selectable_value(&mut trainer.key, k, key_label(k))
