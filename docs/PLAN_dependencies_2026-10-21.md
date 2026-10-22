@@ -23,7 +23,7 @@
 - [x] error-contracts — разобрать fallback-затычки, Option, NaN и внешние ошибки; исправить подтверждённые нарушения контрактов без подавления диагностики. Сессии 9 и 11: остаток s10 (take_marks/take_roll/PITCH_BENCH_LIMIT) исправлен, см. хендоф.
 - [x] piano-roll-ui — сессия 12: снято и исправлено 5 дефектов, вопросы Стасу в хендофе. (Стас, 21.10.2026: «улучшить пианоролл») разобрать пианоролл как инструмент: `src/ui/pianoroll.rs`, `src/app/pitch_roll_panel.rs`, `src/app/take_roll.rs`. Сначала снять текущее поведение kittest-сценариями и скриншотами (масштаб/скролл по времени и высоте, подписи рядов, читаемость нот/вибрато, выделение и разметка, производительность длинного тейка), записать список конкретных неудобств с адресами, затем исправить самые ценные. Locked-решения violin_trainer_plan (стафф ≠ пианоролл, LABEL_MIN_ROW_H и т. п.) не ломать; спорные продуктовые развилки — в хендоф вопросом Стасу, не молча.
 - [x] phone-ui — сессия 13: мобильная оболочка под kittest, 8 дефектов исправлено, вопросы Стасу в хендофе. (Стас, 21.10.2026: «улучшить UI для телефона») Android/узкий портрет: прогнать ключевые панели в kittest на ширинах 360–420 dp и в портрете/ландшафте, найти обрезания, мелкие touch-цели (<~44 dp), жесты, которые требуют мыши/hover, переполнение тулбаров и панелей egui_tiles. Учитывать `docs/android/GOTCHA_egui_layout_width_doubling.md`. Исправить подтверждённое, Android `--lib` сборка обязательна; живой прогон на телефоне — за Стасом, назвать отдельно.
-- [ ] deps-refresh — повторная сверка свежести прямых зависимостей с registry/upstream (резолвер `cargo update --dry-run`, свежие major); обновить то, что вышло после upgrade-validation, с проверкой desktop/wasm/Android. Нечего обновлять — закрыть одной строкой.
+- [x] deps-refresh — сессия 14: прямые — последние stable, в lockfile два транзитивных патча (memmap2, tokio), проверки в хендофе. Повторная сверка свежести прямых зависимостей с registry/upstream (резолвер `cargo update --dry-run`, свежие major); обновить то, что вышло после upgrade-validation, с проверкой desktop/wasm/Android. Нечего обновлять — закрыть одной строкой.
 - [ ] reuse-and-boundaries — разобрать дубли, feature envy, длинные цепочки, data/arg clumps и циклы модулей; колокализовать инварианты, переиспользуя существующее.
 - [ ] audio-code-smells — разобрать подтверждённые smells native/wasm capture, workers, replay и DSP; сохранить аудиочасы, численные алгоритмы и realtime-свойства.
 - [ ] ui-code-smells — разобрать применимые egui-детекторы, состояние панелей, диапазоны и ввод; сохранить поведение, проверить изменённую интеракцию egui_kittest.
@@ -263,7 +263,25 @@ registry-зависимостей (три имени standalone probe входя
 
 Остатка по обновлениям нет. Smell-аудит в сессии 6 не начинался.
 
-## Текущее состояние — хендоф сессии 13 (Claude)
+## Текущее состояние — хендоф сессии 14 (Claude)
+
+**deps-refresh закрыт; лимит серии (14 сессий) исчерпан, серия остановлена
+(STOP).** Шесть smell-областей с `reuse-and-boundaries` остаются открытыми —
+продолжение только по решению Стаса. Вопросы s13 Стасу (ниже) в силе.
+
+s14, 22.10.2026: все 26 прямых registry-зависимостей, egui/wgpu/winit — по
+crates.io API последние stable (subsecond/dioxus-cli-config 0.8.0-alpha.3,
+winit 0.31.0-beta.3 — по-прежнему prerelease). resonators: HEAD `onepole-bank`
+= locked `67152aa9`. `cargo update` дал только патчи: memmap2 0.9.11→0.9.12
+(Wayland через smithay-client-toolkit, только desktop) и tokio 1.54.0→1.54.1
+(в графах desktop/wasm/Android не участвует). Lockfile lifecycle_probe не
+тронут: README закрепляет окружение замера (у пробы были бы только
+toml_*/unicode-ident). Проверено `--locked`: `cargo build --bin fretboard-app`,
+`cargo clippy --all-targets` (чисто), `cargo test --release --lib --test
+pill_layout` — 264 lib + 2 UI passed, 36 ignored; wasm `--lib --bins` и
+Android `--lib` (NDK r27c, API 26) — pass.
+
+### Хендоф сессии 13, история
 
 **phone-ui закрыт.** Следующая область — `deps-refresh`, затем smell-области
 по очереди. Блокеров нет.
