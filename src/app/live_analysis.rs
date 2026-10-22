@@ -1,10 +1,8 @@
 use eframe::egui::{
     self,
     Color32,
-    CornerRadius,
     FontId,
     Frame,
-    Margin,
     Rect,
     Sense,
     Stroke,
@@ -63,11 +61,12 @@ impl App {
         let selected_input_id = self.audio.selected_input_id();
         let selected_input_kind = self.selected_input_kind(selected_input_id.as_deref());
 
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(22))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 card_header(
                     ui,

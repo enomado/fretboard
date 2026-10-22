@@ -7,9 +7,7 @@
 
 use eframe::egui::{
     self,
-    CornerRadius,
     Frame,
-    Margin,
     RichText,
     Sense,
     Stroke,
@@ -35,8 +33,11 @@ use super::{
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PCNote;
-use crate::ui::plot_text;
 use crate::ui::tokens::color;
+use crate::ui::{
+    plot_text,
+    theme,
+};
 
 impl App {
     pub(in crate::app) fn draw_scale_finder_card(&mut self, ui: &mut Ui) {
@@ -60,11 +61,12 @@ impl App {
         let selected_root_pc = PCNote::from_natural(self.root_note).0 as usize;
         let selected_kind = self.scale_kind;
 
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(22))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 card_header(
                     ui,

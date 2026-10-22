@@ -1,10 +1,8 @@
 use eframe::egui::{
     self,
     Color32,
-    CornerRadius,
     FontId,
     Frame,
-    Margin,
     Rect,
     RichText,
     Sense,
@@ -50,8 +48,12 @@ use crate::ui::fretboard::positions::{
     VERTICAL_REACH,
     draw_positions,
 };
-use crate::ui::theme::fretboard_fill;
+use crate::ui::theme::{
+    card_pad,
+    fretboard_fill,
+};
 use crate::ui::tokens::color;
+use crate::ui::wrap_row::separated;
 
 impl App {
     pub(super) fn draw_fretboard_card(&self, ui: &mut Ui) {
@@ -62,27 +64,31 @@ impl App {
         let resonator_targets = self.resonator_fretboard_targets(&tuning);
         let accidental = self.audio.analysis_settings().accidental;
 
+        let (pad, radius) = card_pad(ui.ctx(), 14, 22);
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(22))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 // Wraps on a phone: the three counters are ~470 dp in one row. Each
-                // counter moves to the next row whole, not broken mid-phrase.
+                // counter moves to the next row whole, not broken mid-phrase, and
+                // the divider before it only where it stays on the line.
                 ui.horizontal_wrapped(|ui| {
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.label(
                         RichText::new(format!("Scale tones: {}", scale.notes().len()))
                             .color(color::TEXT_HINT),
                     );
-                    ui.separator();
-                    ui.label(
-                        RichText::new(format!("Resonator notes: {}", resonator_targets.len()))
-                            .color(color::TEXT_HINT),
-                    );
-                    ui.separator();
-                    ui.label(RichText::new("Visible frets: 1-18").color(color::TEXT_HINT));
+                    separated(ui, "resonator_notes", |ui| {
+                        ui.label(
+                            RichText::new(format!("Resonator notes: {}", resonator_targets.len()))
+                                .color(color::TEXT_HINT),
+                        );
+                    });
+                    separated(ui, "visible_frets", |ui| {
+                        ui.label(RichText::new("Visible frets: 1-18").color(color::TEXT_HINT));
+                    });
                 });
 
                 ui.add_space(10.0);

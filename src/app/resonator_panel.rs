@@ -1,9 +1,7 @@
 use eframe::egui::{
     self,
-    CornerRadius,
     FontId,
     Frame,
-    Margin,
     Rect,
     Sense,
     Stroke,
@@ -268,12 +266,13 @@ impl App {
         self.audio.request_resonator(); // потребитель банка → держим его «нужным»
         let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
 
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(22))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 card_header(
                     ui,
@@ -391,12 +390,13 @@ impl App {
         self.audio.request_resonator(); // потребитель банка → держим его «нужным»
         let reading = self.audio.resonator_reading();
         let reading_ref = reading.as_ref();
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 22);
 
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(22))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 card_header(
                     ui,

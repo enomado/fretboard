@@ -6,6 +6,7 @@
 //!   - `plot_text` — a plot frame's title row and empty-plot hint, kept inside it,
 //!   - `segmented` — the canonical pill / segmented toggle button,
 //!   - `slider_row` — the canonical caption + slider + value row,
+//!   - `wrap_row`  — groups and dividers a wrapping row must not split,
 //!   - `tokens`    — design tokens: the only home for raw colour/size literals,
 //!   - `theme`     — the egui style, built from `tokens`.
 //!
@@ -22,3 +23,4 @@ pub mod staff;
 pub mod theme;
 pub mod tokens;
 pub mod waterfall;
+pub mod wrap_row;

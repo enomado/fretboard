@@ -1109,4 +1109,38 @@ mod tests {
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
+
+    /// REGRESSION: the fretboard's seven note pills stay on one line, and their "Root"
+    /// with them — beside the pills, or right above them where the pair is wider than the
+    /// line — on a phone.
+    ///
+    /// Caption and pills were eight items of the tuning's wrapping row: on 360 dp "Root"
+    /// was left at the end of the tuning's line with every pill on the next, on 412 dp
+    /// "Root C" ended it and D…B went below. `wrap_row` moves them as one.
+    #[test]
+    fn the_root_pills_keep_with_their_caption_on_a_phone() {
+        const NOTES: [&str; 7] = ["C", "D", "E", "F", "G", "A", "B"];
+        for size in PHONES {
+            let harness = phone(size, WorkspaceTab::FretboardControls);
+            let root = harness.get_by_label("Root").rect();
+            let first = harness.get_by_role_and_label(Role::Button, NOTES[0]).rect();
+            let beside = (first.center().y - root.center().y).abs() <= 1.0
+                && first.left() > root.right()
+                && first.left() - root.right() <= 12.0;
+            let heading = first.top() >= root.bottom()
+                && first.top() - root.bottom() <= 12.0
+                && (first.left() - root.left()).abs() <= 1.0;
+            assert!(
+                beside || heading,
+                "at {size:?} the C pill {first:?} is neither beside nor under its caption {root:?}"
+            );
+            for note in NOTES {
+                let pill = harness.get_by_role_and_label(Role::Button, note).rect();
+                assert!(
+                    (pill.center().y - first.center().y).abs() <= 1.0,
+                    "at {size:?} the {note} pill {pill:?} left the line of C {first:?}"
+                );
+            }
+        }
+    }
 }

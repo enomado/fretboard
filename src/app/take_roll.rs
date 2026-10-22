@@ -103,6 +103,10 @@ use crate::ui::pianoroll::{
 use crate::ui::segmented::RowCaption;
 use crate::ui::theme;
 use crate::ui::tokens::color;
+use crate::ui::wrap_row::{
+    keep_together,
+    separated,
+};
 
 /// How much of the take the history keeps: **all of it**.
 ///
@@ -1175,10 +1179,21 @@ impl App {
             });
         } else {
             ui.label(RichText::new("Take Roll").color(color::TEXT_CAPTION).strong());
+            // Each pair of switches wraps whole, and the divider between them only
+            // where the pairs share a line (`wrap_row`).
+            let gap = SWITCHES.iter().position(|s| matches!(s, Switch::Gap)).unwrap();
+            let (layers, lines) = (&SWITCHES[..gap], &SWITCHES[gap + 1..]);
             ui.horizontal_wrapped(|ui| {
-                for s in &SWITCHES {
-                    switch(ui, &mut self.take_roll, s);
-                }
+                keep_together(ui, "layers", |ui| {
+                    for s in layers {
+                        switch(ui, &mut self.take_roll, s);
+                    }
+                });
+                separated(ui, "line", |ui| {
+                    for s in lines {
+                        switch(ui, &mut self.take_roll, s);
+                    }
+                });
             });
         }
         ui.add_space(6.0);

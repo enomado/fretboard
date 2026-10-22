@@ -9,7 +9,6 @@ use eframe::egui::{
     Color32,
     CornerRadius,
     Frame,
-    Margin,
     RichText,
     Stroke,
     Ui,
@@ -74,15 +73,16 @@ impl App {
 
         let playing = self.audio.drone_playing();
 
+        let (pad, radius) = theme::card_pad(ui.ctx(), 16, 18);
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(18))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(16))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 // Inner margin + the 1 dp stroke, both sides: egui sizes a frame with
-                // its stroke, so `- 32` made the card 2 dp wider than its pane.
-                ui.set_min_width(frame_width - 34.0);
+                // its stroke, so margin alone made the card 2 dp wider than its pane.
+                ui.set_min_width(frame_width - pad.sum().x - 2.0);
 
                 // ── Транспорт: большая Play/Stop + сводка набора ──
                 ui.horizontal(|ui| {
@@ -231,10 +231,14 @@ impl App {
                 changed |= draw_keyboard(ui, &mut drone, accidental);
 
                 ui.add_space(8.0);
+                // Named for the hand in use, as the take roll's hint is: no click on a phone.
+                let verb = if theme::is_touch_screen(ui.ctx()) { "Tap" } else { "Click" };
                 ui.label(
-                    RichText::new("Click keys to toggle notes. Sustained holds the chord; Pulse beats it in time; Arpeggio walks the notes.")
-                        .color(HINT_COLOR)
-                        .size(12.0),
+                    RichText::new(format!(
+                        "{verb} keys to toggle notes. Sustained holds the chord; Pulse beats it in time; Arpeggio walks the notes."
+                    ))
+                    .color(HINT_COLOR)
+                    .size(12.0),
                 );
             });
 

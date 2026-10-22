@@ -41,6 +41,10 @@ use crate::ui::segmented::{
 use crate::ui::slider_row::SliderRow;
 use crate::ui::theme;
 use crate::ui::tokens::color;
+use crate::ui::wrap_row::{
+    keep_together,
+    separated,
+};
 
 impl App {
     pub(super) fn draw_controls(&mut self, ui: &mut Ui) {
@@ -66,47 +70,48 @@ impl App {
             .audio_inputs
             .iter()
             .any(|option| option.kind == AudioInputKind::Microphone);
+        let (pad, radius) = theme::card_pad(ui.ctx(), 16, 18);
 
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(18))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(16))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 // Inner margin + the 1 dp stroke, both sides: egui sizes a frame with
-                // its stroke, so `- 32` made the card 2 dp wider than its pane.
-                ui.set_min_width(frame_width - 34.0);
+                // its stroke, so margin alone made the card 2 dp wider than its pane.
+                ui.set_min_width(frame_width - pad.sum().x - 2.0);
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.add(RowCaption::new("Source"));
+                    keep_together(ui, "source", |ui| {
+                        ui.add(RowCaption::new("Source"));
 
-                    // Canonical segmented toggle (see `ui::segmented`). `min_width`
-                    // preserves the original 104/88 px pill widths.
-                    let mic_button = SegmentedButton::new(
-                        "Microphone",
-                        selected_input_kind == AudioInputKind::Microphone,
-                    )
-                    .min_width(104.0);
-                    if ui.add_enabled(has_microphone_input, mic_button).clicked() {
-                        self.refresh_audio_inputs();
-                        if let Some(input_id) = self.preferred_input_id(AudioInputKind::Microphone) {
-                            self.audio.set_selected_input_id(Some(input_id));
+                        // Canonical segmented toggle (see `ui::segmented`). `min_width`
+                        // preserves the original 104/88 px pill widths.
+                        let mic_button = SegmentedButton::new(
+                            "Microphone",
+                            selected_input_kind == AudioInputKind::Microphone,
+                        )
+                        .min_width(104.0);
+                        if ui.add_enabled(has_microphone_input, mic_button).clicked() {
+                            self.refresh_audio_inputs();
+                            if let Some(input_id) = self.preferred_input_id(AudioInputKind::Microphone) {
+                                self.audio.set_selected_input_id(Some(input_id));
+                            }
                         }
-                    }
 
-                    let system_button = SegmentedButton::new(
-                        "System",
-                        selected_input_kind == AudioInputKind::System,
-                    )
-                    .min_width(88.0);
-                    if ui.add_enabled(has_system_input, system_button).clicked() {
-                        self.refresh_audio_inputs();
-                        if let Some(input_id) = self.preferred_input_id(AudioInputKind::System) {
-                            self.audio.set_selected_input_id(Some(input_id));
+                        let system_button = SegmentedButton::new(
+                            "System",
+                            selected_input_kind == AudioInputKind::System,
+                        )
+                        .min_width(88.0);
+                        if ui.add_enabled(has_system_input, system_button).clicked() {
+                            self.refresh_audio_inputs();
+                            if let Some(input_id) = self.preferred_input_id(AudioInputKind::System) {
+                                self.audio.set_selected_input_id(Some(input_id));
+                            }
                         }
-                    }
-
-                    ui.separator();
+                    });
 
                     let selected_input_label = selected_input_id
                         .as_deref()
@@ -114,24 +119,26 @@ impl App {
                         .map(|option| option.label.clone())
                         .unwrap_or_else(|| "Choose input device".to_owned());
 
-                    // Never wider than the row itself: 340 dp is more than a 360-dp
-                    // phone's card has, and the combo ran past the screen edge.
-                    PillCombo::new("audio_input_device", selected_input_label)
-                        .caption(RowCaption::new("Device"))
-                        .min_width(340.0_f32.min(ui.max_rect().width()))
-                        .show(ui, |ui| {
-                            for option in &self.audio_inputs {
-                                if ui
-                                    .selectable_label(
-                                        selected_input_id.as_deref() == Some(option.id.as_str()),
-                                        &option.label,
-                                    )
-                                    .clicked()
-                                {
-                                    self.audio.set_selected_input_id(Some(option.id.clone()));
+                    separated(ui, "device", |ui| {
+                        // Never wider than the row itself: 340 dp is more than a 360-dp
+                        // phone's card has, and the combo ran past the screen edge.
+                        PillCombo::new("audio_input_device", selected_input_label)
+                            .caption(RowCaption::new("Device"))
+                            .min_width(340.0_f32.min(ui.max_rect().width()))
+                            .show(ui, |ui| {
+                                for option in &self.audio_inputs {
+                                    if ui
+                                        .selectable_label(
+                                            selected_input_id.as_deref() == Some(option.id.as_str()),
+                                            &option.label,
+                                        )
+                                        .clicked()
+                                    {
+                                        self.audio.set_selected_input_id(Some(option.id.clone()));
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    });
 
                     // Shares the Source/Device row with the pills, so it has to be one
                     // too — a bare `ui.button` sits on a different height band and
@@ -336,16 +343,17 @@ impl App {
 
     pub(super) fn draw_fretboard_controls(&mut self, ui: &mut Ui) {
         let frame_width = ui.available_width();
+        let (pad, radius) = theme::card_pad(ui.ctx(), 16, 18);
 
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(18))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(16))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 // Inner margin + the 1 dp stroke, both sides: egui sizes a frame with
-                // its stroke, so `- 32` made the card 2 dp wider than its pane.
-                ui.set_min_width(frame_width - 34.0);
+                // its stroke, so margin alone made the card 2 dp wider than its pane.
+                ui.set_min_width(frame_width - pad.sum().x - 2.0);
 
                 ui.horizontal_wrapped(|ui| {
                     let tuning =
@@ -356,24 +364,38 @@ impl App {
                         }
                     });
 
-                    ui.separator();
+                    // The caption and its seven pills as one item: on 360 dp "Root" was
+                    // left at the end of the tuning's line, its notes on the next. The
+                    // pills are a group of their own too: where caption and pills are
+                    // wider than a line (≈355 dp, a 360 dp card has 314) the pills go
+                    // under their caption whole, not six beside it and B alone below.
+                    separated(ui, "root", |ui| {
+                        ui.add(RowCaption::new("Root"));
+                        keep_together(ui, "root_pills", |ui| {
+                            // At the row's 10 dp spacing the seven pills alone are 316 dp,
+                            // 2 more than that card; 6 dp between them is still a clear
+                            // gap for a finger. Touch only: the desktop row is unchanged.
+                            if theme::is_touch_screen(ui.ctx()) {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                            }
+                            for (note, label) in ALL_ROOTS {
+                                let button =
+                                    SegmentedButton::new(label, self.root_note == note).min_width(30.0);
+                                if ui.add(button).clicked() {
+                                    self.root_note = note;
+                                }
+                            }
+                        });
+                    });
 
-                    ui.add(RowCaption::new("Root"));
-                    for (note, label) in ALL_ROOTS {
-                        let button = SegmentedButton::new(label, self.root_note == note).min_width(30.0);
-                        if ui.add(button).clicked() {
-                            self.root_note = note;
-                        }
-                    }
-
-                    ui.separator();
-
-                    let scale =
-                        PillCombo::new("scale", self.scale_kind.label()).caption(RowCaption::new("Scale"));
-                    scale.show(ui, |ui| {
-                        for scale in ALL_SCALES {
-                            ui.selectable_value(&mut self.scale_kind, scale, scale.label());
-                        }
+                    separated(ui, "scale", |ui| {
+                        let scale = PillCombo::new("scale", self.scale_kind.label())
+                            .caption(RowCaption::new("Scale"));
+                        scale.show(ui, |ui| {
+                            for scale in ALL_SCALES {
+                                ui.selectable_value(&mut self.scale_kind, scale, scale.label());
+                            }
+                        });
                     });
                 });
             });
@@ -444,12 +466,13 @@ impl App {
         let defaults = AnalysisSettings::default();
         let mut settings = self.audio.analysis_settings();
         let mut changed = false;
+        let (pad, radius) = theme::card_pad(ui.ctx(), 14, 16);
 
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(16))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::FRAME_STROKE))
-            .inner_margin(Margin::same(14))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
@@ -489,16 +512,17 @@ impl App {
                 }
             });
 
-            ui.separator();
-
-            let smooth = SliderRow::new(
-                RowCaption::new("Smooth"),
-                &mut settings.spectrum_smoothing,
-                0..=4,
-                |v| v.to_string(),
-            )
-            .width(120.0);
-            *changed |= ui.add(smooth).changed();
+            let (moved, _) = separated(ui, "smooth", |ui| {
+                let smooth = SliderRow::new(
+                    RowCaption::new("Smooth"),
+                    &mut settings.spectrum_smoothing,
+                    0..=4,
+                    |v| v.to_string(),
+                )
+                .width(120.0);
+                ui.add(smooth).changed()
+            });
+            *changed |= moved;
         });
 
         ui.add_space(10.0);
@@ -542,16 +566,17 @@ impl App {
                 }
             });
 
-            ui.separator();
-
-            let spread = SliderRow::new(
-                RowCaption::new("Note spread"),
-                &mut settings.note_spread,
-                0.15..=0.8,
-                |v| format!("{v:.2}"),
-            )
-            .width(150.0);
-            *changed |= ui.add(spread).changed();
+            let (moved, _) = separated(ui, "spread", |ui| {
+                let spread = SliderRow::new(
+                    RowCaption::new("Note spread"),
+                    &mut settings.note_spread,
+                    0.15..=0.8,
+                    |v| format!("{v:.2}"),
+                )
+                .width(150.0);
+                ui.add(spread).changed()
+            });
+            *changed |= moved;
         });
 
         ui.add_space(10.0);
@@ -612,16 +637,17 @@ impl App {
                 *changed = true;
             }
 
-            ui.separator();
-
-            let bins = SliderRow::new(
-                RowCaption::new("Bins / semitone"),
-                &mut settings.resonator.bins,
-                1..=12,
-                |v| v.to_string(),
-            )
-            .width(120.0);
-            *changed |= ui.add(bins).changed();
+            let (moved, _) = separated(ui, "bins", |ui| {
+                let bins = SliderRow::new(
+                    RowCaption::new("Bins / semitone"),
+                    &mut settings.resonator.bins,
+                    1..=12,
+                    |v| v.to_string(),
+                )
+                .width(120.0);
+                ui.add(bins).changed()
+            });
+            *changed |= moved;
         });
 
         ui.add_space(10.0);
