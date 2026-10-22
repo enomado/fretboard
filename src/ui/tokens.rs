@@ -238,6 +238,9 @@ pub mod space {
     /// the ~44 dp touch target of the platform guidelines (Apple 44 pt, Material
     /// 48 dp). Desktop rows stay on [`ROW_H`]; only the mobile shell uses this.
     pub const TOUCH_H: f32 = 44.0;
+    /// Inner margin of a card on a touch screen — see `theme::card_pad`. `i8` because
+    /// that is what egui's `Margin` holds.
+    pub const TOUCH_CARD_PAD: i8 = 6;
     /// Default gap between items in a row (egui `item_spacing`).
     pub const GAP: f32 = 10.0;
     /// Inner margin of a card frame.

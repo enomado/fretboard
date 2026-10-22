@@ -388,10 +388,12 @@ pub(super) fn default_workspace_tree() -> egui_tiles::Tree<WorkspaceTab> {
 /// walking every panel doubles as a tofu and TalkBack check.
 #[cfg(test)]
 mod tests {
+    use eframe::egui::os::OperatingSystem;
     use eframe::egui::{
         Rect,
         Role,
         Vec2,
+        pos2,
         vec2,
     };
     use egui_kittest::Harness;
@@ -404,16 +406,31 @@ mod tests {
         App,
         WorkspaceTab,
     };
+    use crate::audio::types::MelodyFrame;
+    use crate::core_types::pitch::Midi;
     use crate::ui::tokens::space;
 
-    /// The narrowest common Android portrait, a large portrait, and a landscape phone.
-    const PHONES: [Vec2; 3] = [vec2(360.0, 740.0), vec2(412.0, 915.0), vec2(740.0, 360.0)];
+    /// The narrowest common Android portrait and a large one, each also turned landscape.
+    const PHONES: [Vec2; 4] = [
+        vec2(360.0, 740.0),
+        vec2(412.0, 915.0),
+        vec2(740.0, 360.0),
+        vec2(915.0, 412.0),
+    ];
 
     fn phone(size: Vec2, tab: WorkspaceTab) -> Harness<'static, App> {
         let mut app = App::for_ui_test();
         app.mobile_panel = tab;
+        phone_with(size, app)
+    }
+
+    /// The phone shell around an `app` the test has already set up.
+    fn phone_with(size: Vec2, app: App) -> Harness<'static, App> {
         let mut harness = Harness::builder()
             .with_size(size)
+            // A phone: the panels shared with the desktop size their targets and name
+            // their gestures for a finger (`theme::is_touch_screen`).
+            .with_os(OperatingSystem::Android)
             .with_context_setup(|ctx| {
                 crate::ui::theme::install_fonts(ctx);
                 crate::ui::theme::apply_theme(ctx);
@@ -535,6 +552,158 @@ mod tests {
                 "at {size:?} the neck {neck:?} lies the wrong way"
             );
         }
+    }
+
+    /// A sung phrase for the rolls: a slow G4–D5 scale with rests, one bank frame every
+    /// 16 ms. Pitch only — the layout tests below are about where the rolls are, and the
+    /// heat's rendering is `ui::pianoroll`'s to test.
+    fn phrase(seconds: f64) -> Vec<MelodyFrame> {
+        const NOTES: [f32; 8] = [67.0, 69.0, 71.0, 72.0, 74.0, 72.0, 71.0, 69.0];
+        (1..=(seconds / 0.016) as u64)
+            .map(|seq| {
+                let t = seq as f64 * 0.016;
+                let rest = t % 0.9 > 0.8;
+                MelodyFrame {
+                    seq,
+                    t,
+                    pitch: (!rest).then(|| Midi(NOTES[(t / 0.9) as usize % NOTES.len()])),
+                    frontend: Default::default(),
+                    raw_pitch: None,
+                    reference_pitch: None,
+                    level: if rest { 0.0 } else { 0.5 },
+                    heat: Vec::new(),
+                    salience: None,
+                }
+            })
+            .collect()
+    }
+
+    /// The app with both rolls showing something: the live roll fed frame by frame, as
+    /// the engine feeds it (its framing eases per update), and a 20 s take open in the
+    /// take roll.
+    fn app_with_rolls(tab: WorkspaceTab) -> App {
+        let mut app = App::for_ui_test();
+        app.mobile_panel = tab;
+        for frame in phrase(9.0) {
+            app.pitch_roll.update(vec![frame]);
+        }
+        app.take_roll
+            .load_for_test("/testdata/phone_take.wav".into(), 20.0, phrase(20.0));
+        app
+    }
+
+    /// The part of the screen the panel scrolls in: under the picker's row.
+    fn pane(harness: &Harness<'_, App>, size: Vec2) -> Rect {
+        let header = format!("{}  ▼", harness.state().mobile_panel.label());
+        let top = harness
+            .get_by_role_and_label(Role::Button, &header)
+            .rect()
+            .bottom();
+        Rect::from_min_max(pos2(0.0, top), pos2(size.x, size.y))
+    }
+
+    /// REGRESSION: the live roll is whole on the first screen, portrait and landscape.
+    /// It was a fixed 360 px under its header — taller than a landscape phone's whole
+    /// pane, so its bottom rows and its time ruler were never on screen with its top.
+    #[test]
+    fn the_live_roll_is_whole_on_the_first_screen() {
+        for size in PHONES {
+            let harness = phone_with(size, app_with_rolls(WorkspaceTab::PitchRoll));
+            let roll = harness.get_by_role_and_label(Role::Image, "Pitch roll").rect();
+            assert!(
+                pane(&harness, size).contains_rect(roll),
+                "at {size:?} the live roll {roll:?} runs off the first screen"
+            );
+        }
+    }
+
+    /// REGRESSION: a finger can scroll the take recorder until the take roll is whole on
+    /// screen, and the pane keeps a finger's strip beside it to scroll on by.
+    ///
+    /// The roll takes the drag itself (it pans the take), and it was a fixed 320 px — on a
+    /// landscape phone taller than the whole ~270 px pane. Scrolled to, it covered every
+    /// pixel a finger could land on, and the page could neither reach its bottom nor be
+    /// scrolled back off it. Driven with real touches, from wherever the roll is not —
+    /// which is exactly what a user has to find.
+    #[test]
+    fn the_take_roll_scrolls_into_view_whole_and_leaves_room_to_scroll_on() {
+        use crate::app::touch_fingers::{
+            Finger,
+            gesture,
+        };
+
+        for size in PHONES {
+            let mut harness = phone_with(size, app_with_rolls(WorkspaceTab::TakeRecorder));
+            let pane = pane(&harness, size);
+            let roll_rect =
+                |harness: &Harness<'_, App>| harness.get_by_role_and_label(Role::Image, "Take roll").rect();
+            for _ in 0..30 {
+                let roll = roll_rect(&harness);
+                if pane.contains_rect(roll) {
+                    break;
+                }
+                // The lowest point of the pane the roll does not cover, in the roll's
+                // column — where a thumb scrolling down lands. A fingertip's width clear
+                // of the roll: egui hit-tests a touch with a radius
+                // (`interaction.interact_radius`), so a press just beside the roll is the
+                // roll's. Clear of the screen's bottom edge too, past the shell's margin.
+                const CLEAR: f32 = 12.0;
+                let free = ((pane.top() + CLEAR) as i32..(pane.bottom() - 2.0 * CLEAR) as i32)
+                    .rev()
+                    .map(|y| y as f32)
+                    .find(|&y| y < roll.top() - CLEAR || y > roll.bottom() + CLEAR);
+                let Some(y) = free else {
+                    panic!("at {size:?} the take roll {roll:?} covers the whole pane {pane:?}");
+                };
+                let from = pos2(roll.center().x, y);
+                gesture(&mut harness, &[(Finger::FIRST, from, from - vec2(0.0, 80.0))], 8);
+                harness.run_steps(8);
+                assert!(
+                    roll_rect(&harness) != roll,
+                    "at {size:?} dragging from {from:?} did not scroll the pane"
+                );
+            }
+            let roll = roll_rect(&harness);
+            assert!(
+                pane.contains_rect(roll),
+                "at {size:?} the take roll {roll:?} never came whole into the pane {pane:?}"
+            );
+            assert!(
+                pane.height() - roll.height() >= space::TOUCH_H,
+                "at {size:?} the take roll leaves {:.0} dp of a {:.0} dp pane to scroll on",
+                pane.height() - roll.height(),
+                pane.height()
+            );
+        }
+    }
+
+    /// Every control of the two roll panels is a finger's height on a phone, and the take
+    /// roll's hint names the phone's gestures — the pinch, not ctrl/shift+wheel, which a
+    /// phone does not have.
+    #[test]
+    fn the_roll_panels_are_made_for_a_finger() {
+        let size = PHONES[0];
+        for tab in [WorkspaceTab::PitchRoll, WorkspaceTab::TakeRecorder] {
+            let harness = phone_with(size, app_with_rolls(tab));
+            let small: Vec<_> = rects(&harness)
+                .into_iter()
+                .filter(|(role, _, rect)| {
+                    matches!(role, Role::Button | Role::TextInput) && rect.height() < space::TOUCH_H
+                })
+                .collect();
+            assert!(
+                small.is_empty(),
+                "{}: under a finger's height: {small:?}",
+                tab.label()
+            );
+        }
+        let harness = phone_with(size, app_with_rolls(WorkspaceTab::TakeRecorder));
+        assert!(
+            harness
+                .query_by_label_contains("pinch sideways zooms time")
+                .is_some()
+        );
+        assert!(harness.query_by_label_contains("wheel").is_none());
     }
 
     /// REGRESSION: the snail — the phone's default panel — shows its spiral on the

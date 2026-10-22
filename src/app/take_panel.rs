@@ -15,9 +15,7 @@ use std::path::{
 
 use eframe::egui::{
     self,
-    CornerRadius,
     Frame,
-    Margin,
     RichText,
     Stroke,
     Ui,
@@ -32,21 +30,24 @@ use crate::ui::segmented::{
     RowCaption,
     SegmentedButton,
 };
+use crate::ui::theme;
 use crate::ui::tokens::color;
 
 impl App {
     pub(super) fn draw_take_recorder_card(&mut self, ui: &mut Ui) {
         let frame_width = ui.available_width();
+        // The take roll lives in this card, so on a phone the card's margin is the roll's.
+        let (pad, radius) = theme::card_pad(ui.ctx(), 16, 18);
 
         Frame::new()
             .fill(color::PANEL_FILL)
-            .corner_radius(CornerRadius::same(18))
+            .corner_radius(radius)
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
-            .inner_margin(Margin::same(16))
+            .inner_margin(pad)
             .show(ui, |ui| {
                 // Inner margin + the 1 dp stroke, both sides: egui sizes a frame with
-                // its stroke, so `- 32` made the card 2 dp wider than its pane.
-                ui.set_min_width(frame_width - 34.0);
+                // its stroke, so margin alone made the card 2 dp wider than its pane.
+                ui.set_min_width(frame_width - pad.sum().x - 2.0);
                 self.draw_take_controls(ui);
                 ui.add_space(14.0);
                 ui.separator();
@@ -109,10 +110,12 @@ impl App {
                 (ui.available_width() - BUTTON_W - 3.0 * ui.spacing().item_spacing.x).clamp(96.0, 240.0);
             // Посреди дубля имя менять нечему: писатель уже держит файл открытым,
             // и переименование не переоткрывает его, а начинает НОВЫЙ дубль.
+            let target_h = theme::min_target_h(ui.ctx());
             ui.add_enabled(
                 !recording,
                 egui::TextEdit::singleline(&mut self.take_name)
                     .desired_width(name_w)
+                    .min_size(egui::vec2(0.0, target_h))
                     .hint_text("g_flageolet_f5"),
             );
 
@@ -124,7 +127,9 @@ impl App {
             // Без имени писать некуда — но только для старта: начатый дубль
             // остановить можно всегда. При реплее старт запрещён (см. `replaying`).
             let armed = recording || (!replaying && !self.take_name.trim().is_empty());
-            let button = SegmentedButton::colored(label, fill, stroke).min_width(BUTTON_W);
+            let button = SegmentedButton::colored(label, fill, stroke)
+                .min_width(BUTTON_W)
+                .height(target_h);
             if ui.add_enabled(armed, button).clicked() {
                 if recording {
                     self.audio.stop_take();

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use eframe::egui::os::OperatingSystem;
 use eframe::egui::{
     Color32,
     Context,
@@ -8,6 +9,7 @@ use eframe::egui::{
     FontDefinitions,
     FontFamily,
     FontId,
+    Margin,
     Stroke,
     Style,
     TextStyle,
@@ -15,7 +17,10 @@ use eframe::egui::{
     vec2,
 };
 
-use crate::ui::tokens::color;
+use crate::ui::tokens::{
+    color,
+    space,
+};
 
 /// Name of the custom font family that carries the music glyphs (clef,
 /// accidentals, noteheads). Registered by [`install_fonts`].
@@ -89,6 +94,41 @@ pub fn apply_theme(ctx: &Context) {
         .insert(TextStyle::Button, FontId::proportional(14.0));
     style.visuals = visuals();
     ctx.set_global_style(style);
+}
+
+/// Is the app on a touch screen — the phone — rather than under a mouse?
+///
+/// Panels shared by the desktop workspace and the phone shell ask this where a finger
+/// needs something a pointer does not: a touch-sized target, a pinch instead of a
+/// modifier+wheel, words that name the gesture the user actually has. Read off egui's
+/// `os()`, which eframe sets from the build target (Android on the phone), so it is a
+/// fact about the device, not a setting — and a phone-sized kittest harness says
+/// `set_os(Android)` to get the phone's panels on the host.
+pub fn is_touch_screen(ctx: &Context) -> bool {
+    matches!(ctx.os(), OperatingSystem::Android | OperatingSystem::IOS)
+}
+
+/// The least height a control may have here: a finger's [`space::TOUCH_H`] on a touch
+/// screen, else 0 — the widget's own size, so the desktop is untouched. For
+/// `Button::min_size` and the like on panels both shells draw.
+pub fn min_target_h(ctx: &Context) -> f32 {
+    if is_touch_screen(ctx) { space::TOUCH_H } else { 0.0 }
+}
+
+/// A card's inner margin and corner radius: the card's own (`desktop_pad`,
+/// `desktop_radius`) under a mouse; on a touch screen [`space::TOUCH_CARD_PAD`] and a
+/// radius to match.
+///
+/// On a 360 dp phone a 14–16 dp card margin, inside the shell's own 8, cost a tenth of the
+/// width (Stas, 2026-10-22: «марджины меньше»). The radius shrinks with it: content is
+/// square-cornered, and at a 6 dp inset a 22 dp curve would cut across its corners — a
+/// radius `r` clears an inset `m` while `m ≥ r·(1 − 1/√2)`.
+pub fn card_pad(ctx: &Context, desktop_pad: i8, desktop_radius: u8) -> (Margin, CornerRadius) {
+    if is_touch_screen(ctx) {
+        (Margin::same(space::TOUCH_CARD_PAD), CornerRadius::same(10))
+    } else {
+        (Margin::same(desktop_pad), CornerRadius::same(desktop_radius))
+    }
 }
 
 fn visuals() -> Visuals {

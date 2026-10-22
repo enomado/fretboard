@@ -15,9 +15,10 @@
 //! The heat is the ground truth; the line is a guide. Where the line's smoothing
 //! or a rare octave slip disagrees with reality, the heat underneath shows it.
 //!
-//! The left gutter names every row; the **right** gutter repeats the scale but
-//! colours each name by the energy at that pitch in the current heat column — a
-//! live per-note meter of what is sounding right now at the playhead.
+//! The left gutter names every row; on the desktop the **right** gutter repeats the
+//! scale but colours each name by the energy at that pitch in the current heat column —
+//! a live per-note meter of what is sounding right now at the playhead. A phone keeps
+//! only the names, in a gutter as narrow as they are ([`Gutters`]).
 //!
 //! **Time is the x axis, literally.** Each column carries its own age in seconds
 //! ([`RollColumn::age_s`]) and is placed by it, so the ruler across the bottom means
@@ -55,7 +56,10 @@ use crate::core_types::pitch::{
     Midi,
     PNote,
 };
-use crate::ui::theme::intonation_color;
+use crate::ui::theme::{
+    intonation_color,
+    is_touch_screen,
+};
 use crate::ui::tokens::color;
 
 /// One frame of continuous detected pitch: `midi` is the fractional MIDI number
@@ -164,6 +168,61 @@ const LABEL_W: f32 = 46.0;
 /// energy at each pitch — a live "which notes are sounding now" readout at the
 /// playhead edge.
 const RIGHT_LABEL_W: f32 = 44.0;
+/// The left gutter of [`Gutters::Names`]: the widest note name at the size its row gives
+/// it, plus [`NAME_PAD`]. Names in octaves 0–9 are at most ~23 px; the auto framing's pad
+/// can reach the octave below the bank, whose "D#-1" is ~26.5 — and a gutter two pixels
+/// narrower is not worth a clipped name. Pinned by
+/// `tests::the_compact_gutter_fits_every_name`.
+const COMPACT_LABEL_W: f32 = 30.0;
+/// Gap between a row's name and the plot's left edge.
+const NAME_PAD: f32 = 3.0;
+
+/// What a roll's rect spends on label gutters beside the plot.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Gutters {
+    /// Note names left, the live heat meter right — the desktop, where width is cheap.
+    NamesAndMeter,
+    /// Only the note names, in a gutter no wider than they are — the phone (Stas,
+    /// 2026-10-22: «более экономно… правый убрать, на левом минимум + названия нот»).
+    /// The two gutters took 90 dp of a 314 dp roll on a 360 dp screen; the meter is a
+    /// second copy of the scale, and the heat at the right edge already shows what is
+    /// sounding now.
+    Names,
+}
+
+impl Gutters {
+    /// The gutters for this screen: [`Self::Names`] on a touch screen.
+    pub fn for_screen(ctx: &egui::Context) -> Self {
+        if is_touch_screen(ctx) {
+            Self::Names
+        } else {
+            Self::NamesAndMeter
+        }
+    }
+
+    fn left_w(self) -> f32 {
+        match self {
+            Self::NamesAndMeter => LABEL_W,
+            Self::Names => COMPACT_LABEL_W,
+        }
+    }
+
+    fn right_w(self) -> f32 {
+        match self {
+            Self::NamesAndMeter => RIGHT_LABEL_W,
+            Self::Names => 0.0,
+        }
+    }
+
+    /// Where a row's name ends — right-aligned against the plot, [`NAME_PAD`] off it on
+    /// the phone; the desktop keeps the 6 px it always had.
+    fn name_right(self) -> f32 {
+        match self {
+            Self::NamesAndMeter => LABEL_W - 6.0,
+            Self::Names => COMPACT_LABEL_W - NAME_PAD,
+        }
+    }
+}
 
 /// The octave-anchor C label. Brighter than the [`color::TEXT_MUTED`] rows around
 /// it because it is the one row you navigate by — at a zoomed-out view it is the
@@ -190,10 +249,10 @@ const TIME_GRID_LABEL: Color32 = Color32::from_rgb(84, 90, 100);
 /// position into a time, and that means knowing where the axis starts. Deriving it
 /// there from `LABEL_W` would be a second opinion about the layout, and the day the
 /// gutter changed width the two would disagree by exactly that much.
-pub fn plot_rect(rect: Rect) -> Rect {
+pub fn plot_rect(rect: Rect, gutters: Gutters) -> Rect {
     Rect::from_min_max(
-        pos2(rect.left() + LABEL_W, rect.top()),
-        pos2(rect.right() - RIGHT_LABEL_W, rect.bottom()),
+        pos2(rect.left() + gutters.left_w(), rect.top()),
+        pos2(rect.right() - gutters.right_w(), rect.bottom()),
     )
 }
 
@@ -212,6 +271,7 @@ pub fn plot_rect(rect: Rect) -> Rect {
 #[derive(Clone, Copy)]
 pub struct RollMapping {
     plot:          Rect,
+    gutters:       Gutters,
     view_lo:       f32,
     /// Visible pitch span in semitones, never zero — a pixel is always worth something.
     span:          f32,
@@ -221,11 +281,12 @@ pub struct RollMapping {
 
 impl RollMapping {
     /// `view_lo`/`view_hi` are the fractional MIDI numbers at the plot's bottom/top.
-    pub fn new(rect: Rect, view_lo: f32, view_hi: f32, time: TimeAxis) -> Self {
-        let plot = plot_rect(rect);
+    pub fn new(rect: Rect, gutters: Gutters, view_lo: f32, view_hi: f32, time: TimeAxis) -> Self {
+        let plot = plot_rect(rect, gutters);
         let span = (view_hi - view_lo).max(1.0);
         Self {
             plot,
+            gutters,
             view_lo,
             span,
             time,
@@ -275,10 +336,14 @@ impl RollMapping {
 /// a take being *marked up* must not show the marker the answer they are supposed to be
 /// providing (`app::take_marks`). The heat underneath is unaffected either way — it
 /// decides nothing, so it can be looked at without being agreed with.
+///
+/// `gutters` decides what `rect` spends beside the plot — see [`Gutters`]; the right-hand
+/// meter is drawn only where there is a gutter for it.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_pitch_roll(
     painter: &Painter,
     rect: Rect,
+    gutters: Gutters,
     columns: &[RollColumn<'_>],
     bank: BankRange,
     view_lo: f32,
@@ -287,7 +352,7 @@ pub fn draw_pitch_roll(
     style: AccidentalStyle,
     show_line: bool,
 ) {
-    let map = RollMapping::new(rect, view_lo, view_hi, time);
+    let map = RollMapping::new(rect, gutters, view_lo, view_hi, time);
     let plot = map.plot();
 
     painter.rect_filled(plot, 0.0, color::HEAT_BG);
@@ -312,7 +377,9 @@ pub fn draw_pitch_roll(
     }
     draw_playhead(painter, map);
     draw_time_grid_labels(painter, map);
-    draw_right_scale(painter, map, view_lo, view_hi, style, columns, bank);
+    if gutters == Gutters::NamesAndMeter {
+        draw_right_scale(painter, map, view_lo, view_hi, style, columns, bank);
+    }
 }
 
 /// Roughly how many gridlines the ruler aims for across the plot. The step is then
@@ -609,7 +676,7 @@ fn draw_rows(
                 (color::TEXT_MUTED, (row_h * 0.68).clamp(8.0, 12.0))
             };
             painter.text(
-                pos2(rect.left() + LABEL_W - 6.0, center_y),
+                pos2(rect.left() + map.gutters.name_right(), center_y),
                 Align2::RIGHT_CENTER,
                 style.midi_name(note),
                 FontId::proportional(size),
@@ -914,6 +981,7 @@ mod tests {
                     draw_pitch_roll(
                         &ui.painter_at(rect),
                         rect,
+                        Gutters::NamesAndMeter,
                         &columns,
                         full_bank(),
                         view.0,
@@ -927,8 +995,54 @@ mod tests {
             );
         harness.run_steps(2);
         let img = harness.render().expect("wgpu render failed");
-        let map = RollMapping::new(*harness.state(), view.0, view.1, time);
+        let map = RollMapping::new(*harness.state(), Gutters::NamesAndMeter, view.0, view.1, time);
         (img, map)
+    }
+
+    /// The phone's gutter ([`Gutters::Names`]) holds every name the roll can show — both
+    /// spellings, every MIDI note, at the size a name gets on the tallest rows — with
+    /// [`NAME_PAD`] to spare, and the plot starts right after it.
+    ///
+    /// Measured with the app's own fonts (`theme::install_fonts`), because the width is a
+    /// property of the glyphs: a name wider than the gutter is painted past the roll's
+    /// left edge, where `painter_at(rect)` clips its first letter.
+    #[test]
+    fn the_compact_gutter_fits_every_name() {
+        let mut harness = Harness::builder()
+            .with_context_setup(crate::ui::theme::install_fonts)
+            .build_ui_state(
+                |ui, widest: &mut f32| {
+                    // Every MIDI note, not just the bank's: the auto framing pads past
+                    // the played range (`VIEW_PAD`), and "A#-1" is a glyph wider than
+                    // anything inside the default bank.
+                    for midi in 0..=127 {
+                        let note = PNote::new(midi).unwrap();
+                        // The largest size `draw_rows` gives the name: 13 px for a C, the
+                        // octave anchor, 12 px for the rest.
+                        let size = if midi % 12 == 0 { 13.0 } else { 12.0 };
+                        for style in [AccidentalStyle::Sharps, AccidentalStyle::Flats] {
+                            let galley = ui.painter().layout_no_wrap(
+                                style.midi_name(note),
+                                FontId::proportional(size),
+                                Color32::WHITE,
+                            );
+                            *widest = widest.max(galley.size().x);
+                        }
+                    }
+                },
+                0.0_f32,
+            );
+        harness.run_steps(1);
+        let widest = *harness.state();
+        let rect = Rect::from_min_size(pos2(10.0, 0.0), Vec2::new(300.0, 200.0));
+        let plot = plot_rect(rect, Gutters::Names);
+        assert!(
+            widest <= Gutters::Names.name_right(),
+            "the widest name is {widest:.1} px; the phone's gutter leaves {:.1}",
+            Gutters::Names.name_right()
+        );
+        assert_eq!(plot.left() - rect.left(), COMPACT_LABEL_W);
+        assert_eq!(plot.right(), rect.right(), "no right-hand gutter on the phone");
     }
 
     fn px(img: &RgbaImage, x: f32, y: f32) -> [u8; 4] {

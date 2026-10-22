@@ -13,6 +13,8 @@ mod staff_panel;
 mod take_marks;
 mod take_panel;
 mod take_roll;
+#[cfg(test)]
+mod touch_fingers;
 mod workspace;
 
 use std::time::Duration;

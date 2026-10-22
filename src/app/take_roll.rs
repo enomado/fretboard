@@ -76,6 +76,8 @@ use super::pitch_roll_panel::{
     RollLayer,
     VIEW_PAD,
     columns_of,
+    roll_height,
+    roll_switch,
 };
 use super::take_marks::{
     Declaration,
@@ -93,11 +95,13 @@ use crate::audio::types::{
 use crate::core_types::pitch::Midi;
 use crate::ui::pianoroll::{
     self,
+    Gutters,
     RollColumn,
     RollMode,
     TimeAxis,
 };
 use crate::ui::segmented::RowCaption;
+use crate::ui::theme;
 use crate::ui::tokens::color;
 
 /// How much of the take the history keeps: **all of it**.
@@ -366,6 +370,10 @@ struct LoadedTake {
     /// The vertical half of the drag in progress — see [`PITCH_PAN_SLOP_PX`]. Reset at
     /// the start of every drag by [`Self::interact`], its only writer.
     pitch_drag: PitchDrag,
+    /// Has the press in progress had a second finger on the roll? Then it is a pinch,
+    /// and its release is not a tap — see [`Self::interact`], its only writer. Cleared
+    /// by the next press.
+    pinched:    bool,
     /// How the marks file on disk relates to the marks on screen. See [`MarksFile`].
     marks_file: MarksFile,
 }
@@ -403,6 +411,7 @@ impl LoadedTake {
             draft: None,
             zoom_axis: ZoomAxis::default(),
             pitch_drag: PitchDrag::Holding(0.0),
+            pinched: false,
             marks_file,
             path,
             seconds,
@@ -796,8 +805,23 @@ impl LoadedTake {
             return;
         }
 
+        // Has this press had a second finger on the roll? Only counted while the first went
+        // down *on the roll*: egui tracks touches screen-wide, and a pinch that started on
+        // the panel's controls is not aimed at this plot.
+        if ui.input(|input| input.pointer.any_pressed()) {
+            self.pinched = false;
+        }
+        if resp.is_pointer_button_down_on() && ui.input(|input| input.multi_touch()).is_some() {
+            self.pinched = true;
+        }
+
+        // A press that was part of a pinch is not a tap, even though egui may call it a
+        // click: the first finger of a pinch is often the one held still while the other
+        // spreads, so its release is short and unmoved — and in marking it dropped a note
+        // boundary wherever the thumb rested.
         if let Some(marking) = marking
             && resp.clicked()
+            && !self.pinched
             && let Some(pos) = resp.interact_pointer_pos()
         {
             self.mark_click(t_at(pos.x), marking);
@@ -992,11 +1016,17 @@ impl TakeRoll {
         }
         self.was_armed = armed.is_some();
 
+        // Name the gesture the user has: a finger taps, and has no Escape key.
+        let touch = theme::is_touch_screen(ui.ctx());
+        let target_h = theme::min_target_h(ui.ctx());
+        let click = if touch { "tap" } else { "click" };
+
         ui.horizontal(|ui| {
             ui.add(RowCaption::new("Played"));
             ui.add(
                 egui::TextEdit::singleline(&mut self.declared)
                     .desired_width(80.0)
+                    .min_size(vec2(0.0, target_h))
                     .hint_text("F5"),
             );
 
@@ -1004,7 +1034,7 @@ impl TakeRoll {
                 Some(declared) => {
                     (
                         format!(
-                            "{} — click the note's start, then its end. The pitch is yours, not \
+                            "{} — {click} the note's start, then its end. The pitch is yours, not \
                              the detector's",
                             declared.name()
                         ),
@@ -1047,20 +1077,33 @@ impl TakeRoll {
                 .monospace()
                 .size(11.0),
             );
+            let target = vec2(0.0, target_h);
             if ui
-                .add_enabled(marks > 0, egui::Button::new("Undo last"))
+                .add_enabled(marks > 0, egui::Button::new("Undo last").min_size(target))
                 .clicked()
             {
                 loaded.undo_mark();
             }
             if loaded.draft.is_some() {
-                ui.label(
-                    RichText::new("…click the other end (esc to drop it)")
-                        .color(color::STATUS_LISTENING)
-                        .size(11.0),
-                );
                 // Escape drops a half-made mark. Without it the only way out of a
-                // mis-click is to complete a mark you do not want and undo it.
+                // mis-click is to complete a mark you do not want and undo it — and a
+                // phone has no Escape, so there the same way out is a button.
+                if touch {
+                    ui.label(
+                        RichText::new("…tap the other end")
+                            .color(color::STATUS_LISTENING)
+                            .size(11.0),
+                    );
+                    if ui.add(egui::Button::new("Drop start").min_size(target)).clicked() {
+                        loaded.draft = None;
+                    }
+                } else {
+                    ui.label(
+                        RichText::new("…click the other end (esc to drop it)")
+                            .color(color::STATUS_LISTENING)
+                            .size(11.0),
+                    );
+                }
                 if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
                     loaded.draft = None;
                 }
@@ -1108,10 +1151,12 @@ impl App {
         ];
         let switch = |ui: &mut Ui, roll: &mut TakeRoll, switch: &Switch| {
             match *switch {
-                Switch::Layer(layer, label) => ui.selectable_value(&mut roll.layer, layer, label),
-                Switch::Line(show, label) => ui.selectable_value(&mut roll.show_line, show, label),
-                Switch::Gap => ui.separator(),
-            };
+                Switch::Layer(layer, label) => roll_switch(ui, &mut roll.layer, layer, label),
+                Switch::Line(show, label) => roll_switch(ui, &mut roll.show_line, show, label),
+                Switch::Gap => {
+                    ui.separator();
+                }
+            }
         };
         // Caption + right-aligned switches are ~400 dp. Narrower (a phone), the
         // right-to-left switches ran over the caption and past the card's left edge,
@@ -1173,10 +1218,14 @@ impl App {
         };
 
         let width = ui.available_width();
-        let (rect, resp) = ui.allocate_exact_size(vec2(width, PLOT_HEIGHT), Sense::click_and_drag());
+        let height = roll_height(ui, PLOT_HEIGHT);
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
+        // Named for TalkBack, and for the phone shell's tests to find the roll by.
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Take roll"));
         // The plot is inset from `rect` by the label gutters, and the pointer has to be
         // read against the plot, not the widget — see `pianoroll::plot_rect`.
-        let plot = pianoroll::plot_rect(rect);
+        let gutters = Gutters::for_screen(ui.ctx());
+        let plot = pianoroll::plot_rect(rect, gutters);
         loaded.interact(ui, &resp, plot, bank, marking);
 
         let painter = ui.painter_at(rect);
@@ -1184,6 +1233,7 @@ impl App {
         pianoroll::draw_pitch_roll(
             &painter,
             rect,
+            gutters,
             &loaded.columns(playhead_t, layer),
             bank,
             loaded.view_lo,
@@ -1195,15 +1245,27 @@ impl App {
         // The marks go on top, through the renderer's own mapping — see `draw_marks`.
         loaded.draw_marks(
             &painter,
-            pianoroll::RollMapping::new(rect, loaded.view_lo, loaded.view_hi, time),
+            pianoroll::RollMapping::new(rect, gutters, loaded.view_lo, loaded.view_hi, time),
             playhead_t,
         );
 
+        // The gestures, named in the hand the user has: a phone has no wheel and no
+        // modifier keys, and its pinch splits the axes by the fingers' spread instead.
+        let (gestures, mark_gesture) = if theme::is_touch_screen(ui.ctx()) {
+            (
+                "drag to pan, pinch sideways zooms time, up-down pitch, double-tap to fit",
+                ", tap-tap to mark",
+            )
+        } else {
+            (
+                "drag to pan, ctrl+wheel zooms time, shift+wheel pitch, double-click to fit",
+                ", click-click to mark",
+            )
+        };
         ui.add_space(6.0);
         ui.label(
             RichText::new(format!(
-                "{} · {:.2}–{:.2} s of {:.1} · {:.0}–{:.0} midi{} · drag to pan, ctrl+wheel \
-                 zooms time, shift+wheel pitch, double-click to fit{}",
+                "{} · {:.2}–{:.2} s of {:.1} · {:.0}–{:.0} midi{} · {gestures}{}",
                 loaded.path.file_name().unwrap().to_string_lossy(),
                 loaded.window.start,
                 loaded.window.end,
@@ -1219,16 +1281,23 @@ impl App {
                 },
                 // Naming the marking gesture only while it is armed: with no
                 // declaration a click does nothing, and offering it would be a lie.
-                if marking.is_some() {
-                    ", click-click to mark"
-                } else {
-                    ""
-                },
+                if marking.is_some() { mark_gesture } else { "" },
             ))
             .color(color::TEXT_HINT)
             .monospace()
             .size(11.0),
         );
+    }
+}
+
+#[cfg(test)]
+impl TakeRoll {
+    /// Open `frames` as if a take of `seconds` had just been replayed — for UI tests of
+    /// the panels around the roll (the phone shell), which cannot reach `LoadedTake`.
+    pub(super) fn load_for_test(&mut self, path: PathBuf, seconds: f32, frames: Vec<MelodyFrame>) {
+        let mut loaded = LoadedTake::new(path, seconds);
+        loaded.update(frames);
+        self.loaded = Some(loaded);
     }
 }
 
@@ -1283,6 +1352,43 @@ mod tests {
                 assert!(roll.armed().is_none(), "{text}");
             }
         }
+    }
+
+    /// REGRESSION (phone): a half-made mark can be dropped without a keyboard. Escape was
+    /// the only way out of a mis-tapped start short of finishing a mark you did not want
+    /// and undoing it — and a phone has no Escape. There the hint offers a button.
+    #[test]
+    fn on_a_phone_a_half_made_mark_has_a_drop_button() {
+        use egui::accesskit::Role;
+        use egui::os::OperatingSystem;
+        use egui_kittest::kittest::Queryable;
+
+        use crate::ui::tokens::space;
+
+        let mut roll = TakeRoll {
+            declared: "F5".to_owned(),
+            ..TakeRoll::default()
+        };
+        roll.load_for_test(PathBuf::from("/testdata/g_string_trill.wav"), 10.0, Vec::new());
+        roll.loaded.as_mut().unwrap().draft = Some(1.0);
+        let mut harness = Harness::builder()
+            .with_size(vec2(360.0, 200.0))
+            .with_os(OperatingSystem::Android)
+            .build_ui_state(|ui, roll: &mut TakeRoll| roll.draw_declaration(ui), roll);
+        harness.run_steps(2);
+
+        assert!(
+            harness.query_by_label_contains("esc").is_none(),
+            "a phone has no Escape"
+        );
+        for label in ["Drop start", "Undo last"] {
+            let rect = harness.get_by_role_and_label(Role::Button, label).rect();
+            assert!(rect.height() >= space::TOUCH_H, "{label}: {rect:?}");
+        }
+        harness.get_by_role_and_label(Role::Button, "Drop start").click();
+        harness.run_steps(2);
+        assert!(harness.state().loaded.as_ref().unwrap().draft.is_none());
+        assert!(harness.query_by_label("Drop start").is_none());
     }
 
     /// A take: `seconds` long, replayed at the bank's cadence.
@@ -1381,7 +1487,7 @@ mod tests {
                                 vec2(PANE_W - 20.0, PLOT_HEIGHT),
                                 Sense::click_and_drag(),
                             );
-                            rig.plot = pianoroll::plot_rect(rect);
+                            rig.plot = pianoroll::plot_rect(rect, Gutters::NamesAndMeter);
                             rig.take.interact(ui, &resp, rig.plot, bank(), rig.marking);
                         });
                     rig.offset_y = out.state.unclamped_offset().y;
@@ -1775,6 +1881,172 @@ mod tests {
     }
 
     /// A click at a take-second, aimed through the real plot.
+    /// The take-second under screen x `x` on the rig's roll, as it stands now.
+    fn t_under(harness: &Harness<'_, Rig>, x: f32) -> f32 {
+        let rig = harness.state();
+        rig.take.window.start + (x - rig.plot.left()) / rig.plot.width() * rig.take.span_s()
+    }
+
+    /// The phone's ctrl+wheel: **a sideways pinch zooms time about the fingers, and only
+    /// time.** While two fingers are down egui still drags the roll with the first one
+    /// and the zoom anchors on it; the two together keep the take under *both* fingers,
+    /// which this pins through real touch events. The sideways spread must leave the
+    /// pitch framing alone (egui classifies the pinch by the fingers' spread at the
+    /// start, `zoom_delta_2d`), and the pane must not scroll under it.
+    #[test]
+    fn a_sideways_pinch_zooms_time_about_the_fingers() {
+        use crate::app::touch_fingers::{
+            Finger,
+            gesture,
+        };
+
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(69.0));
+        let mut harness = rig(loaded);
+        harness.run_steps(3);
+        let plot = harness.state().plot;
+        let mid = on_screen(plot);
+        let t_mid = t_under(&harness, mid.x);
+        let span_before = harness.state().take.span_s();
+
+        // The first finger spreads left, the second right, three times apart.
+        gesture(
+            &mut harness,
+            &[
+                (Finger::FIRST, mid - vec2(20.0, 0.0), mid - vec2(60.0, 0.0)),
+                (Finger::SECOND, mid + vec2(20.0, 0.0), mid + vec2(60.0, 0.0)),
+            ],
+            12,
+        );
+        harness.run_steps(2);
+
+        let rig = harness.state();
+        let span = rig.take.span_s();
+        assert!(
+            (span - span_before / 3.0).abs() < 0.05 * span_before,
+            "a 3× spread must zoom the window 3×: {span_before:.2} s → {span:.2} s"
+        );
+        let t_now = t_under(&harness, mid.x);
+        assert!(
+            (t_now - t_mid).abs() < 0.02 * span_before,
+            "the take between the fingers must stay between them: {t_mid:.2} s was under \
+             the midpoint, now {t_now:.2} s is"
+        );
+        let rig = harness.state();
+        assert!(
+            rig.take.framing == PitchFraming::Auto,
+            "a sideways pinch is time alone — it must not take the pitch framing"
+        );
+        assert_eq!(
+            (rig.offset_x, rig.offset_y),
+            (0.0, 0.0),
+            "the pane must not scroll"
+        );
+    }
+
+    /// The pinch's second axis: fingers spreading up-down zoom **pitch** alone — the
+    /// phone's shift+wheel. The window in time is untouched, and the pitch window is the
+    /// user's now, like any hand-aimed one.
+    #[test]
+    fn an_up_down_pinch_zooms_pitch_alone() {
+        use crate::app::touch_fingers::{
+            Finger,
+            gesture,
+        };
+
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(69.0));
+        let mut harness = rig(loaded);
+        harness.run_steps(3);
+        let plot = harness.state().plot;
+        let mid = egui::pos2(plot.center().x, plot.top() + 100.0);
+        let window = harness.state().take.window.clone();
+        let pitch_before = harness.state().take.pitch_span();
+
+        gesture(
+            &mut harness,
+            &[
+                (Finger::FIRST, mid - vec2(0.0, 15.0), mid - vec2(0.0, 45.0)),
+                (Finger::SECOND, mid + vec2(0.0, 15.0), mid + vec2(0.0, 45.0)),
+            ],
+            12,
+        );
+        harness.run_steps(2);
+
+        let take = &harness.state().take;
+        assert!(
+            (take.pitch_span() - pitch_before / 3.0).abs() < 0.05 * pitch_before,
+            "a 3× up-down spread must zoom pitch 3×: {pitch_before:.1} → {:.1} semitones",
+            take.pitch_span()
+        );
+        assert_eq!(take.window, window, "an up-down pinch must leave time alone");
+        assert!(take.framing == PitchFraming::Manual);
+    }
+
+    /// REGRESSION (phone): **a pinch is not a tap, even in marking.** The first finger of
+    /// a pinch is often the one held still while the other spreads; its release is short
+    /// and unmoved, which egui calls a click — and with a declaration armed that dropped a
+    /// note boundary wherever the thumb rested.
+    #[test]
+    fn a_pinch_with_a_resting_thumb_marks_nothing() {
+        use crate::app::touch_fingers::{
+            Finger,
+            gesture,
+        };
+
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(69.0));
+        let mut harness = rig(loaded);
+        harness.state_mut().marking = Some(marking_f5());
+        harness.run_steps(3);
+        let thumb = on_screen(harness.state().plot);
+
+        gesture(
+            &mut harness,
+            &[
+                (Finger::FIRST, thumb, thumb),
+                (Finger::SECOND, thumb + vec2(30.0, 0.0), thumb + vec2(150.0, 0.0)),
+            ],
+            8,
+        );
+        harness.run_steps(2);
+
+        let take = &harness.state().take;
+        assert!(take.span_s() < 10.0, "the pinch itself must still zoom");
+        assert!(take.draft.is_none(), "the resting thumb started a mark");
+        assert!(take.marks.is_empty());
+
+        // And a real tap afterwards still marks: the pinch must not leave marking stuck.
+        harness.run_steps(30);
+        gesture(&mut harness, &[(Finger::FIRST, thumb, thumb)], 1);
+        harness.run_steps(2);
+        assert!(
+            harness.state().take.draft.is_some(),
+            "a tap after the pinch must start a mark again"
+        );
+    }
+
+    /// A double-tap — two touches, not two clicks — fits the take: the phone's way back
+    /// from any window, named in the hint, has to arrive through the touch path.
+    #[test]
+    fn a_double_tap_fits() {
+        use crate::app::touch_fingers::{
+            Finger,
+            gesture,
+        };
+
+        let mut loaded = take(10.0);
+        play(&mut loaded, 400, Some(69.0));
+        loaded.window = 2.0..6.0;
+        let mut harness = rig(loaded);
+        harness.run_steps(3);
+        let at = on_screen(harness.state().plot);
+        gesture(&mut harness, &[(Finger::FIRST, at, at)], 1);
+        gesture(&mut harness, &[(Finger::FIRST, at, at)], 1);
+        harness.run_steps(2);
+        assert_eq!(harness.state().take.window, 0.0..10.0);
+    }
+
     fn click_at_t(harness: &Harness<'_, Rig>, t: f64) {
         let (plot, window) = {
             let rig = harness.state();
@@ -2094,10 +2366,12 @@ mod tests {
                     let (rect, _) = ui.allocate_exact_size(vec2(RECT_W, RECT_H), Sense::hover());
                     *drawn = rect;
                     let painter = ui.painter_at(rect);
-                    let map = pianoroll::RollMapping::new(rect, view_lo, view_hi, time);
+                    let map =
+                        pianoroll::RollMapping::new(rect, Gutters::NamesAndMeter, view_lo, view_hi, time);
                     pianoroll::draw_pitch_roll(
                         &painter,
                         rect,
+                        Gutters::NamesAndMeter,
                         &loaded.columns(playhead_t, RollLayer::Spectrum),
                         bank(),
                         view_lo,
@@ -2133,7 +2407,7 @@ mod tests {
         );
 
         // Where the mark landed, back in MIDI — against the rect the layout actually used.
-        let map = pianoroll::RollMapping::new(rect, view_lo, view_hi, time);
+        let map = pianoroll::RollMapping::new(rect, Gutters::NamesAndMeter, view_lo, view_hi, time);
         let (top, bottom) = (
             *violet_rows.iter().min().unwrap() as f32,
             *violet_rows.iter().max().unwrap() as f32,
