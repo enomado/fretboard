@@ -483,6 +483,23 @@ fn pill_colored(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
         });
 }
 
+/// A card's heading: its title, a subtitle under it, and a status `badge` (a [`pill`])
+/// at the top-right.
+///
+/// The badge is laid out first, and the title column takes the width left of it, so a
+/// subtitle longer than that wraps beside the badge. Laid out the other way round
+/// (title column, then a right-to-left badge in what is left) the column took the whole
+/// width on a 360–412 dp phone and the badge was painted over the subtitle.
+fn card_header(ui: &mut Ui, title: &str, subtitle: RichText, badge: impl FnOnce(&mut Ui)) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+        badge(ui);
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+            ui.label(RichText::new(title).size(20.0).color(color::TEXT_HEADING));
+            ui.label(subtitle);
+        });
+    });
+}
+
 fn audio_status_label(status: &AudioStatus, input_kind: AudioInputKind) -> String {
     match status {
         AudioStatus::Idle => format!("{} idle", input_source_label(input_kind)),

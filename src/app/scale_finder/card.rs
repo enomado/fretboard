@@ -21,6 +21,7 @@ use eframe::egui::{
 use super::super::{
     App,
     ScaleKind,
+    card_header,
     pill,
     pill_muted,
 };
@@ -34,6 +35,7 @@ use super::{
 };
 use crate::core_types::note::AccidentalStyle;
 use crate::core_types::pitch::PCNote;
+use crate::ui::plot_text;
 use crate::ui::tokens::color;
 
 impl App {
@@ -64,20 +66,12 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new("Scale finder")
-                                .size(20.0)
-                                .color(color::TEXT_HEADING),
-                        );
-                        ui.label(
-                            RichText::new("4 methods on the snail: notes · tonal · root · spiral")
-                                .color(color::TEXT_HINT),
-                        );
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                card_header(
+                    ui,
+                    "Scale finder",
+                    RichText::new("4 methods on the snail: notes · tonal · root · spiral")
+                        .color(color::TEXT_HINT),
+                    |ui| {
                         match ranking.as_ref().and_then(|r| r.candidates.first()) {
                             Some(top) => {
                                 pill(
@@ -91,8 +85,8 @@ impl App {
                             }
                             None => pill_muted(ui, "waiting for input"),
                         }
-                    });
-                });
+                    },
+                );
 
                 ui.add_space(10.0);
                 self.draw_scale_finder_controls(ui, captured_secs);
@@ -115,10 +109,7 @@ fn draw_scale_finder_body(
     selected_kind: ScaleKind,
     style: AccidentalStyle,
 ) {
-    use eframe::egui::{
-        FontId,
-        Rect,
-    };
+    use eframe::egui::Rect;
 
     let available = ui.available_size_before_wrap();
     let desired = vec2(available.x, available.y.max(420.0));
@@ -134,11 +125,11 @@ fn draw_scale_finder_body(
     );
 
     let Some(ranking) = ranking else {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
+        plot_text::draw_hint(
+            &painter,
+            rect.shrink(16.0),
             "Play a sustained phrase — the snail will rank key, scale and mode",
-            FontId::proportional(13.0),
+            13.0,
             color::TEXT_HINT,
         );
         return;

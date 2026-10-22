@@ -3,6 +3,7 @@
 //!   - `fretboard` — the neck model and its note/string/fret/position renderers,
 //!   - `snail`     — the logarithmic pitch spiral,
 //!   - `waterfall` — spectrogram-style history strips,
+//!   - `plot_text` — a plot frame's title row and empty-plot hint, kept inside it,
 //!   - `segmented` — the canonical pill / segmented toggle button,
 //!   - `tokens`    — design tokens: the only home for raw colour/size literals,
 //!   - `theme`     — the egui style, built from `tokens`.
@@ -12,6 +13,7 @@
 
 pub mod fretboard;
 pub mod pianoroll;
+pub mod plot_text;
 pub mod segmented;
 pub mod snail;
 pub mod staff;

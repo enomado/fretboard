@@ -68,8 +68,10 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
-                // Wraps on a phone: the three counters are ~470 dp in one row.
+                // Wraps on a phone: the three counters are ~470 dp in one row. Each
+                // counter moves to the next row whole, not broken mid-phrase.
                 ui.horizontal_wrapped(|ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                     ui.label(
                         RichText::new(format!("Scale tones: {}", scale.notes().len()))
                             .color(color::TEXT_HINT),

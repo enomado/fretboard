@@ -450,7 +450,9 @@ mod tests {
             .filter(|node| node.accesskit_node().bounding_box().is_some())
             .map(|node| {
                 let ak = node.accesskit_node();
-                (ak.role(), ak.label().unwrap_or_default(), node.rect())
+                // A plain label's text is its value, not its name.
+                let text = ak.label().or_else(|| ak.value());
+                (ak.role(), text.unwrap_or_default(), node.rect())
             })
             .collect()
     }
@@ -481,6 +483,48 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// REGRESSION: no text is laid out over another text or a control on a phone.
+    ///
+    /// Card headers put the title column first and the status badge right-to-left in what
+    /// was left; on 360–412 dp the column took the whole width and the badge ("waiting
+    /// for input", "0 samples", the staff's "—") was painted over the subtitle — Input
+    /// Scope, Resonator Bank/Waterfall, Scale Finder. Painted plot text has no node; that
+    /// is `ui::plot_text`'s to test.
+    #[test]
+    fn no_text_is_laid_over_another_on_a_phone() {
+        let mut failures = Vec::new();
+        for size in PHONES {
+            for tab in WorkspaceTab::ALL {
+                let harness = phone_with(size, app_with_rolls(tab));
+                let nodes = rects(&harness);
+                let texts = nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (role, ..))| *role == Role::Label);
+                let mut overlaps = Vec::new();
+                for (i, (_, text, a)) in texts {
+                    // Against every later label, and against every non-label node that is
+                    // not a container of the label (a button's caption is its own label).
+                    for (j, (role, other, b)) in nodes.iter().enumerate() {
+                        let later_label = *role == Role::Label && j > i;
+                        let control = matches!(
+                            role,
+                            Role::Button | Role::TextInput | Role::Slider | Role::CheckBox | Role::ComboBox
+                        );
+                        let overlap = a.intersect(*b);
+                        if (later_label || control) && overlap.width() > 1.0 && overlap.height() > 1.0 {
+                            overlaps.push(format!("'{text}' {a:?} × {role:?} '{other}' {b:?}"));
+                        }
+                    }
+                }
+                if !overlaps.is_empty() {
+                    failures.push(format!("{} at {size:?}: {overlaps:#?}", tab.label()));
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
     /// REGRESSION: the panel picker is one touch-sized row until tapped, then shows

@@ -22,6 +22,7 @@ use super::{
     TunerTarget,
     audio_status_color,
     audio_status_label,
+    card_header,
     cents_color,
     input_level_label,
     input_source_debug_label,
@@ -40,10 +41,13 @@ use crate::ui::snail::{
     self,
     SpiralChart,
 };
-use crate::ui::theme;
 use crate::ui::tokens::color;
 #[cfg(any(target_os = "android", test))]
 use crate::ui::tokens::space;
+use crate::ui::{
+    plot_text,
+    theme,
+};
 
 /// The tuner's centre tick — the pitch you are aiming at. Warm, unlike the cool
 /// `color::GRID_LINE_STRONG` graticule around it: this line is the target, not
@@ -65,23 +69,13 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new("Input Scope")
-                                .size(20.0)
-                                .color(color::TEXT_HEADING),
-                        );
-                        ui.label(
-                            egui::RichText::new(audio_status_label(&status, selected_input_kind))
-                                .color(audio_status_color(&status)),
-                        );
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        pill(ui, &format!("{} samples", waveform.len()));
-                    });
-                });
+                card_header(
+                    ui,
+                    "Input Scope",
+                    egui::RichText::new(audio_status_label(&status, selected_input_kind))
+                        .color(audio_status_color(&status)),
+                    |ui| pill(ui, &format!("{} samples", waveform.len())),
+                );
 
                 ui.add_space(12.0);
                 self.draw_input_level(ui, input_level, selected_input_kind);
@@ -252,19 +246,11 @@ impl App {
             egui::StrokeKind::Inside,
         );
 
-        painter.text(
-            pos2(rect.left() + 14.0, rect.top() + 12.0),
-            egui::Align2::LEFT_TOP,
+        plot_text::draw_title(
+            &painter,
+            rect,
             "Raw waveform preview",
-            FontId::proportional(15.0),
-            color::TEXT_BADGE,
-        );
-        painter.text(
-            pos2(rect.right() - 14.0, rect.top() + 12.0),
-            egui::Align2::RIGHT_TOP,
             "recent mono samples after input gain",
-            FontId::proportional(12.0),
-            color::TEXT_HINT,
         );
 
         let plot_rect = Rect::from_min_max(
@@ -281,11 +267,11 @@ impl App {
         );
 
         if waveform.len() < 2 {
-            painter.text(
-                plot_rect.center(),
-                egui::Align2::CENTER_CENTER,
+            plot_text::draw_hint(
+                &painter,
+                plot_rect,
                 "Waiting for input samples",
-                FontId::proportional(14.0),
+                14.0,
                 color::TEXT_HINT,
             );
             return;
@@ -483,26 +469,22 @@ impl App {
                 painter.rect_filled(bar_rect, 3.0, spectrum_color(*value));
             }
         } else {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
+            plot_text::draw_hint(
+                &painter,
+                rect,
                 "Waterfalls will appear when the tuner locks onto a note",
-                FontId::proportional(13.0),
+                13.0,
                 color::TEXT_HINT,
             );
         }
     }
 
-    /// `mobile`: the phone's screen — the spiral sized to it as the snail's is, and no
-    /// subtitle (beside the title it runs into it on a narrow screen, as on the snail).
+    /// `mobile`: the phone's screen — the spiral sized to it as the snail's is.
     fn draw_spiral_spectrogram(&self, ui: &mut Ui, reading: Option<&TunerReading>, mobile: bool) {
         let chart = SpiralChart {
             title:             "Spiral spectrogram",
-            subtitle:          if mobile {
-                ""
-            } else {
-                "octaves wrap onto the same pitch angle"
-            },
+            // Dropped where it does not fit beside the title (`plot_text::draw_title`).
+            subtitle:          "octaves wrap onto the same pitch angle",
             spectrum:          reading.map(|value| value.spiral_spectrum.as_slice()),
             waterfall:         reading.map_or(&[][..], |value| value.spiral_waterfall.as_slice()),
             note_labels:       reading.map_or(&[][..], |value| value.note_labels.as_slice()),

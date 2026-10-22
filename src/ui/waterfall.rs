@@ -20,16 +20,17 @@ use eframe::egui::{
     pos2,
 };
 
+use crate::ui::plot_text;
 use crate::ui::tokens::color;
 
 /// Paint the magnitude grid. Rows are history (top = oldest), columns are bins.
 pub fn draw_waterfall(painter: &Painter, rect: Rect, waterfall: &[Vec<f32>]) {
     if waterfall.is_empty() {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
+        plot_text::draw_hint(
+            painter,
+            rect,
             "Waterfall will fill as audio arrives",
-            FontId::proportional(12.0),
+            12.0,
             color::TEXT_MUTED,
         );
         return;

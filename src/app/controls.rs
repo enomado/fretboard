@@ -506,7 +506,7 @@ impl App {
 
     fn draw_general_config_tab(&mut self, ui: &mut Ui, settings: &mut AnalysisSettings, changed: &mut bool) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Window").color(color::TEXT_CAPTION).strong());
+            ui.add(RowCaption::new("Window"));
             PillCombo::new("analysis_window_size", format_sample_count(settings.window_size)).show(
                 ui,
                 |ui| {
@@ -523,7 +523,7 @@ impl App {
 
             ui.separator();
 
-            let caption = ui.label(RichText::new("Smooth").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Smooth"));
             if ui
                 .add_sized(
                     [120.0, 18.0],
@@ -543,7 +543,7 @@ impl App {
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            let caption = ui.label(RichText::new("Min Hz").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Min Hz"));
             if ui
                 .add_sized(
                     [180.0, 18.0],
@@ -564,7 +564,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            let caption = ui.label(RichText::new("Max Hz").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Max Hz"));
             if ui
                 .add_sized(
                     [180.0, 18.0],
@@ -587,7 +587,7 @@ impl App {
 
     fn draw_fft1_config_tab(&mut self, ui: &mut Ui, settings: &mut AnalysisSettings, changed: &mut bool) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("FFT").color(color::TEXT_CAPTION).strong());
+            ui.add(RowCaption::new("FFT"));
             PillCombo::new("analysis_fft_size", format_sample_count(settings.fft_size)).show(ui, |ui| {
                 for preset in FFT_SIZE_PRESETS {
                     if ui
@@ -601,7 +601,7 @@ impl App {
 
             ui.separator();
 
-            let caption = ui.label(RichText::new("Note spread").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Note spread"));
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -621,7 +621,7 @@ impl App {
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            let caption = ui.label(RichText::new("FFT gamma").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("FFT gamma"));
             if ui
                 .add_sized(
                     [160.0, 18.0],
@@ -640,7 +640,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            let caption = ui.label(RichText::new("Note gamma").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Note gamma"));
             if ui
                 .add_sized(
                     [160.0, 18.0],
@@ -667,7 +667,7 @@ impl App {
     ) {
         ui.horizontal_wrapped(|ui| {
             // Both range sliders are named after this caption ("to" names nothing).
-            let caption = ui.label(RichText::new("Range").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Range"));
 
             // Sliders bind a raw `u8` scratch; the validated `PNote` is rebuilt
             // on change (both ranges sit inside 0..=127, so `new` can't fail).
@@ -711,11 +711,7 @@ impl App {
 
             ui.separator();
 
-            let caption = ui.label(
-                RichText::new("Bins / semitone")
-                    .color(color::TEXT_CAPTION)
-                    .strong(),
-            );
+            let caption = ui.add(RowCaption::new("Bins / semitone"));
             if ui
                 .add_sized(
                     [120.0, 18.0],
@@ -735,7 +731,7 @@ impl App {
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
-            let caption = ui.label(RichText::new("Alpha").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Alpha"));
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -759,7 +755,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            let caption = ui.label(RichText::new("Beta").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Beta"));
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -780,7 +776,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            let caption = ui.label(RichText::new("Gamma").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Gamma"));
             if ui
                 .add_sized(
                     [150.0, 18.0],
@@ -812,7 +808,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            let caption = ui.label(RichText::new("History").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("History"));
             if ui
                 .add_sized(
                     [120.0, 18.0],
@@ -831,7 +827,7 @@ impl App {
 
             ui.add_space(10.0);
 
-            let caption = ui.label(RichText::new("Update").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Update"));
             if ui
                 .add_sized(
                     [120.0, 18.0],
@@ -842,10 +838,14 @@ impl App {
             {
                 *changed = true;
             }
-            ui.label(
-                RichText::new(format!("{} ms", settings.resonator.update_ms))
-                    .color(color::TEXT_VALUE)
-                    .monospace(),
+            // One unit with its number: a wrapped row would otherwise break "16 | ms".
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!("{} ms", settings.resonator.update_ms))
+                        .color(color::TEXT_VALUE)
+                        .monospace(),
+                )
+                .extend(),
             );
         });
 

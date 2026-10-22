@@ -17,6 +17,7 @@ use super::ranking::{
     COLOR_SPIRAL,
 };
 use crate::core_types::scale_detect::ensemble::MethodWeights;
+use crate::ui::segmented::RowCaption;
 use crate::ui::tokens::color;
 
 impl App {
@@ -26,7 +27,7 @@ impl App {
     pub(super) fn draw_scale_finder_controls(&mut self, ui: &mut Ui, captured_secs: f32) {
         let config = &mut self.scale_finder;
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new("Method mix").color(color::TEXT_CAPTION).strong());
+            ui.add(RowCaption::new("Method mix"));
             weight_slider(ui, "notes", COLOR_SET, &mut config.weights.set);
             weight_slider(ui, "tonal", COLOR_PROFILE, &mut config.weights.profile);
             weight_slider(ui, "root", COLOR_ROOT, &mut config.weights.root);
@@ -38,7 +39,7 @@ impl App {
 
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            let caption = ui.label(RichText::new("Window").color(color::TEXT_CAPTION).strong());
+            let caption = ui.add(RowCaption::new("Window"));
             // Окно интеграции В СЕКУНДАХ (решалка копит свой буфер по времени).
             // Логарифмический, чтобы и доли секунды, и 20 c были под рукой.
             ui.add_sized(
@@ -67,7 +68,7 @@ impl App {
 
 /// Один помеченный слайдер веса метода (0..1) с цветной меткой и числом.
 fn weight_slider(ui: &mut Ui, label: &str, color: Color32, value: &mut f32) {
-    let caption = ui.label(RichText::new(label).color(color).strong().size(12.0));
+    let caption = ui.add(RowCaption::new(label).color(color).font_size(12.0));
     ui.add_sized(
         [110.0, 18.0],
         egui::Slider::new(value, 0.0..=1.0)

@@ -16,6 +16,7 @@ use eframe::egui::{
 use super::mobile_split::Part;
 use super::{
     App,
+    card_header,
     pill,
     pill_muted,
     spectrum_color,
@@ -43,6 +44,7 @@ use crate::ui::tokens::color;
 #[cfg(any(target_os = "android", test))]
 use crate::ui::tokens::space;
 use crate::ui::{
+    plot_text,
     theme,
     waterfall,
 };
@@ -114,14 +116,8 @@ impl App {
                 ui.add_space(if mobile { 6.0 } else { 12.0 });
                 let chart = SpiralChart {
                     title:             "Resonator spiral",
-                    // The chart paints title (left) and subtitle (right) on one
-                    // line; on the narrow phone they collide, so mobile drops
-                    // the subtitle just like the card header above.
-                    subtitle:          if mobile {
-                        ""
-                    } else {
-                        "same snail, but driven by the resonator bank instead of FFT bins"
-                    },
+                    // Dropped where it does not fit beside the title (`plot_text::draw_title`).
+                    subtitle:          "same snail, but driven by the resonator bank instead of FFT bins",
                     spectrum:          reading_ref.map(|value| value.spectrum.as_slice()),
                     waterfall:         reading_ref.map_or(&[][..], |value| value.waterfall.as_slice()),
                     note_labels:       reading_ref.map_or(&[][..], |value| value.note_labels.as_slice()),
@@ -276,27 +272,18 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new("Resonator Bank")
-                                .size(20.0)
-                                .color(color::TEXT_HEADING),
-                        );
-                        ui.label(
-                            egui::RichText::new("Continuous resonator state and current magnitudes")
-                                .color(color::TEXT_HINT),
-                        );
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(reading) = reading_ref {
-                            pill(ui, &format!("{} bins", reading.spectrum.len()));
-                        } else {
-                            pill_muted(ui, "waiting for input");
+                card_header(
+                    ui,
+                    "Resonator Bank",
+                    egui::RichText::new("Continuous resonator state and current magnitudes")
+                        .color(color::TEXT_HINT),
+                    |ui| {
+                        match reading_ref {
+                            Some(reading) => pill(ui, &format!("{} bins", reading.spectrum.len())),
+                            None => pill_muted(ui, "waiting for input"),
                         }
-                    });
-                });
+                    },
+                );
 
                 ui.add_space(12.0);
                 self.draw_resonator_bank_panel(ui, reading_ref);
@@ -317,19 +304,11 @@ impl App {
             egui::StrokeKind::Inside,
         );
 
-        painter.text(
-            pos2(rect.left() + 14.0, rect.top() + 12.0),
-            egui::Align2::LEFT_TOP,
+        plot_text::draw_title(
+            &painter,
+            rect,
             "Bank waterfall + current frame",
-            FontId::proportional(15.0),
-            color::TEXT_BADGE,
-        );
-        painter.text(
-            pos2(rect.right() - 14.0, rect.top() + 12.0),
-            egui::Align2::RIGHT_TOP,
             "continuous resonator state, no FFT window grid",
-            FontId::proportional(12.0),
-            color::TEXT_HINT,
         );
 
         let content_top = rect.top() + 42.0;
@@ -346,23 +325,24 @@ impl App {
             pos2(rect.right() - 14.0, content_bottom),
         );
 
+        let hint_rect = rect.shrink(14.0);
         let Some(reading) = reading else {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
+            plot_text::draw_hint(
+                &painter,
+                hint_rect,
                 "The resonator bank starts filling as soon as audio reaches the input",
-                FontId::proportional(13.0),
+                13.0,
                 color::TEXT_HINT,
             );
             return;
         };
 
         if reading.spectrum.is_empty() || reading.note_labels.is_empty() {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
+            plot_text::draw_hint(
+                &painter,
+                hint_rect,
                 "No resonator bins available for the current frame",
-                FontId::proportional(13.0),
+                13.0,
                 color::TEXT_HINT,
             );
             return;
@@ -415,27 +395,18 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new("Resonator Waterfall")
-                                .size(20.0)
-                                .color(color::TEXT_HEADING),
-                        );
-                        ui.label(
-                            egui::RichText::new("A full-screen spectrogram from the new resonator bank")
-                                .color(color::TEXT_HINT),
-                        );
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(reading) = reading_ref {
-                            pill(ui, &format!("{} frames", reading.waterfall.len()));
-                        } else {
-                            pill_muted(ui, "waiting for input");
+                card_header(
+                    ui,
+                    "Resonator Waterfall",
+                    egui::RichText::new("A full-screen spectrogram from the new resonator bank")
+                        .color(color::TEXT_HINT),
+                    |ui| {
+                        match reading_ref {
+                            Some(reading) => pill(ui, &format!("{} frames", reading.waterfall.len())),
+                            None => pill_muted(ui, "waiting for input"),
                         }
-                    });
-                });
+                    },
+                );
 
                 ui.add_space(12.0);
                 self.draw_resonator_waterfall_panel(ui, reading_ref);
@@ -456,23 +427,24 @@ impl App {
             egui::StrokeKind::Inside,
         );
 
+        let hint_rect = rect.shrink(14.0);
         let Some(reading) = reading else {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
+            plot_text::draw_hint(
+                &painter,
+                hint_rect,
                 "Play audio to fill the resonator waterfall",
-                FontId::proportional(15.0),
+                15.0,
                 color::TEXT_HINT,
             );
             return;
         };
 
         if reading.waterfall.is_empty() || reading.note_labels.is_empty() {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
+            plot_text::draw_hint(
+                &painter,
+                hint_rect,
                 "Waiting for the resonator bank to accumulate frames",
-                FontId::proportional(15.0),
+                15.0,
                 color::TEXT_HINT,
             );
             return;

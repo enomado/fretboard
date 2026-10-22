@@ -51,6 +51,7 @@ use eframe::egui::{
 use super::mobile_split::Part;
 use super::{
     App,
+    card_header,
     pill_colored,
     pill_muted,
 };
@@ -274,36 +275,26 @@ impl App {
 /// The card's title block, and — pinned to the right — the live-note chip: what is
 /// sounding right now, painted on its own intonation colour.
 fn draw_card_header(ui: &mut Ui, line: &NoteLine, style: AccidentalStyle) {
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(
-                RichText::new("Violin Staff")
-                    .size(20.0)
-                    .color(color::TEXT_HEADING),
-            );
-            ui.label(
-                RichText::new("Play — your notes are written on the staff")
-                    .color(color::TEXT_HINT)
-                    .size(12.0),
-            );
-        });
-        ui.with_layout(
-            eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
-            |ui| {
-                match line.current {
-                    Some(note) => {
-                        pill_colored(
-                            ui,
-                            &format!("{}  {:+.0}\u{00A2}", style.midi_name(note.midi), note.cents),
-                            PILL_INK_ON_INTONATION,
-                            intonation_color(note.cents),
-                        )
-                    }
-                    None => pill_muted(ui, "\u{2014}"),
+    card_header(
+        ui,
+        "Violin Staff",
+        RichText::new("Play — your notes are written on the staff")
+            .color(color::TEXT_HINT)
+            .size(12.0),
+        |ui| {
+            match line.current {
+                Some(note) => {
+                    pill_colored(
+                        ui,
+                        &format!("{}  {:+.0}\u{00A2}", style.midi_name(note.midi), note.cents),
+                        PILL_INK_ON_INTONATION,
+                        intonation_color(note.cents),
+                    )
                 }
-            },
-        );
-    });
+                None => pill_muted(ui, "\u{2014}"),
+            }
+        },
+    );
 }
 
 /// The two things the panel itself owns: which clef the staff is read in, and which
