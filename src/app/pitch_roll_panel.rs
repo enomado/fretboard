@@ -33,7 +33,15 @@ use eframe::egui::{
 use super::App;
 #[cfg(any(target_os = "android", test))]
 use super::mobile_split::Part;
+use super::roll_motion::{
+    FlingHand,
+    Framing,
+    PitchWindow,
+    Semitones,
+    SemitonesPerSec,
+};
 use crate::audio::types::{
+    BankRange,
     MelodyFrame,
     MelodyHistory,
 };
@@ -97,9 +105,6 @@ pub(super) const VIEW_PAD: f32 = 2.5;
 /// sensible band of rows around it instead of one giant row. Shared with the take roll,
 /// like [`VIEW_PAD`] and for the same reason.
 pub(super) const MIN_SPAN: f32 = 14.0;
-/// Per-frame easing for the view window toward its target range. Small = the rows
-/// glide rather than jump when the played range changes.
-const VIEW_EASE: f32 = 0.08;
 
 /// Frames of *recent* pitch the framing looks at — a fraction of the visible span on
 /// purpose (~2.9 s at the bank's default 16 ms cadence, against the view's 10 s).
@@ -187,17 +192,17 @@ pub struct PitchRoll {
     /// (ordered, unique, self-healing when the sample clock restarts) are the same
     /// rules here, and a second hand-rolled `VecDeque` is exactly how one of them
     /// would come to be implemented only in the other place.
-    frames:  MelodyHistory,
+    frames: MelodyHistory,
     /// How far the panel has read the engine's history — the `seq` of the last frame
     /// taken. The cursor is ours, not the engine's, so the staff can hold its own and
     /// read the same frames (see `AudioEngine::melody_since`).
-    cursor:  Option<u64>,
-    /// Eased fractional-MIDI window shown on screen (`view_lo` bottom, `view_hi`
-    /// top). Auto-frames the graph on the played range without per-frame jumps.
-    view_lo: f32,
-    view_hi: f32,
+    cursor: Option<u64>,
+    /// The pitch window on screen — a moving body with inertia and an acceleration cap
+    /// (`roll_motion`). The auto framing only *aims* it ([`Self::reframe`]); a finger
+    /// drags, flings and pinches it; [`Self::tick`] moves it.
+    view:   PitchWindow,
     /// Which layer is painted under the line — see [`RollLayer`].
-    layer:   RollLayer,
+    layer:  RollLayer,
 }
 
 impl Default for PitchRoll {
@@ -205,11 +210,10 @@ impl Default for PitchRoll {
         // Default window ≈ violin open strings (G3=55 .. E5=76) with headroom, so
         // the panel looks sensible before the first note eases it to real data.
         Self {
-            frames:  MelodyHistory::with_retention(VISIBLE_SECONDS),
-            cursor:  None,
-            view_lo: 53.0,
-            view_hi: 79.0,
-            layer:   RollLayer::default(),
+            frames: MelodyHistory::with_retention(VISIBLE_SECONDS),
+            cursor: None,
+            view:   PitchWindow::new(Midi(53.0), Midi(79.0)),
+            layer:  RollLayer::default(),
         }
     }
 }
@@ -240,19 +244,29 @@ impl PitchRoll {
         self.frames.newest().map(|f| f.t)
     }
 
-    /// Ease the view window toward what is being played *now*.
+    /// Advance the window's motion by `dt` seconds of wall time — once per UI frame,
+    /// whether or not the bank published, so a glide in flight keeps gliding.
+    fn tick(&mut self, dt: f32, bank: BankRange) {
+        self.view.tick(dt, bank);
+    }
+
+    /// Aim the view window at what is being played *now*. Aim only: the window gets
+    /// there under `roll_motion`'s spring and acceleration cap, never in one frame.
     ///
     /// Three rules, each earning its keep (see the constants for why):
     /// 1. only the last [`FRAMING_FRAMES`] are considered — the scrolled-off past
     ///    gets no vote;
     /// 2. the bounds are *quantiles*, so a lone slip or grace note cannot pin the
-    ///    view wide, with the currently sounding note always kept in view;
-    /// 3. growing is immediate, shrinking needs [`VIEW_SHRINK_SLACK`] of slack — the
-    ///    hysteresis that stops the rows creeping.
+    ///    view wide, with the currently sounding note always aimed into view;
+    /// 3. growing is wanted at once, shrinking needs [`VIEW_SHRINK_SLACK`] of slack —
+    ///    the hysteresis that stops the rows creeping.
     ///
-    /// Holds the last window while fully silent, so the rows don't drift when nothing
-    /// is playing.
+    /// Holds the last aim while fully silent, so the rows don't drift when nothing
+    /// is playing. Does nothing while a hand has the window (`Framing::Manual`).
     fn reframe(&mut self) {
+        if self.view.framing() == Framing::Manual {
+            return;
+        }
         // Rule 1: recent pitch only.
         let recent = self.frames.len().saturating_sub(FRAMING_FRAMES);
         let mut pitches: Vec<f32> = self
@@ -290,25 +304,21 @@ impl PitchRoll {
 
         // Rule 3: hysteresis. A target that would pull an edge *inward* by less than
         // the slack is ignored outright — that edge simply stays where it is.
-        if target_lo > self.view_lo && target_lo - self.view_lo < VIEW_SHRINK_SLACK {
-            target_lo = self.view_lo;
+        let (view_lo, view_hi) = (self.view.lo().0, self.view.hi().0);
+        if target_lo > view_lo && target_lo - view_lo < VIEW_SHRINK_SLACK {
+            target_lo = view_lo;
         }
-        if target_hi < self.view_hi && self.view_hi - target_hi < VIEW_SHRINK_SLACK {
-            target_hi = self.view_hi;
+        if target_hi < view_hi && view_hi - target_hi < VIEW_SHRINK_SLACK {
+            target_hi = view_hi;
         }
 
-        self.view_lo += (target_lo - self.view_lo) * VIEW_EASE;
-        self.view_hi += (target_hi - self.view_hi) * VIEW_EASE;
-
-        // The easing above is a glide, not a guarantee: at `VIEW_EASE` it takes ~0.6 s
-        // to cover a leap, and for those frames the line the player is watching is
-        // *off screen*. So growing is not eased at all — the view snaps open just far
-        // enough to hold the current note. Shrinking keeps the glide, which is what
-        // makes the motion read as calm: the view opens instantly and closes gently.
-        if let Some(now) = self.sounding() {
-            self.view_lo = self.view_lo.min(now - VIEW_PAD);
-            self.view_hi = self.view_hi.max(now + VIEW_PAD);
-        }
+        // ⚠ No snap open here any more, deliberately. It used to widen the view to the
+        // sounding note in the same frame, so one octave slip of the detector yanked
+        // the whole grid open by an octave and the glide then took it back — the roll
+        // breathed with every slip ("колбасит", 10-25). Opening is a fast, capped glide
+        // now (`roll_motion::GROW`): a leap is off screen for a fraction of a second
+        // instead of the grid jumping under the eye.
+        self.view.aim(Midi(target_lo), Midi(target_hi));
     }
 
     /// The most recent pitch the engine actually gave us — the note sounding now,
@@ -326,6 +336,70 @@ impl PitchRoll {
     /// heat gated for display.
     fn columns(&self, now: f64) -> Vec<RollColumn<'_>> {
         columns_of(self.frames.iter(), now, self.layer)
+    }
+
+    /// One UI frame of the window: the hand's gestures on `plot`, then the motion.
+    ///
+    /// Wall time (`stable_dt`), not audio time: the window is a body on screen, and it
+    /// must keep moving between bank publications (wasm delivers them ~85 ms apart).
+    fn interact(&mut self, ui: &Ui, resp: &egui::Response, plot: egui::Rect, bank: BankRange) {
+        self.handle_gestures(ui, resp, plot);
+        let dt = ui.input(|input| input.stable_dt);
+        self.tick(dt, bank);
+    }
+
+    /// The roll under the hand. Pitch only — time stays live: the live roll watches,
+    /// browsing the past is the take roll's job.
+    ///
+    /// - **drag** pans pitch, the rows following the finger, and a release flings it
+    ///   on (`roll_motion` coasts it to rest, further for a finger than a mouse);
+    /// - **pinch** — or ctrl+wheel on a desktop — zooms about the fingers;
+    /// - **double-tap** hands the window back to the auto framing.
+    ///
+    /// Either of the first two takes the window from the auto framing
+    /// (`Framing::Manual`): a framing that kept aiming would yank it from under the
+    /// finger the moment it lifted.
+    ///
+    /// The scalar `zoom_delta`, not the take roll's per-axis split: there is one axis
+    /// here, so a pinch at any angle means it, and making a sideways pinch do nothing
+    /// would only be a trap.
+    fn handle_gestures(&mut self, ui: &Ui, resp: &egui::Response, plot: egui::Rect) {
+        if resp.double_clicked() {
+            self.view.resume_auto();
+            self.reframe();
+            return;
+        }
+        let px_per_semitone = plot.height() / self.view.span().0;
+        if resp.dragged() {
+            let (touch, velocity) = ui.input(|input| (input.any_touches(), input.pointer.velocity()));
+            let hand = if touch {
+                FlingHand::Touch
+            } else {
+                FlingHand::Pointer
+            };
+            // Screen y grows downward and pitch upward, so pulling the rows down looks
+            // higher: the window moves by +dy.
+            self.view.drag(
+                Semitones(resp.drag_delta().y / px_per_semitone),
+                SemitonesPerSec(velocity.y / px_per_semitone),
+                hand,
+            );
+        }
+        let (zoom, pinch_center) = ui.input(|input| {
+            (
+                input.zoom_delta(),
+                input.multi_touch().map(|touch| touch.center_pos),
+            )
+        });
+        // Only a zoom aimed at the roll: a pinch's anchor is between the fingers, a
+        // wheel's under the cursor, and a wheel elsewhere in the app is not ours.
+        if zoom != 1.0
+            && let Some(at) = pinch_center.or(resp.hover_pos())
+            && plot.contains(at)
+        {
+            let anchor = Midi(self.view.lo().0 + (plot.bottom() - at.y) / px_per_semitone);
+            self.view.zoom_about(zoom, anchor);
+        }
     }
 }
 
@@ -554,14 +628,17 @@ impl App {
     }
 
     /// The live roll itself, `height` tall across the whole width left in `ui`.
-    fn draw_live_roll(&self, ui: &mut Ui, height: f32) {
+    fn draw_live_roll(&mut self, ui: &mut Ui, height: f32) {
         let settings = self.audio.analysis_settings();
         let style = settings.accidental;
         let bank = settings.resonator.bank_range();
         let width = ui.available_width();
-        let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
         // Named for TalkBack, and for the phone shell's tests to find the roll by.
         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Image, true, "Pitch roll"));
+        let gutters = Gutters::for_screen(ui.ctx());
+        self.pitch_roll
+            .interact(ui, &resp, pianoroll::plot_rect(rect, gutters), bank);
         let painter = ui.painter_at(rect);
         // The playhead is the newest frame's own timestamp, not "now": there is no
         // reading of the clock here at all, so a late repaint draws the same picture,
@@ -573,11 +650,11 @@ impl App {
         pianoroll::draw_pitch_roll(
             &painter,
             rect,
-            Gutters::for_screen(ui.ctx()),
+            gutters,
             &columns,
             bank,
-            self.pitch_roll.view_lo,
-            self.pitch_roll.view_hi,
+            self.pitch_roll.view.lo().0,
+            self.pitch_roll.view.hi().0,
             LIVE_TIME_AXIS,
             style,
             // The live roll IS the line: it is the mirror you play into, and there is
@@ -628,10 +705,23 @@ mod tests {
         }
     }
 
-    /// Feed the line one frame at a time (delivery = the bank's own cadence).
+    /// A bank span wide enough that no test window touches it.
+    fn test_bank() -> BankRange {
+        use crate::core_types::pitch::PNote;
+        BankRange::new(PNote::new(24).unwrap(), PNote::new(108).unwrap())
+    }
+
+    /// Feed the line one frame at a time (delivery = the bank's own cadence), with one
+    /// UI frame of motion per bank frame.
     fn line(bank: &mut Bank, roll: &mut PitchRoll, pitch: Option<f32>, level: f32) {
         let frame = bank.frame(pitch, level);
         roll.update(vec![frame]);
+        roll.tick(BANK_CADENCE_S as f32, test_bank());
+    }
+
+    /// The window's edges, as raw MIDI for the arithmetic of the assertions.
+    fn edges(roll: &PitchRoll) -> (f32, f32) {
+        (roll.view.lo().0, roll.view.hi().0)
     }
 
     /// The toggle swaps the layer, and both layers obey the same silence gate.
@@ -815,12 +905,11 @@ mod tests {
     fn silence_holds_the_view() {
         let mut bank = Bank::new();
         let mut roll = PitchRoll::default();
-        let (lo, hi) = (roll.view_lo, roll.view_hi);
+        let before = edges(&roll);
         for _ in 0..30 {
             line(&mut bank, &mut roll, None, 0.0);
         }
-        assert_eq!(roll.view_lo, lo);
-        assert_eq!(roll.view_hi, hi);
+        assert_eq!(edges(&roll), before);
     }
 
     /// A sustained note eases the window to frame it, keeping the min span.
@@ -830,14 +919,9 @@ mod tests {
         for _ in 0..400 {
             line(&mut bank, &mut roll, Some(69.0), 0.5); // A4
         }
-        assert!(
-            roll.view_lo < 69.0 && roll.view_hi > 69.0,
-            "note is inside the view"
-        );
-        assert!(
-            (roll.view_hi - roll.view_lo) >= MIN_SPAN - 0.5,
-            "span stays at least the minimum"
-        );
+        let (lo, hi) = edges(&roll);
+        assert!(lo < 69.0 && hi > 69.0, "note is inside the view");
+        assert!(hi - lo >= MIN_SPAN - 0.5, "span stays at least the minimum");
     }
 
     /// REGRESSION: a phrase played a while ago must not keep the view stretched.
@@ -856,16 +940,14 @@ mod tests {
         for _ in 0..600 {
             line(&mut bank, &mut roll, Some(84.0), 0.5); // C6, settle up high
         }
-        let span = roll.view_hi - roll.view_lo;
+        let (lo, hi) = edges(&roll);
+        let span = hi - lo;
         assert!(
             span < 24.0,
             "view still spans {span:.1} semitones after moving on; the old phrase \
              should have stopped counting"
         );
-        assert!(
-            roll.view_lo < 84.0 && roll.view_hi > 84.0,
-            "the note being played must be in view"
-        );
+        assert!(lo < 84.0 && hi > 84.0, "the note being played must be in view");
     }
 
     /// REGRESSION, stated the way it was reported: while playing, the grid must name
@@ -890,7 +972,7 @@ mod tests {
         {
             line(&mut bank, &mut roll, Some(*midi), 0.5);
         }
-        let span = roll.view_hi - roll.view_lo;
+        let span = roll.view.span().0;
         let row_h = PLOT_H / span;
         assert!(
             row_h >= LABEL_MIN_ROW_H,
@@ -900,41 +982,62 @@ mod tests {
     }
 
     /// A lone octave slip must not pin the view an octave wider — that is what the
-    /// quantile bounds are for.
+    /// quantile bounds are for — and must not even *flash* it wider: the slip is the
+    /// sounding note for one frame, and the old snap-open threw the grid open by an
+    /// octave on exactly that frame. Now the window only starts gliding toward it.
     #[test]
     fn a_lone_slip_does_not_stretch_the_view() {
         let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         for _ in 0..400 {
             line(&mut bank, &mut roll, Some(69.0), 0.5); // steady A4
         }
-        let span_before = roll.view_hi - roll.view_lo;
+        let span_before = roll.view.span().0;
         line(&mut bank, &mut roll, Some(81.0), 0.5); // one slipped frame, an octave up
+        let mut widest = roll.view.span().0;
         for _ in 0..200 {
             line(&mut bank, &mut roll, Some(69.0), 0.5);
+            widest = widest.max(roll.view.span().0);
         }
-        let span_after = roll.view_hi - roll.view_lo;
+        let span_after = roll.view.span().0;
         assert!(
             span_after < span_before + 2.0,
             "one slip stretched the view from {span_before:.1} to {span_after:.1}"
         );
+        assert!(
+            widest < span_before + 0.5,
+            "one slip flashed the view open from {span_before:.1} to {widest:.1}"
+        );
     }
 
-    /// The currently sounding note is always framed, even when it is the outlier the
-    /// quantiles would exclude.
+    /// The currently sounding note is framed, even when it is the outlier the quantiles
+    /// would exclude — and it gets there by a glide, not a cut.
+    ///
+    /// It used to be framed *in the same frame*: the view snapped open to the note, and
+    /// that snap was the jolt of every octave slip ("колбасит", 10-25). Now opening is a
+    /// capped glide, so the bound is a time: a leap of over an octave is in view within
+    /// half a second, and no single frame jumps the top edge more than a step of it.
     #[test]
-    fn current_note_is_never_framed_out() {
+    fn current_note_glides_into_view() {
         let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
         for _ in 0..400 {
             line(&mut bank, &mut roll, Some(60.0), 0.5); // settled on C4
         }
-        // Leap up and hold briefly — far too few frames to move the quantiles.
-        for _ in 0..3 {
+        // Leap up and hold — far too few frames, at first, to move the quantiles.
+        let frames = (0.5 / BANK_CADENCE_S) as usize;
+        let mut worst_step: f32 = 0.0;
+        for _ in 0..frames {
+            let before = edges(&roll).1;
             line(&mut bank, &mut roll, Some(79.0), 0.5); // G5
+            worst_step = worst_step.max((edges(&roll).1 - before).abs());
         }
+        let hi = edges(&roll).1;
         assert!(
-            roll.view_hi > 79.0 - VIEW_PAD,
-            "current note at 79 is outside a view topping out at {:.1}",
-            roll.view_hi
+            hi >= 79.0,
+            "after 0.5 s the note at 79 is still outside a view topping out at {hi:.1}"
+        );
+        assert!(
+            worst_step < 1.0,
+            "the top edge jumped {worst_step:.2} semitones in one frame — a cut, not a glide"
         );
     }
 
@@ -945,15 +1048,14 @@ mod tests {
         for _ in 0..800 {
             line(&mut bank, &mut roll, Some(69.0), 0.5);
         }
-        let (lo, hi) = (roll.view_lo, roll.view_hi);
+        let (lo, hi) = edges(&roll);
         for _ in 0..60 {
             line(&mut bank, &mut roll, Some(69.0), 0.5);
         }
+        let (lo_now, hi_now) = edges(&roll);
         assert!(
-            (roll.view_lo - lo).abs() < 0.5 && (roll.view_hi - hi).abs() < 0.5,
-            "view crept from ({lo:.2}, {hi:.2}) to ({:.2}, {:.2}) on a held note",
-            roll.view_lo,
-            roll.view_hi
+            (lo_now - lo).abs() < 0.5 && (hi_now - hi).abs() < 0.5,
+            "view crept from ({lo:.2}, {hi:.2}) to ({lo_now:.2}, {hi_now:.2}) on a held note"
         );
     }
 
@@ -997,6 +1099,145 @@ mod tests {
         assert!(
             roll.frames.newest().unwrap().pitch.is_some(),
             "next real frame is drawn"
+        );
+    }
+
+    // ── The hand, through real touch events (`touch_fingers`) ──
+    //
+    // State tests cannot catch a gesture that never reaches the handler — a `Sense` that
+    // does not take drags, a pinch read off the wrong input — so these drive the same
+    // `interact` the panel calls, with touches as a phone sends them. The App around the
+    // roll is left out: it needs an audio engine, and it adds nothing between the
+    // response and `interact`.
+
+    use eframe::egui::{
+        Rect,
+        pos2,
+    };
+    use egui_kittest::Harness;
+
+    use crate::app::touch_fingers::{
+        Finger,
+        gesture,
+    };
+
+    type Rig = (PitchRoll, Rect);
+
+    /// A roll settled on a held A4, in a 360×360 plot, at 60 fps.
+    fn touch_rig() -> Harness<'static, Rig> {
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
+        for _ in 0..400 {
+            line(&mut bank, &mut roll, Some(69.0), 0.5);
+        }
+        Harness::builder()
+            .with_size(vec2(400.0, 400.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(
+                |ui, (roll, plot): &mut Rig| {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(360.0, 360.0), Sense::click_and_drag());
+                    *plot = rect;
+                    roll.interact(ui, &resp, rect, test_bank());
+                },
+                (roll, Rect::NOTHING),
+            )
+    }
+
+    /// A finger pulls the rows down — the window looks higher — and the window keeps
+    /// coasting after the finger lifts, then stops. The auto framing has let go: the
+    /// note it would aim at no longer moves the window.
+    #[test]
+    fn a_finger_drags_the_rows_and_flings_them() {
+        let mut harness = touch_rig();
+        harness.run_steps(2);
+        let plot = harness.state().1;
+        let before = edges(&harness.state().0);
+        let mid = plot.center();
+        // A quick downward flick: 90 px in 5 frames.
+        gesture(
+            &mut harness,
+            &[(Finger::FIRST, mid - vec2(0.0, 45.0), mid + vec2(0.0, 45.0))],
+            5,
+        );
+        let released = edges(&harness.state().0);
+        assert!(
+            released.0 > before.0 + 1.0,
+            "pulling the rows down must look higher: lo {:.2} → {:.2}",
+            before.0,
+            released.0
+        );
+        harness.run_steps(60);
+        let coasted = edges(&harness.state().0);
+        assert!(
+            coasted.0 > released.0 + 0.5,
+            "the window did not coast after the release: lo {:.2} → {:.2}",
+            released.0,
+            coasted.0
+        );
+        assert_eq!(harness.state().0.view.framing(), Framing::Manual);
+        harness.run_steps(120);
+        let rested = edges(&harness.state().0);
+        harness.run_steps(10);
+        assert_eq!(edges(&harness.state().0), rested, "the coast never came to rest");
+    }
+
+    /// A double-tap hands the window back: it glides home to the note being played —
+    /// the auto framing's own aim (A4 in the middle), not wherever the window happened
+    /// to be when the finger took it.
+    #[test]
+    fn a_double_tap_gives_the_window_back_to_the_auto_framing() {
+        let mut harness = touch_rig();
+        harness.run_steps(2);
+        let home = edges(&harness.state().0);
+        let mid = harness.state().1.center();
+        gesture(&mut harness, &[(Finger::FIRST, mid, mid + vec2(0.0, 120.0))], 6);
+        harness.run_steps(120);
+        assert!(
+            edges(&harness.state().0).0 > home.0 + 2.0,
+            "the drag did not move the window"
+        );
+
+        gesture(&mut harness, &[(Finger::FIRST, mid, mid)], 1);
+        gesture(&mut harness, &[(Finger::FIRST, mid, mid)], 1);
+        assert_eq!(harness.state().0.view.framing(), Framing::Auto);
+        harness.run_steps(180);
+        let back = edges(&harness.state().0);
+        let center = 0.5 * (back.0 + back.1);
+        assert!(
+            (center - 69.0).abs() < 0.1 && back.1 - back.0 >= MIN_SPAN - 0.1,
+            "the window did not glide home to A4: {back:?}"
+        );
+    }
+
+    /// Two fingers spreading up-down zoom in about the point between them: the span
+    /// shrinks by the spread, and the pitch under the fingers stays under them.
+    #[test]
+    fn a_pinch_zooms_about_the_fingers() {
+        let mut harness = touch_rig();
+        harness.run_steps(2);
+        let plot = harness.state().1;
+        let at = pos2(plot.center().x, plot.top() + 120.0);
+        let pitch_at = |rig: &Rig| {
+            let (lo, hi) = edges(&rig.0);
+            lo + (rig.1.bottom() - at.y) / rig.1.height() * (hi - lo)
+        };
+        let (span_before, under_before) = (harness.state().0.view.span().0, pitch_at(harness.state()));
+        gesture(
+            &mut harness,
+            &[
+                (Finger::FIRST, at - vec2(0.0, 20.0), at - vec2(0.0, 40.0)),
+                (Finger::SECOND, at + vec2(0.0, 20.0), at + vec2(0.0, 40.0)),
+            ],
+            10,
+        );
+        let span = harness.state().0.view.span().0;
+        assert!(
+            (span - span_before / 2.0).abs() < 0.1 * span_before,
+            "a 2× spread must halve the span: {span_before:.2} → {span:.2}"
+        );
+        let under = pitch_at(harness.state());
+        assert!(
+            (under - under_before).abs() < 0.5,
+            "the pitch between the fingers moved: {under_before:.2} → {under:.2}"
         );
     }
 }

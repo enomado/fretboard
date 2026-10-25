@@ -11,6 +11,7 @@ mod mobile_split;
 mod persist;
 mod pitch_roll_panel;
 mod resonator_panel;
+mod roll_motion;
 mod scale_finder;
 mod staff_panel;
 mod take_marks;
