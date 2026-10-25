@@ -24,6 +24,18 @@ pub(super) fn picker_open_id() -> egui::Id {
     egui::Id::unique("mobile_panel_picker_open")
 }
 
+/// How much of the window the system bars cover, in points — the activity's report on
+/// the device; none in the host kittest harness, whose "screen" has no bars.
+#[cfg(target_os = "android")]
+fn system_bar_insets(ctx: &egui::Context) -> Margin {
+    crate::android_insets::insets(ctx)
+}
+
+#[cfg(all(test, not(target_os = "android")))]
+fn system_bar_insets(_ctx: &egui::Context) -> Margin {
+    Margin::ZERO
+}
+
 pub(super) struct WorkspaceBehavior<'a> {
     app: &'a mut App,
 }
@@ -263,8 +275,12 @@ impl App {
         // До отрисовки: «назад» может свернуть пикер или сменить панель, и этот кадр
         // уже должен показать результат.
         let request = self.handle_mobile_back(ui.ctx());
+        // The shell's own 8 dp margin, plus whatever the system bars cover: egui does not
+        // know about them on Android (see `android_insets`), and the bottom row sat under
+        // the navigation buttons.
+        let margin = Margin::same(8) + system_bar_insets(ui.ctx());
         egui::CentralPanel::default()
-            .frame(Frame::new().inner_margin(Margin::same(8)))
+            .frame(Frame::new().inner_margin(margin))
             .show(ui, |ui| {
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(33));

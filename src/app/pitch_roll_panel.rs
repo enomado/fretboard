@@ -492,7 +492,7 @@ impl App {
 
     /// The phone's Pitch Roll, a split panel (`mobile_split`): the screen is the title
     /// and the roll — as tall as the screen part, which is the whole pane while the
-    /// config is hidden — and the config is the layer switches.
+    /// config is hidden — and the config is the layer switches and the detector picker.
     #[cfg(any(target_os = "android", test))]
     pub(super) fn draw_pitch_roll_part(&mut self, ui: &mut Ui, part: Part) {
         match part {
@@ -516,6 +516,14 @@ impl App {
             }
             Part::Config => {
                 ui.horizontal(|ui| layer_switches(ui, &mut self.pitch_roll.layer));
+                // The roll's line is the detector's decision, so which detector draws it
+                // is chosen here too — on the phone the Resonator FFT config, its other
+                // home, is a whole panel away.
+                ui.add_space(8.0);
+                let mut settings = self.audio.analysis_settings();
+                if super::controls::detector_picker(ui, &mut settings) {
+                    self.audio.set_analysis_settings(settings);
+                }
             }
         }
     }

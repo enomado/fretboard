@@ -725,28 +725,7 @@ impl App {
         });
 
         ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.add(RowCaption::new("Detector"));
-            // Which frontend decides the played note. The bank keeps running either way (it
-            // draws the waterfall, the spiral and the salience heat); this only redirects the
-            // note decision. See `audio::types::PitchFrontend`.
-            for frontend in PitchFrontend::ALL {
-                let selected = settings.resonator.frontend == frontend;
-                let button = SegmentedButton::new(frontend.label(), selected).min_width(82.0);
-                if ui.add(button).on_hover_text(frontend.description()).clicked()
-                    && settings.resonator.frontend != frontend
-                {
-                    settings.resonator.frontend = frontend;
-                    *changed = true;
-                }
-            }
-        });
-
-        ui.label(
-            RichText::new(settings.resonator.frontend.description())
-                .small()
-                .color(color::TEXT_CAPTION),
-        );
+        *changed |= detector_picker(ui, settings);
 
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
@@ -786,6 +765,37 @@ impl App {
                 }
             });
     }
+}
+
+/// The «Detector» row: which frontend decides the played note, plus the chosen one's
+/// description. Returns whether the choice changed; the caller applies `settings`.
+///
+/// The bank keeps running either way (it draws the waterfall, the spiral and the
+/// salience heat); this only redirects the note decision. See
+/// `audio::types::PitchFrontend`. Shared by the Resonator FFT config and the phone's
+/// Pitch Roll config — the roll's line is that decision, so its knob is wanted there.
+pub(super) fn detector_picker(ui: &mut Ui, settings: &mut AnalysisSettings) -> bool {
+    let mut changed = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.add(RowCaption::new("Detector"));
+        for frontend in PitchFrontend::ALL {
+            let selected = settings.resonator.frontend == frontend;
+            let button = SegmentedButton::new(frontend.label(), selected).min_width(82.0);
+            if ui.add(button).on_hover_text(frontend.description()).clicked()
+                && settings.resonator.frontend != frontend
+            {
+                settings.resonator.frontend = frontend;
+                changed = true;
+            }
+        }
+    });
+
+    ui.label(
+        RichText::new(settings.resonator.frontend.description())
+            .small()
+            .color(color::TEXT_CAPTION),
+    );
+    changed
 }
 
 // Plain-English help for the resonator config tab, one entry per knob, in the

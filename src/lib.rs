@@ -4,6 +4,8 @@ pub mod core_types;
 pub mod ui;
 
 #[cfg(target_os = "android")]
+pub mod android_insets;
+#[cfg(target_os = "android")]
 pub mod android_perm;
 
 #[cfg(test)]
@@ -18,6 +20,8 @@ fn android_main(android_app: android_activity::AndroidApp) {
     // `ndk_context` only exposes the Application object, which lacks the
     // Activity-only `requestPermissions` method — see `android_perm::ACTIVITY`.
     android_perm::init_activity(android_app.activity_as_ptr());
+    // The phone shell keeps clear of the system bars by the activity's content rect.
+    android_insets::init(&android_app);
 
     // Where the settings (`app::persist`) live. eframe finds no storage dir of its own on
     // Android (`eframe::storage_dir` is `None` there), so without this path nothing was
