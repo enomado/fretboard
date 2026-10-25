@@ -282,6 +282,17 @@ impl PitchWindow {
         self.span.pos *= scale;
     }
 
+    /// The user chose the interval by name (the "manual" switch): the window stops
+    /// right where it is, and stays — no glide finishing, no coast. From here only a
+    /// hand moves it.
+    pub(super) fn hold(&mut self) {
+        self.framing = Framing::Manual;
+        for glide in [&mut self.center, &mut self.span] {
+            glide.target = None;
+            glide.vel = 0.0;
+        }
+    }
+
     /// Hand the window back to the auto framing. The velocity is kept, so a window
     /// still coasting from a fling turns toward the music without a stop.
     pub(super) fn resume_auto(&mut self) {

@@ -338,6 +338,24 @@ impl PitchRoll {
         columns_of(self.frames.iter(), now, self.layer)
     }
 
+    /// Switch who decides the pitch window — the two modes of the roll:
+    ///
+    /// - [`Framing::Auto`]: the window follows what is played, resizing by a capped
+    ///   glide when a note asks for room. Aimed at once, so the glide starts this frame
+    ///   rather than at the bank's next publication.
+    /// - [`Framing::Manual`]: the interval is the user's — set by drag and pinch, kept
+    ///   whatever is played. Chosen by the switch it freezes the window where it stands;
+    ///   a drag or pinch enters it by itself (`roll_motion::PitchWindow::drag`).
+    fn set_framing(&mut self, framing: Framing) {
+        match framing {
+            Framing::Auto => {
+                self.view.resume_auto();
+                self.reframe();
+            }
+            Framing::Manual => self.view.hold(),
+        }
+    }
+
     /// One UI frame of the window: the hand's gestures on `plot`, then the motion.
     ///
     /// Wall time (`stable_dt`), not audio time: the window is a body on screen, and it
@@ -365,8 +383,7 @@ impl PitchRoll {
     /// would only be a trap.
     fn handle_gestures(&mut self, ui: &Ui, resp: &egui::Response, plot: egui::Rect) {
         if resp.double_clicked() {
-            self.view.resume_auto();
-            self.reframe();
+            self.set_framing(Framing::Auto);
             return;
         }
         let px_per_semitone = plot.height() / self.view.span().0;
@@ -531,6 +548,22 @@ fn layer_switches(ui: &mut Ui, layer: &mut RollLayer) {
     roll_switch(ui, layer, RollLayer::Salience, "SWIPE′");
 }
 
+/// One of the two framing modes' switches — see [`PitchRoll::set_framing`]. It shows the
+/// mode as it *is*, so a drag that took the window to manual lights "manual" up on its own.
+fn framing_switch(ui: &mut Ui, roll: &mut PitchRoll, value: Framing, label: &str) {
+    let mut current = roll.view.framing();
+    roll_switch(ui, &mut current, value, label);
+    if current != roll.view.framing() {
+        roll.set_framing(current);
+    }
+}
+
+/// The framing switches, in reading order.
+fn framing_switches(ui: &mut Ui, roll: &mut PitchRoll) {
+    framing_switch(ui, roll, Framing::Auto, "auto");
+    framing_switch(ui, roll, Framing::Manual, "manual");
+}
+
 impl App {
     pub(super) fn draw_pitch_roll_card(&mut self, ui: &mut Ui) {
         self.take_live_frames(ui);
@@ -541,22 +574,31 @@ impl App {
             .stroke(Stroke::new(1.0_f32, color::CARD_STROKE))
             .inner_margin(pad)
             .show(ui, |ui| {
-                let layer = &mut self.pitch_roll.layer;
-                // Title + hint (~330 dp) beside the right-aligned switches (~150 dp).
-                // Narrower, the switches were laid right-to-left *over* the hint, so
-                // there they take their own row under it, in reading order.
-                const HEADER_W: f32 = 500.0;
+                let roll = &mut self.pitch_roll;
+                // Title + hint (~330 dp) beside the right-aligned switches (~280 dp:
+                // layer, then framing). Narrower, the switches were laid right-to-left
+                // *over* the hint, so there they take their own row under it, in
+                // reading order.
+                const HEADER_W: f32 = 640.0;
                 if ui.available_width() >= HEADER_W {
                     ui.horizontal(|ui| {
-                        ui.vertical(|ui| title_and_hint(ui, *layer));
+                        ui.vertical(|ui| title_and_hint(ui, roll.layer));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            roll_switch(ui, layer, RollLayer::Salience, "SWIPE′");
-                            roll_switch(ui, layer, RollLayer::Spectrum, "spectrum");
+                            // Right to left: the reading order reversed.
+                            framing_switch(ui, roll, Framing::Manual, "manual");
+                            framing_switch(ui, roll, Framing::Auto, "auto");
+                            ui.separator();
+                            roll_switch(ui, &mut roll.layer, RollLayer::Salience, "SWIPE′");
+                            roll_switch(ui, &mut roll.layer, RollLayer::Spectrum, "spectrum");
                         });
                     });
                 } else {
-                    title_and_hint(ui, *layer);
-                    ui.horizontal(|ui| layer_switches(ui, layer));
+                    title_and_hint(ui, roll.layer);
+                    ui.horizontal(|ui| {
+                        layer_switches(ui, &mut roll.layer);
+                        ui.separator();
+                        framing_switches(ui, roll);
+                    });
                 }
 
                 ui.add_space(10.0);
@@ -566,7 +608,8 @@ impl App {
 
     /// The phone's Pitch Roll, a split panel (`mobile_split`): the screen is the title
     /// and the roll — as tall as the screen part, which is the whole pane while the
-    /// config is hidden — and the config is the layer switches and the detector picker.
+    /// config is hidden — and the config is the layer switches, the framing switches and
+    /// the detector picker.
     #[cfg(any(target_os = "android", test))]
     pub(super) fn draw_pitch_roll_part(&mut self, ui: &mut Ui, part: Part) {
         match part {
@@ -590,6 +633,9 @@ impl App {
             }
             Part::Config => {
                 ui.horizontal(|ui| layer_switches(ui, &mut self.pitch_roll.layer));
+                // A row of its own: the phone's config is narrow, and the two pairs are
+                // two different questions — what is under the line, who frames it.
+                ui.horizontal(|ui| framing_switches(ui, &mut self.pitch_roll));
                 // The roll's line is the detector's decision, so which detector draws it
                 // is chosen here too — on the phone the Resonator FFT config, its other
                 // home, is a whole panel away.
@@ -1205,6 +1251,72 @@ mod tests {
         assert!(
             (center - 69.0).abs() < 0.1 && back.1 - back.0 >= MIN_SPAN - 0.1,
             "the window did not glide home to A4: {back:?}"
+        );
+    }
+
+    /// The two modes by their switches. "manual" freezes the interval: a leap played
+    /// after it does not move the window. "auto" gives it back, and the window glides to
+    /// the leap. A drag lights "manual" up by itself — the switch shows the mode as it is.
+    #[test]
+    fn the_framing_switches_pick_the_mode() {
+        use eframe::egui::accesskit::Toggled;
+        use egui_kittest::kittest::{
+            NodeT,
+            Queryable,
+        };
+
+        let (mut bank, mut roll) = (Bank::new(), PitchRoll::default());
+        for _ in 0..400 {
+            line(&mut bank, &mut roll, Some(69.0), 0.5);
+        }
+        let mut harness = Harness::builder().with_size(vec2(400.0, 80.0)).build_ui_state(
+            |ui, roll: &mut PitchRoll| {
+                ui.horizontal(|ui| framing_switches(ui, roll));
+            },
+            roll,
+        );
+        harness.run();
+        // Set a glide in flight, so "manual" has something to freeze.
+        for _ in 0..5 {
+            line(&mut bank, harness.state_mut(), Some(84.0), 0.5);
+        }
+
+        harness.get_by_label("manual").click();
+        harness.run();
+        assert_eq!(harness.state().view.framing(), Framing::Manual);
+        let held = edges(harness.state());
+        for _ in 0..200 {
+            line(&mut bank, harness.state_mut(), Some(84.0), 0.5);
+        }
+        assert_eq!(
+            edges(harness.state()),
+            held,
+            "manual must keep the user's interval"
+        );
+
+        harness.get_by_label("auto").click();
+        harness.run();
+        assert_eq!(harness.state().view.framing(), Framing::Auto);
+        for _ in 0..200 {
+            line(&mut bank, harness.state_mut(), Some(84.0), 0.5);
+        }
+        let (lo, hi) = edges(harness.state());
+        assert!(
+            lo < 84.0 && hi > 84.0,
+            "auto did not follow the leap: {lo:.1}..{hi:.1}"
+        );
+
+        harness
+            .state_mut()
+            .view
+            .drag(Semitones(1.0), SemitonesPerSec(0.0), FlingHand::Touch);
+        harness.run();
+        // egui reports a selectable button's state as `toggled`, not `selected`.
+        let lit = |label| harness.get_by_label(label).accesskit_node().toggled();
+        assert_eq!(
+            (lit("manual"), lit("auto")),
+            (Some(Toggled::True), Some(Toggled::False)),
+            "a drag took the window, and the switch must say so"
         );
     }
 
